@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    container_name: loyalty_db
+    environment:
+      POSTGRES_DB: loyalty
+      POSTGRES_USER: loyalty
+      POSTGRES_PASSWORD: loyalty
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
