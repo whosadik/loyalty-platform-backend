@@ -35,6 +35,7 @@ def build_routine(
     profile: Profile,
     products: list[dict[str, Any]],
     top_k: int = 3,
+    owned_product_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     # группируем по шагам
     by_step: dict[str, list[dict[str, Any]]] = {}
@@ -43,6 +44,23 @@ def build_routine(
 
     def pick_for_step(step: str) -> dict[str, Any]:
         candidates = [p for p in by_step.get(step, []) if _fits_profile(p, profile)]
+        owned_set = set(owned_product_ids or [])
+        owned_candidates = [p for p in candidates if p["id"] in owned_set]
+        if owned_candidates:
+            chosen = owned_candidates[0]
+            return {
+                "step": step,
+                "status": "filled",
+                "source": "owned",
+                "product": chosen,
+                "why": [
+                    "already owned by user",
+                    f"matches skin_type={profile.skin_type}",
+                    "no avoided ingredients/flags",
+                ],
+                "suggestions": [c["id"] for c in candidates[:top_k]],
+            }
+
         # простая сортировка: дешевле выше (потом улучшим)
         candidates.sort(key=lambda x: (x.get("price") is None, x.get("price", 0)))
 
@@ -51,6 +69,7 @@ def build_routine(
             return {
                 "step": step,
                 "status": "filled",
+                "source": "recommended",
                 "product": chosen,
                 "why": [
                     f"matches skin_type={profile.skin_type}",
@@ -66,6 +85,7 @@ def build_routine(
         return {
             "step": step,
             "status": "missing",
+            "source": "recommended",
             "product": None,
             "why": [f"no products found for skin_type={profile.skin_type} with current constraints"],
             "suggestions": [c["id"] for c in fallback[:top_k]],

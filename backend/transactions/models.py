@@ -23,3 +23,19 @@ class TransactionItem(models.Model):
 
     def __str__(self) -> str:
         return f"Item(txn_id={self.transaction_id}, product_id={self.product_id}, qty={self.quantity})"
+
+from django.utils import timezone
+
+
+class OwnedProduct(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="owned_products")
+    product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT)
+
+    acquired_at = models.DateTimeField(default=timezone.now)
+    source = models.CharField(max_length=30, default="transaction")  # transaction/manual/import
+
+    class Meta:
+        unique_together = ("user", "product")  # один и тот же товар считаем "есть", без дублей
+
+    def __str__(self) -> str:
+        return f"Owned(user={self.user_id}, product={self.product_id})"

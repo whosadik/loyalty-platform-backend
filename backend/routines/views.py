@@ -10,6 +10,7 @@ from ml_logic.routine_builder import Profile, build_routine
 from ml_logic.routine_validator import validate_routine
 from .models import RoutineSnapshot
 
+from transactions.models import OwnedProduct
 
 class RoutineGenerateView(APIView):
     permission_classes = [IsAuthenticated]
@@ -41,8 +42,17 @@ class RoutineGenerateView(APIView):
                 "in_stock",
             )
         )
+        owned_ids = list(
+            OwnedProduct.objects.filter(user=request.user).values_list("product_id", flat=True)
+        )
 
-        routine = build_routine(profile=profile, products=products, top_k=3)
+        routine = build_routine(
+            profile=profile,
+            products=products,
+            top_k=3,
+            owned_product_ids=owned_ids,
+        )
+
         missing_steps = []
         for item in routine["am"] + routine["pm"]:
             if item["status"] == "missing":
