@@ -47,8 +47,9 @@ def pick_next_offer(
     offers: list[dict[str, Any]],
     last_assignment_days_ago: int | None,
     budget_left: float,
-    context_steps: list[str] | None = None) -> dict[str, Any] | None:
-    # Табличные uplift веса по сегментам (MVP)
+    context_steps: list[str] | None = None,
+    owned_steps: list[str] | None = None,
+) -> dict[str, Any] | None:
     uplift = {
         "at_risk": {"points_multiplier": 1.1, "discount": 1.0, "gift": 0.9},
         "vip": {"gift": 1.1, "points_multiplier": 1.0, "discount": 0.7},
@@ -59,22 +60,35 @@ def pick_next_offer(
     best = None
     best_score = -10**9
 
+    ctx = set(context_steps or [])
+    owned = set(owned_steps or [])
+
     for o in offers:
         if not o.get("is_active", True):
             continue
 
         allowed_steps = o.get("allowed_steps") or []
+
+        # 1) Если оффер ограничен шагами:
         if allowed_steps:
-            if not context_steps:
+            allowed = set(allowed_steps)
+
+            # 1a) Если контекст есть — оффер должен соответствовать контексту
+            if context_steps is not None and not allowed.intersection(ctx):
                 continue
-            if not set(allowed_steps).intersection(set(context_steps)):
+
+            # 1b) Если все allowed_steps уже закрыты owned — оффер не нужен
+            if owned_steps is not None and allowed.issubset(owned):
+                continue
+
+            # 1c) Если контекста нет (None) — офферы с allowed_steps пропускаем
+            if context_steps is None:
                 continue
 
         # eligibility: min_total_spend_90d
         if float(rfm.monetary_90d) < float(o.get("min_total_spend_90d", 0)):
             continue
 
-        # frequency cap
         cooldown = int(o.get("cooldown_days", 14))
         if last_assignment_days_ago is not None and last_assignment_days_ago < cooldown:
             continue
@@ -86,8 +100,6 @@ def pick_next_offer(
         otype = o["offer_type"]
         u = uplift.get(segment_name, {}).get(otype, 0.7)
 
-        # simplistic profit proxy:
-        # higher monetary/frequency => higher expected value
         base_value = (rfm.frequency_90d * 5.0) + (rfm.monetary_90d * 0.02)
         score = (u * base_value) - cost
 
@@ -103,7 +115,8 @@ def pick_next_offer(
         "score": best_score,
         "reason": {
             "segment": segment_name,
-            "context_steps": context_steps,
+            "context_steps": list(ctx) if context_steps is not None else None,
+            "owned_steps": list(owned) if owned_steps is not None else None,
             "rfm": {
                 "recency_days": rfm.recency_days,
                 "frequency_90d": rfm.frequency_90d,

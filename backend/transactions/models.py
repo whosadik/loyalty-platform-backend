@@ -30,6 +30,9 @@ from django.utils import timezone
 class OwnedProduct(models.Model):
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="owned_products")
     product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT)
+    quantity_total = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)  # если закончился/не использует
+    last_acquired_at = models.DateTimeField(default=timezone.now)
 
     acquired_at = models.DateTimeField(default=timezone.now)
     source = models.CharField(max_length=30, default="transaction")  # transaction/manual/import

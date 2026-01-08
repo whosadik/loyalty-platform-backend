@@ -43,7 +43,7 @@ class RoutineGenerateView(APIView):
             )
         )
         owned_ids = list(
-            OwnedProduct.objects.filter(user=request.user).values_list("product_id", flat=True)
+            OwnedProduct.objects.filter(user=request.user, is_active=True).values_list("product_id", flat=True)
         )
 
         routine = build_routine(

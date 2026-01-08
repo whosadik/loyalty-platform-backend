@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from transactions.models import Transaction
+from transactions.models import OwnedProduct, Transaction
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from .models import Offer, OfferAssignment, CampaignBudget
 from .serializers import RedeemOfferRequestSerializer
@@ -104,7 +104,22 @@ class MeNextOfferView(APIView):
             )
         )
 
-        routine = build_routine(profile=profile, products=products_for_routine, top_k=3)
+        owned_ids = list(
+            OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
+        )
+
+        routine = build_routine(
+            profile=profile,
+            products=products_for_routine,
+            top_k=3,
+            owned_product_ids=owned_ids,
+        )
+        owned_steps = set(
+            OwnedProduct.objects.filter(user=user, is_active=True)
+            .select_related("product")
+            .values_list("product__step", flat=True)
+        )
+        owned_steps_list = list(owned_steps)
 
         missing_steps = []
         for item in routine["am"] + routine["pm"]:
@@ -112,13 +127,14 @@ class MeNextOfferView(APIView):
                 missing_steps.append(item.get("step"))
 
         picked = pick_next_offer(
-            rfm=rfm,
-            segment_name=seg,
-            offers=offers,
-            last_assignment_days_ago=last_days_ago,
-            budget_left=budget_left,
-            context_steps=missing_steps or None,   
-        )
+        rfm=rfm,
+        segment_name=seg,
+        offers=offers,
+        last_assignment_days_ago=last_days_ago,
+        budget_left=budget_left,
+        context_steps=missing_steps or None,
+        owned_steps=owned_steps_list,
+    )
 
         if picked is None:
             return Response({"offer": None, "reason": {"segment": seg, "message": "No eligible offers"}})

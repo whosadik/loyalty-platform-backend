@@ -26,7 +26,12 @@ class TransactionSerializer(serializers.ModelSerializer):
         total = 0
         for it in items_data:
             TransactionItem.objects.create(transaction=txn, **it)
-            OwnedProduct.objects.get_or_create(user=user, product=it["product"])
+            owned, created = OwnedProduct.objects.get_or_create(user=user, product=it["product"])
+            owned.quantity_total = (owned.quantity_total or 0) + int(it["quantity"])
+            owned.is_active = True
+            owned.last_acquired_at = txn.created_at
+            owned.save(update_fields=["quantity_total", "is_active", "last_acquired_at"])
+
             total += float(it["unit_price"]) * int(it["quantity"])
 
         txn.total_amount = total
@@ -42,4 +47,4 @@ class OwnedProductSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = OwnedProduct
-        fields = ["id", "product", "acquired_at", "source"]
+        fields = ["id", "product", "quantity_total", "is_active", "acquired_at", "last_acquired_at", "source"]
