@@ -21,7 +21,9 @@ class CustomerProfile(models.Model):
     goals = models.JSONField(default=list, blank=True)       # пример: ["acne", "hydration"]
     avoid_flags = models.JSONField(default=list, blank=True) # пример: ["fragrance", "alcohol"]
     budget = models.CharField(max_length=20, choices=Budget.choices, default=Budget.MEDIUM)
-
+    hair_profile = models.JSONField(default=dict, blank=True)
+    makeup_profile = models.JSONField(default=dict, blank=True)
+    fragrance_profile = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

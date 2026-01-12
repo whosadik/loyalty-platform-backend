@@ -29,17 +29,21 @@ class RoutineGenerateView(APIView):
         )
 
         products = list(
-            Product.objects.all().values(
+            Product.objects.filter(category="skincare").values(
                 "id",
                 "name",
                 "brand",
                 "price",
-                "step",
+                "category",
+                "product_type",
                 "actives",
                 "flags",
                 "supported_skin_types",
                 "strength",
                 "in_stock",
+                "concerns",
+                "attrs",
+                "step",
             )
         )
         owned_ids = list(
@@ -83,17 +87,21 @@ class RoutineValidateView(APIView):
         )
 
         products = list(
-            Product.objects.all().values(
+            Product.objects.filter(category="skincare").values(
                 "id",
                 "name",
                 "brand",
                 "price",
-                "step",
+                "category",
+                "product_type",
                 "actives",
                 "flags",
                 "supported_skin_types",
                 "strength",
                 "in_stock",
+                "concerns",
+                "attrs",
+                "step",
             )
         )
 

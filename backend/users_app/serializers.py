@@ -10,6 +10,9 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
             "goals",
             "avoid_flags",
             "budget",
+            "hair_profile",
+            "makeup_profile",
+            "fragrance_profile",
             "created_at",
             "updated_at",
         ]

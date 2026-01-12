@@ -15,8 +15,10 @@ class Profile:
 
 
 def _fits_profile(product: dict[str, Any], profile: Profile) -> bool:
-    # skin type filter
-    if profile.skin_type and profile.skin_type not in (product.get("supported_skin_types") or []):
+    # skin type filter:
+    # пустой supported_skin_types => подходит всем
+    supported = product.get("supported_skin_types") or []
+    if supported and profile.skin_type and profile.skin_type not in supported:
         return False
 
     # avoid flags
@@ -37,15 +39,22 @@ def build_routine(
     top_k: int = 3,
     owned_product_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    # группируем по шагам
+    # routine строим только из skincare
+    products = [p for p in products if p.get("category") == "skincare"]
+
+    # группируем по product_type (fallback на step для старых данных)
     by_step: dict[str, list[dict[str, Any]]] = {}
     for p in products:
-        by_step.setdefault(p["step"], []).append(p)
+        key = p.get("product_type") or p.get("step")
+        if not key:
+            continue
+        by_step.setdefault(key, []).append(p)
 
     def pick_for_step(step: str) -> dict[str, Any]:
         candidates = [p for p in by_step.get(step, []) if _fits_profile(p, profile)]
+
         owned_set = set(owned_product_ids or [])
-        owned_candidates = [p for p in candidates if p["id"] in owned_set]
+        owned_candidates = [p for p in candidates if p.get("id") in owned_set]
         if owned_candidates:
             chosen = owned_candidates[0]
             return {
@@ -78,8 +87,10 @@ def build_routine(
                 "suggestions": [c["id"] for c in candidates[:top_k]],
             }
 
-        # если не нашли — предложим что есть (без фильтра skin_type) но с avoid_flags
-        fallback = [p for p in by_step.get(step, []) if not set(p.get("flags") or []).intersection(profile.avoid_flags)]
+        fallback = [
+            p for p in by_step.get(step, [])
+            if not set(p.get("flags") or []).intersection(profile.avoid_flags)
+        ]
         fallback.sort(key=lambda x: (x.get("price") is None, x.get("price", 0)))
 
         return {
@@ -95,7 +106,6 @@ def build_routine(
     pm = [pick_for_step(s) for s in PM_STEPS]
 
     notes = []
-    # простое правило: если в PM есть активы, напомнить про SPF
     pm_actives = []
     for item in pm:
         prod = item.get("product") or {}
