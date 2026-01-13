@@ -52,6 +52,7 @@ INSTALLED_APPS = [
     "analytics_app",
     "drf_spectacular",
     "recs_app",
+    "checkout_app",
 ]
 
 REST_FRAMEWORK = {
