@@ -153,8 +153,16 @@ def _pick_target_for_offer(user, offer_obj, now, context_steps: list[str] | None
         co=co,
     )
     if recs:
-        p = recs[0]["product"]
-        return {"scope": "product_id", "value": p["id"], "category": p["category"], "product_type": p["product_type"]}
+        top = recs[0]
+        p = top["product"]
+        return {
+            "scope": "product_id",
+            "value": p["id"],
+            "category": p["category"],
+            "product_type": p["product_type"],
+            "rec_score": top.get("score"),
+            "rec_why": top.get("why", [])[:5],
+        }
 
     # если рекомендаций нет — деградируем до product_type/category
     if product_type:
@@ -243,14 +251,14 @@ class MeNextOfferView(APIView):
                 missing_steps.append(item.get("step"))
 
         picked = pick_next_offer(
-        rfm=rfm,
-        segment_name=seg,
-        offers=offers,
-        last_assignment_days_ago=last_days_ago,
-        budget_left=budget_left,
-        context_steps=missing_steps or None,
-        owned_steps=owned_steps_list,
-    )
+            rfm=rfm,
+            segment_name=seg,
+            offers=offers,
+            last_assignment_days_ago=last_days_ago,
+            budget_left=budget_left,
+            context_steps=missing_steps or None,
+            owned_steps=owned_steps_list,
+        )
 
         if picked is None:
             return Response({"offer": None, "reason": {"segment": seg, "message": "No eligible offers"}})
@@ -284,7 +292,7 @@ class MeNextOfferView(APIView):
                     "estimated_cost": str(offer_obj.estimated_cost),
                     "target": assignment.target,
                 },
-                "reason": picked["reason"],
+                "reason": assignment.reason,
             }
         )
 
@@ -349,8 +357,6 @@ class RedeemOfferView(APIView):
             account = _recalculate_tier(request.user, now)
             points_rate = float(account.tier.points_rate) if account.tier else 1.0
 
-            base_points = int(round(float(txn.total_amount) * points_rate))
-
             discount_amount = 0.0
             multiplier = 1.0
 
@@ -372,7 +378,8 @@ class RedeemOfferView(APIView):
             elif assignment.offer.offer_type == "discount":
                 percent = float(assignment.offer.value)
                 discount_amount = round(eligible_total * (percent / 100.0), 2)
-
+                net_total = max(0.0, float(txn.total_amount) - discount_amount)
+                earned_points = int(round(net_total * points_rate))
 
             # gift: пока только фиксируем факт в meta (без инвентаря)
 

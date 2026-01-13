@@ -280,14 +280,70 @@ def bundle(
     owned_set = set(owned_active_ids or [])
     by_id = {p["id"]: p for p in products}
 
+    base = by_id.get(base_product_id)
+    if not base:
+        return []
+
+    def _sim_score(base_p: dict[str, Any], cand: dict[str, Any]) -> tuple[float, list[str]]:
+        score = 0.0
+        why = []
+
+        # same brand helps
+        bb = (base_p.get("brand") or "").strip()
+        cb = (cand.get("brand") or "").strip()
+        if bb and cb and bb == cb:
+            score += 0.6
+            why.append("same brand")
+
+        cat = base_p.get("category")
+        ba = base_p.get("attrs") or {}
+        ca = cand.get("attrs") or {}
+
+        # category-specific similarity
+        if cat == "fragrance":
+            if ca.get("scent_family") and ca.get("scent_family") == ba.get("scent_family"):
+                score += 1.0
+                why.append(f"same scent_family={ca.get('scent_family')}")
+            overlap = set(ca.get("notes") or []).intersection(set(ba.get("notes") or []))
+            if overlap:
+                score += 0.2 * len(overlap)
+                why.append(f"overlapping notes: {sorted(list(overlap))}")
+
+        elif cat == "makeup":
+            # “bundle” чаще комплементарный, чем одинаковый тип
+            if cand.get("product_type") != base_p.get("product_type"):
+                score += 0.4
+                why.append("complements your item")
+            if ca.get("finish") and ba.get("finish") and ca["finish"] == ba["finish"]:
+                score += 0.3
+                why.append(f"same finish={ca['finish']}")
+
+        elif cat == "haircare":
+            for k in ["hair_type", "scalp_type", "hair_thickness"]:
+                if ca.get(k) and ba.get(k) and ca[k] == ba[k]:
+                    score += 0.4
+                    why.append(f"matches {k}={ca[k]}")
+
+        elif cat == "skincare":
+            # shared concerns is meaningful
+            bc = set(base_p.get("concerns") or [])
+            cc = set(cand.get("concerns") or [])
+            inter = bc.intersection(cc)
+            if inter:
+                score += 0.3 * len(inter)
+                why.append(f"similar concerns: {sorted(list(inter))}")
+
+        return score, why
+
+    # --- 1) take co-occurrence top first ---
     related = co.get(base_product_id, {})
     ranked = sorted(related.items(), key=lambda kv: kv[1], reverse=True)
 
-    out = []
+    out: list[dict[str, Any]] = []
+    used_ids = {base_product_id}
+
     for pid, cnt in ranked:
-        if pid == base_product_id:
-            continue
-        if pid in owned_set:
+        if pid in used_ids or pid in owned_set:
             continue
         p = by_id.get(pid)
         if not p:
@@ -299,10 +355,50 @@ def bundle(
             {
                 "product": p,
                 "score": float(cnt),
-                "components": {"cooccurrence": int(cnt)},
+                "components": {"mode": "cooccurrence", "cooccurrence": int(cnt)},
                 "why": [f"frequently purchased with product_id={base_product_id} (count={cnt})"],
             }
         )
+        used_ids.add(pid)
+        if len(out) >= limit:
+            return out
+
+    # --- 2) fallback fill to limit ---
+    base_cat = base.get("category")
+    fallback_candidates = []
+
+    for p in products:
+        pid = p["id"]
+        if pid in used_ids or pid in owned_set:
+            continue
+        if p.get("category") != base_cat:
+            continue
+        if not _passes_global_filters(p, prof):
+            continue
+
+        sim, sim_why = _sim_score(base, p)
+        c_score, why_c = content_score(p, prof)
+        if c_score < -1e8:
+            continue
+
+        total = sim + 0.5 * c_score
+        why = ["no/weak co-occurrence yet; showing similar items"]
+        why.extend(sim_why[:3])
+        why.extend(why_c[:3])
+
+        fallback_candidates.append(
+            {
+                "product": p,
+                "score": round(total, 6),
+                "components": {"mode": "fallback", "similarity": round(sim, 6), "content": round(c_score, 6)},
+                "why": why[:8],
+            }
+        )
+
+    fallback_candidates.sort(key=lambda x: x["score"], reverse=True)
+    for r in fallback_candidates:
+        out.append(r)
         if len(out) >= limit:
             break
+
     return out
