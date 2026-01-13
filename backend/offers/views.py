@@ -1,19 +1,26 @@
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 
 from django.db import transaction as db_tx
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from transactions.models import OwnedProduct, Transaction
+from catalog.models import Product
+from users_app.models import CustomerProfile
+from transactions.models import OwnedProduct, Transaction, TransactionItem
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from .models import Offer, OfferAssignment, CampaignBudget
 from .serializers import RedeemOfferRequestSerializer
 
 from ml_logic.next_best_reward import compute_rfm, segment, pick_next_offer
 from ml_logic.routine_builder import Profile, build_routine
-from users_app.models import CustomerProfile
-from catalog.models import Product
+from ml_logic.recommender import (
+    UserProfile as RecUserProfile,
+    recommend as rec_recommend,
+    build_cooccurrence,
+)
+
 
 
 def _ensure_loyalty_account(user):
@@ -49,6 +56,110 @@ def _recalculate_tier(user, now):
         account.save(update_fields=["tier"])
 
     return account
+
+def _load_products_for_recs():
+    return list(
+        Product.objects.all().values(
+            "id","name","brand","price",
+            "category","product_type",
+            "concerns","attrs",
+            "actives","flags","supported_skin_types","strength","in_stock"
+        )
+    )
+
+def _cooccurrence_90d(now):
+    since = now - timedelta(days=90)
+    items = (
+        TransactionItem.objects
+        .filter(transaction__created_at__gte=since)
+        .values("transaction_id", "product_id")
+    )
+    txn_map = defaultdict(list)
+    for row in items:
+        txn_map[row["transaction_id"]].append(row["product_id"])
+    return build_cooccurrence(list(txn_map.values()))
+
+def _build_rec_profile(cp: CustomerProfile) -> RecUserProfile:
+    return RecUserProfile(
+        skin_type=cp.skin_type,
+        goals=cp.goals or [],
+        avoid_flags=cp.avoid_flags or [],
+        budget=cp.budget,
+        hair=cp.hair_profile or {},
+        makeup=cp.makeup_profile or {},
+        fragrance=cp.fragrance_profile or {},
+    )
+
+def _pick_target_for_offer(user, offer_obj, now, context_steps: list[str] | None):
+    """
+    Возвращает dict target для OfferAssignment.
+    """
+    # 1) если рутина подсказала missing шаги — это самый сильный контекст
+    if context_steps:
+        if "spf" in context_steps and ("skincare" in (offer_obj.allowed_categories or []) or not offer_obj.allowed_categories):
+            return {"scope": "product_type", "value": "spf", "category": "skincare"}
+
+    # 2) если у оффера явно ограничены категории/типы — используем их
+    allowed_cats = offer_obj.allowed_categories or []
+    allowed_pts = offer_obj.allowed_product_types or []
+
+    # 3) иначе выбираем категорию по профилю (минимально)
+    cp, _ = CustomerProfile.objects.get_or_create(user=user)
+    prof = _build_rec_profile(cp)
+
+    if not allowed_cats:
+        if (prof.fragrance or {}).get("liked_families") or (prof.fragrance or {}).get("liked_notes"):
+            allowed_cats = ["fragrance"]
+        elif prof.makeup:
+            allowed_cats = ["makeup"]
+        elif prof.hair:
+            allowed_cats = ["haircare"]
+        else:
+            allowed_cats = ["skincare"]
+
+    category = allowed_cats[0]
+    product_type = allowed_pts[0] if allowed_pts else None
+
+    # если scope=cart — таргет не нужен
+    if offer_obj.target_scope == "cart":
+        return {"scope": "cart"}
+
+    # если scope=category / product_type — можно вернуть без конкретного товара
+    if offer_obj.target_scope == "category":
+        return {"scope": "category", "value": category}
+
+    if offer_obj.target_scope == "product_type":
+        if product_type is None:
+            # fallback: любой тип внутри категории
+            product_type = None
+        return {"scope": "product_type", "value": product_type, "category": category}
+
+    # scope=product_id → выберем top recommendation и зафиксируем конкретный товар
+    products = _load_products_for_recs()
+    owned_active_ids = list(
+        OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
+    )
+    co = _cooccurrence_90d(now)
+    context_ids = owned_active_ids[:50]
+
+    recs = rec_recommend(
+        prof=prof,
+        products=products,
+        owned_active_ids=owned_active_ids,
+        context_product_ids=context_ids,
+        category=category,
+        product_type=product_type,
+        limit=1,
+        co=co,
+    )
+    if recs:
+        p = recs[0]["product"]
+        return {"scope": "product_id", "value": p["id"], "category": p["category"], "product_type": p["product_type"]}
+
+    # если рекомендаций нет — деградируем до product_type/category
+    if product_type:
+        return {"scope": "product_type", "value": product_type, "category": category}
+    return {"scope": "category", "value": category}
 
 
 class MeNextOfferView(APIView):
@@ -86,6 +197,9 @@ class MeNextOfferView(APIView):
                 "min_total_spend_90d",
                 "cooldown_days",
                 "allowed_steps",
+                "allowed_categories",
+                "allowed_product_types",
+                "target_scope",
             )
         )
         profile_obj, _ = CustomerProfile.objects.get_or_create(user=user)
@@ -98,9 +212,11 @@ class MeNextOfferView(APIView):
 
         products_for_routine = list(
             Product.objects.all().values(
-                "id", "name", "brand", "price", "step",
-                "actives", "flags", "supported_skin_types",
-                "strength", "in_stock",
+                "id","name","brand","price",
+                "category","product_type","step",
+                "actives","flags","supported_skin_types",
+                "strength","in_stock",
+                "concerns","attrs",
             )
         )
 
@@ -115,9 +231,9 @@ class MeNextOfferView(APIView):
             owned_product_ids=owned_ids,
         )
         owned_steps = set(
-            OwnedProduct.objects.filter(user=user, is_active=True)
+            OwnedProduct.objects.filter(user=user, is_active=True, product__category="skincare")
             .select_related("product")
-            .values_list("product__step", flat=True)
+            .values_list("product__product_type", flat=True)
         )
         owned_steps_list = list(owned_steps)
 
@@ -146,11 +262,12 @@ class MeNextOfferView(APIView):
             cost = float(offer_obj.estimated_cost)
             if float(budget_obj.weekly_spent) + cost > float(budget_obj.weekly_limit):
                 return Response({"offer": None, "reason": {"segment": seg, "message": "Budget exceeded"}})
-
+            target = _pick_target_for_offer(user, offer_obj, now, missing_steps or None)
             assignment = OfferAssignment.objects.create(
                 user=user,
                 offer=offer_obj,
-                reason=picked["reason"],
+                reason=picked["reason"] | {"context_steps": missing_steps or None},
+                target=target,
             )
 
             budget_obj.weekly_spent = float(budget_obj.weekly_spent) + cost
@@ -165,6 +282,7 @@ class MeNextOfferView(APIView):
                     "type": offer_obj.offer_type,
                     "value": str(offer_obj.value),
                     "estimated_cost": str(offer_obj.estimated_cost),
+                    "target": assignment.target,
                 },
                 "reason": picked["reason"],
             }
@@ -198,6 +316,34 @@ class RedeemOfferView(APIView):
                 return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
 
             txn = Transaction.objects.select_for_update().get(id=transaction_id, user=request.user)
+            items = list(txn.items.select_related("product").all())
+
+            target = assignment.target or {"scope": "cart"}
+            scope = target.get("scope", "cart")
+            value = target.get("value")
+
+            def is_eligible_item(it):
+                p = it.product
+                if scope == "cart":
+                    return True
+                if scope == "product_id":
+                    return int(p.id) == int(value)
+                if scope == "category":
+                    return p.category == value
+                if scope == "product_type":
+                    # value может быть None → значит любой тип внутри категории
+                    cat = target.get("category")
+                    if cat and p.category != cat:
+                        return False
+                    if value:
+                        return p.product_type == value
+                    return True
+                return True
+
+            eligible_total = 0.0
+            for it in items:
+                if is_eligible_item(it):
+                    eligible_total += float(it.unit_price) * int(it.quantity)
 
             # Пересчёт tier перед начислением (MVP)
             account = _recalculate_tier(request.user, now)
@@ -208,15 +354,25 @@ class RedeemOfferView(APIView):
             discount_amount = 0.0
             multiplier = 1.0
 
+            # базовые поинты по всему чеку
+            base_points = int(round(float(txn.total_amount) * points_rate))
+            earned_points = base_points
+
             if assignment.offer.offer_type == "points_multiplier":
                 multiplier = float(assignment.offer.value)
 
-            earned_points = int(round(base_points * multiplier))
+                if scope == "cart":
+                    earned_points = int(round(base_points * multiplier))
+                else:
+                    eligible_points = int(round(eligible_total * points_rate))
+                    rest_total = max(0.0, float(txn.total_amount) - eligible_total)
+                    rest_points = int(round(rest_total * points_rate))
+                    earned_points = rest_points + int(round(eligible_points * multiplier))
 
-            # discount оффер: считаем скидку в процентах от total_amount (MVP)
-            if assignment.offer.offer_type == "discount":
-                percent = float(assignment.offer.value)  # например 10 = 10%
-                discount_amount = round(float(txn.total_amount) * (percent / 100.0), 2)
+            elif assignment.offer.offer_type == "discount":
+                percent = float(assignment.offer.value)
+                discount_amount = round(eligible_total * (percent / 100.0), 2)
+
 
             # gift: пока только фиксируем факт в meta (без инвентаря)
 
@@ -235,6 +391,8 @@ class RedeemOfferView(APIView):
                     "multiplier": multiplier,
                     "offer_type": assignment.offer.offer_type,
                     "discount_amount": discount_amount,
+                    "target": target,
+                    "eligible_total": eligible_total,
                 },
             )
 
@@ -254,3 +412,31 @@ class RedeemOfferView(APIView):
                 "discount_amount": discount_amount,
             }
         )
+
+class MeOffersView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        now = datetime.now(timezone.utc)
+        qs = OfferAssignment.objects.filter(user=request.user, is_redeemed=False).select_related("offer").order_by("-assigned_at")
+
+        out = []
+        for a in qs[:50]:
+            if a.expires_at and a.expires_at <= now:
+                continue
+            out.append(
+                {
+                    "assignment_id": a.id,
+                    "assigned_at": a.assigned_at,
+                    "expires_at": a.expires_at,
+                    "target": a.target,
+                    "reason": a.reason,
+                    "offer": {
+                        "id": a.offer.id,
+                        "name": a.offer.name,
+                        "type": a.offer.offer_type,
+                        "value": str(a.offer.value),
+                    },
+                }
+            )
+        return Response(out)

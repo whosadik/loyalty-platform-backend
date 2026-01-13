@@ -29,6 +29,20 @@ class Offer(models.Model):
     cooldown_days = models.PositiveIntegerField(default=14)
 
     created_at = models.DateTimeField(auto_now_add=True)
+    allowed_categories = models.JSONField(default=list, blank=True)      # ["makeup","fragrance"]
+    allowed_product_types = models.JSONField(default=list, blank=True)   # ["lipstick","edp"]
+
+    # как применять оффер (если cart — на весь чек)
+    target_scope = models.CharField(
+        max_length=20,
+        choices=[
+            ("cart", "Cart"),
+            ("category", "Category"),
+            ("product_type", "Product type"),
+            ("product_id", "Product"),
+        ],
+        default="cart",
+    )
 
     def __str__(self) -> str:
         return f"{self.name} ({self.offer_type})"
@@ -59,6 +73,6 @@ class OfferAssignment(models.Model):
     reason = models.JSONField(default=dict, blank=True)  # explainability payload
     is_redeemed = models.BooleanField(default=False)
     redeemed_transaction_id = models.IntegerField(null=True, blank=True)
-
+    target = models.JSONField(default=dict, blank=True)  # например {"scope":"product_type","value":"lipstick","category":"makeup"}
     def __str__(self) -> str:
         return f"Assign(user={self.user_id}, offer={self.offer_id}, redeemed={self.is_redeemed})"
