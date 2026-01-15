@@ -1,6 +1,6 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from collections import defaultdict
-
+from django.utils import timezone as dj_timezone
 from django.db import transaction as db_tx
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -20,7 +20,16 @@ from ml_logic.recommender import (
     recommend as rec_recommend,
     build_cooccurrence,
 )
+from decimal import Decimal
+from django.db.models import Sum
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
 
+from catalog.models import Product
+from loyalty.models import LoyaltyAccount, Tier
+from offers.models import OfferAssignment
+from offers.serializers import OfferPreviewRequestSerializer
 
 
 def _ensure_loyalty_account(user):
@@ -89,6 +98,53 @@ def _build_rec_profile(cp: CustomerProfile) -> RecUserProfile:
         makeup=cp.makeup_profile or {},
         fragrance=cp.fragrance_profile or {},
     )
+
+def _compute_rec_explain(user, prof: RecUserProfile, now, category: str, product_type: str | None, strict: bool = False):
+    products = _load_products_for_recs()
+    owned_active_ids = list(
+        OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
+    )
+    co = _cooccurrence_90d(now)
+    context_ids = owned_active_ids[:50]
+
+    recs = rec_recommend(
+        prof=prof,
+        products=products,
+        owned_active_ids=owned_active_ids,
+        context_product_ids=context_ids,
+        category=category,
+        product_type=product_type,
+        limit=1,
+        co=co,
+    )
+
+    # расширяем только если НЕ strict
+    if (not recs) and (not strict) and (product_type is not None):
+        recs = rec_recommend(
+            prof=prof,
+            products=products,
+            owned_active_ids=owned_active_ids,
+            context_product_ids=context_ids,
+            category=category,
+            product_type=None,
+            limit=1,
+            co=co,
+        )
+
+    if recs:
+        top = recs[0]
+        p = top["product"]
+        return {
+            "example_product_id": p["id"],
+            "category": p["category"],
+            "product_type": p["product_type"],
+            "score": top.get("score"),
+            "components": top.get("components", {}),
+            "why": (top.get("why") or [])[:6],
+        }
+
+    return {"why": ["no recommendation candidate after filters"], "category": category, "product_type": product_type}
+
 
 def _pick_target_for_offer(user, offer_obj, now, context_steps: list[str] | None):
     """
@@ -161,7 +217,8 @@ def _pick_target_for_offer(user, offer_obj, now, context_steps: list[str] | None
             "category": p["category"],
             "product_type": p["product_type"],
             "rec_score": top.get("score"),
-            "rec_why": top.get("why", [])[:5],
+            "rec_components": top.get("components", {}),
+            "rec_why": (top.get("why") or [])[:6],
         }
 
     # если рекомендаций нет — деградируем до product_type/category
@@ -175,7 +232,7 @@ class MeNextOfferView(APIView):
 
     def get(self, request):
         user = request.user
-        now = datetime.now(timezone.utc)
+        now = datetime.now(dt_timezone.utc)
 
         txs = list(Transaction.objects.filter(user=user).values("created_at", "total_amount"))
         rfm = compute_rfm(txs, now)
@@ -271,12 +328,43 @@ class MeNextOfferView(APIView):
             if float(budget_obj.weekly_spent) + cost > float(budget_obj.weekly_limit):
                 return Response({"offer": None, "reason": {"segment": seg, "message": "Budget exceeded"}})
             target = _pick_target_for_offer(user, offer_obj, now, missing_steps or None)
+
+            reason = picked["reason"] | {"context_steps": missing_steps or None}
+
+            # строим explain всегда (не влияет на redeem логику)
+            rec_prof = _build_rec_profile(profile_obj)
+
+            if target.get("scope") == "product_id":
+                # если product_id — explain можно взять прямо из target
+                reason["rec_explain"] = {
+                    "example_product_id": target.get("value"),
+                    "category": target.get("category"),
+                    "product_type": target.get("product_type"),
+                    "score": target.get("rec_score"),
+                    "components": target.get("rec_components", {}),
+                    "why": target.get("rec_why", []),
+                }
+            else:
+                # category / product_type / cart — делаем explain отдельно
+                t_cat = target.get("category") or (target.get("value") if target.get("scope") == "category" else None) or "makeup"
+                t_pt = target.get("value") if target.get("scope") == "product_type" else None
+                if target.get("scope") == "cart":
+                    t_cat = "makeup"  # или любая дефолтная
+                    t_pt = None
+                scope = target.get("scope")
+                reason["rec_explain"] = _compute_rec_explain(
+                    user, rec_prof, now, t_cat, t_pt,
+                    strict=(scope == "product_type")
+                )
+
+
             assignment = OfferAssignment.objects.create(
                 user=user,
                 offer=offer_obj,
-                reason=picked["reason"] | {"context_steps": missing_steps or None},
+                reason=reason,
                 target=target,
             )
+
 
             budget_obj.weekly_spent = float(budget_obj.weekly_spent) + cost
             budget_obj.save(update_fields=["weekly_spent"])
@@ -311,7 +399,7 @@ class RedeemOfferView(APIView):
         assignment_id = req.validated_data["assignment_id"]
         transaction_id = req.validated_data["transaction_id"]
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(dt_timezone.utc)
 
         with db_tx.atomic():
             assignment = (
@@ -424,7 +512,7 @@ class MeOffersView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(dt_timezone.utc)
         qs = OfferAssignment.objects.filter(user=request.user, is_redeemed=False).select_related("offer").order_by("-assigned_at")
 
         out = []
@@ -447,3 +535,135 @@ class MeOffersView(APIView):
                 }
             )
         return Response(out)
+
+class OfferPreviewView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        s = OfferPreviewRequestSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        data = s.validated_data
+
+        now = dj_timezone.now()
+
+        assignment = (
+            OfferAssignment.objects.select_related("offer")
+            .get(id=data["assignment_id"], user=request.user)
+        )
+
+        if assignment.is_redeemed:
+            return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
+        if assignment.expires_at and assignment.expires_at <= now:
+            return Response({"ok": False, "message": "Offer expired"}, status=400)
+
+        target = assignment.target or {"scope": "cart"}
+        scope = target.get("scope", "cart")
+        value = target.get("value")
+        cat = target.get("category")
+
+        items = data["items"]
+        product_ids = [it["product"] for it in items]
+        products = Product.objects.in_bulk(product_ids)
+
+        gross_total = Decimal("0")
+        eligible_total = Decimal("0")
+        eligible_item_ids = []
+
+        def is_eligible(prod: Product) -> bool:
+            if scope == "cart":
+                return True
+            if scope == "product_id":
+                return int(prod.id) == int(value)
+            if scope == "category":
+                return prod.category == value
+            if scope == "product_type":
+                if cat and prod.category != cat:
+                    return False
+                if value:
+                    return prod.product_type == value
+                return True
+            return True
+
+        for it in items:
+            pid = it["product"]
+            qty = int(it["quantity"])
+            unit_price = Decimal(str(it["unit_price"]))
+
+            prod = products.get(pid)
+            if not prod:
+                return Response({"ok": False, "message": f"Unknown product_id={pid}"}, status=400)
+
+            line = unit_price * qty
+            gross_total += line
+
+            if is_eligible(prod):
+                eligible_total += line
+                eligible_item_ids.append(pid)
+
+        if scope != "cart" and eligible_total <= 0:
+            return Response(
+                {"ok": False, "message": "No eligible items for this offer in provided items"},
+                status=400,
+            )
+
+        # points_rate from current tier
+        account, _ = LoyaltyAccount.objects.get_or_create(user=request.user)
+        if account.tier_id is None:
+            bronze, _ = Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": 1.0})
+            account.tier = bronze
+            account.save(update_fields=["tier"])
+        points_rate = Decimal(str(account.tier.points_rate if account.tier else 1.0))
+
+        discount_amount = Decimal("0")
+        net_total = gross_total
+        points_multiplier = Decimal("1")
+
+        offer = assignment.offer
+
+        if offer.offer_type == "discount":
+            percent = Decimal(str(offer.value))
+            discount_amount = (eligible_total * (percent / Decimal("100"))).quantize(Decimal("0.01"))
+            net_total = gross_total - discount_amount
+            if net_total < 0:
+                net_total = Decimal("0")
+
+        elif offer.offer_type == "points_multiplier":
+            points_multiplier = Decimal(str(offer.value))
+
+        # estimated points (preview)
+        base_points = int(round(float(net_total * points_rate)))
+        est_points = base_points
+
+        if offer.offer_type == "points_multiplier" and points_multiplier != Decimal("1"):
+            if scope == "cart":
+                est_points = int(round(float(Decimal(base_points) * points_multiplier)))
+            else:
+                eligible_points = int(round(float(eligible_total * points_rate)))
+                rest_total = gross_total - eligible_total
+                if rest_total < 0:
+                    rest_total = Decimal("0")
+                rest_points = int(round(float(rest_total * points_rate)))
+                est_points = rest_points + int(round(float(Decimal(eligible_points) * points_multiplier)))
+
+        return Response(
+            {
+                "ok": True,
+                "assignment_id": assignment.id,
+                "offer": {
+                    "id": offer.id,
+                    "name": offer.name,
+                    "type": offer.offer_type,
+                    "value": str(offer.value),
+                },
+                "target": target,  # тут будет rec_why/rec_score если ты уже добавил
+                "gross_total": str(gross_total),
+                "eligible_total": str(eligible_total),
+                "eligible_item_ids": eligible_item_ids,
+                "discount_amount": str(discount_amount),
+                "net_total": str(net_total),
+                "estimated_points_earned": est_points,
+                "tier": account.tier.name if account.tier else None,
+                "points_rate": str(points_rate),
+                "points_multiplier": str(points_multiplier),
+            }
+        )
