@@ -17,6 +17,7 @@ from transactions.models import Transaction, TransactionItem, OwnedProduct
 from offers.models import OfferAssignment
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from catalog.models import Product
+from offers.services import get_or_assign_next_offer
 
 
 def _ensure_account(user) -> LoyaltyAccount:
@@ -239,6 +240,29 @@ class CheckoutView(APIView):
             account.points_balance += points_earned
             account.save(update_fields=["points_balance"])
 
+                    # Auto-assign next offer after successful checkout
+            next_assignment = get_or_assign_next_offer(
+                user=request.user,
+                now=now,
+                context_steps=None,  # позже можно передавать missing steps из рутины или post-purchase context
+            )
+
+            next_offer_payload = None
+            if next_assignment:
+                next_offer_payload = {
+                    "assignment_id": next_assignment.id,
+                    "offer": {
+                        "id": next_assignment.offer.id,
+                        "name": next_assignment.offer.name,
+                        "type": next_assignment.offer.offer_type,
+                        "value": str(next_assignment.offer.value),
+                        "estimated_cost": str(getattr(next_assignment.offer, "estimated_cost", "")),
+                    },
+                    "target": next_assignment.target,
+                    "reason": next_assignment.reason,
+                    "expires_at": getattr(next_assignment, "expires_at", None),
+                }
+
         return Response(
             {
                 "ok": True,
@@ -254,5 +278,6 @@ class CheckoutView(APIView):
                 "points_earned": points_earned,
                 "new_balance": account.points_balance,
                 "tier": account.tier.name if account.tier else None,
+                "next_offer": next_offer_payload,
             }
         )
