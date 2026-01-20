@@ -118,7 +118,7 @@ def _passes_cooldown(user, offer: Offer, now: datetime) -> bool:
     ).exists()
 
 
-def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: list[str] | None):
+def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: list[str] | None, post_ctx: dict | None):
     # 1) routine-context shortcut
     if context_steps and offer.target_scope in {"product_type", "product_id"}:
         if "spf" in context_steps:
@@ -169,6 +169,69 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
     prof = _build_rec_profile(cp)
+
+    suggestion = _derive_cross_sell_suggestion(post_ctx)
+
+    # если оффер умеет таргетинг не на cart и есть осмысленная подсказка — используем её
+    if suggestion and offer.target_scope in {"category", "product_type", "product_id"}:
+        sug_cat = suggestion["category"]
+        sug_pt = suggestion["product_type"]
+
+        # если offer ограничивает allowed_categories / allowed_product_types — проверяем
+        if offer.allowed_categories and sug_cat not in (offer.allowed_categories or []):
+            suggestion = None
+        if offer.allowed_product_types and sug_pt not in (offer.allowed_product_types or []):
+            # можно деградировать до категории
+            if offer.target_scope == "category":
+                pass
+            else:
+                suggestion = None
+
+    if suggestion:
+        # антиспам по категории
+        if not _passes_category_cooldown(user, suggestion["category"], now, days=3):
+            suggestion = None
+
+    if suggestion:
+        if offer.target_scope == "category":
+            return {"scope": "category", "value": suggestion["category"]}
+        if offer.target_scope == "product_type":
+            return {"scope": "product_type", "value": suggestion["product_type"], "category": suggestion["category"]}
+
+        # product_id → возьмём top recommendation внутри suggested (category, product_type)
+        cp, _ = CustomerProfile.objects.get_or_create(user=user)
+        prof = _build_rec_profile(cp)
+        products = _load_products_for_recs()
+        co = _cooccurrence_90d(now)
+        owned_ids = list(
+            OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
+        )
+
+        recs = rec_recommend(
+            prof=prof,
+            products=products,
+            owned_active_ids=owned_ids,
+            context_product_ids=(post_ctx.get("product_ids") or owned_ids)[:50],
+            category=suggestion["category"],
+            product_type=suggestion["product_type"],
+            limit=1,
+            co=co,
+        )
+        if recs:
+            top = recs[0]
+            p = top["product"]
+            return {
+                "scope": "product_id",
+                "value": p["id"],
+                "category": p["category"],
+                "product_type": p["product_type"],
+                "rec_score": top.get("score"),
+                "rec_components": top.get("components", {}),
+                "rec_why": (top.get("why") or [])[:6],
+            }
+
+        # если рекомендаций нет — деградируем
+        return {"scope": "product_type", "value": suggestion["product_type"], "category": suggestion["category"]}
 
     # fallback category choice based on filled profiles
     if not allowed_cats:
@@ -224,6 +287,56 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
         return {"scope": "product_type", "value": product_type, "category": category}
     return {"scope": "category", "value": category}
 
+def _derive_cross_sell_suggestion(post_ctx: dict | None) -> dict | None:
+    """
+    Возвращает желаемый target вида:
+    {"category": "...", "product_type": "..."} или None.
+    """
+    if not post_ctx:
+        return None
+
+    cats = set(post_ctx.get("categories") or [])
+    pts = set(post_ctx.get("product_types") or [])
+
+    # FRAGRANCE
+    if "fragrance" in cats:
+        if "edp" in pts or "edt" in pts:
+            return {"category": "fragrance", "product_type": "body_mist"}
+
+    # HAIRCARE
+    if "haircare" in cats:
+        if "shampoo" in pts:
+            return {"category": "haircare", "product_type": "conditioner"}
+        if "conditioner" in pts:
+            return {"category": "haircare", "product_type": "hair_mask"}
+
+    # MAKEUP
+    if "makeup" in cats:
+        if "foundation" in pts:
+            # комплементарные типы
+            return {"category": "makeup", "product_type": "mascara"}
+        if "lipstick" in pts:
+            return {"category": "makeup", "product_type": "blush"}
+        if "mascara" in pts:
+            return {"category": "makeup", "product_type": "eyeshadow"}
+
+    # SKINCARE
+    if "skincare" in cats:
+        if "serum" in pts or "cleanser" in pts:
+            return {"category": "skincare", "product_type": "moisturizer"}
+        if "moisturizer" in pts:
+            return {"category": "skincare", "product_type": "spf"}
+
+    return None
+
+def _passes_category_cooldown(user, category: str, now: datetime, days: int = 3) -> bool:
+    since = now - timedelta(days=days)
+    # target — JSONField, Postgres умеет target__category
+    return not OfferAssignment.objects.filter(
+        user=user,
+        assigned_at__gte=since,
+        target__category=category,
+    ).exists()
 
 def _select_offer(user, now: datetime, context_steps: list[str] | None):
     # Pick best offer under: is_active + cooldown + budget.
@@ -278,7 +391,12 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None):
     }
 
 
-def get_or_assign_next_offer(user, now: datetime, context_steps: list[str] | None = None) -> OfferAssignment | None:
+def get_or_assign_next_offer(
+    user,
+    now: datetime,
+    context_steps: list[str] | None = None,
+    post_ctx: dict | None = None,
+) -> OfferAssignment | None:
     """
     Returns existing active assignment if present, else creates a new one.
     Must be called inside an atomic block if you want strict budget consistency.
@@ -297,8 +415,11 @@ def get_or_assign_next_offer(user, now: datetime, context_steps: list[str] | Non
     offer, reason = _select_offer(user, now, context_steps)
     if not offer:
         return None
+    
+    if post_ctx:
+        reason = {**(reason or {}), "post_purchase": {"categories": post_ctx.get("categories"), "product_types": post_ctx.get("product_types")}}
 
-    target = _pick_target_for_offer(user, offer, now, context_steps)
+    target = _pick_target_for_offer(user, offer, now, context_steps, post_ctx)
 
     # 3) create assignment and spend budget
     budget = _get_budget_locked(now)

@@ -239,12 +239,22 @@ class CheckoutView(APIView):
 
             account.points_balance += points_earned
             account.save(update_fields=["points_balance"])
+            purchased_categories = sorted(list({it.product.category for it in created_items}))
+            purchased_types = sorted(list({it.product.product_type for it in created_items}))
+            purchased_ids = [it.product_id for it in created_items]
 
-                    # Auto-assign next offer after successful checkout
+            post_ctx = {
+                "categories": purchased_categories,
+                "product_types": purchased_types,
+                "product_ids": purchased_ids,
+            }
+
+            # Auto-assign next offer after successful checkout
             next_assignment = get_or_assign_next_offer(
                 user=request.user,
                 now=now,
-                context_steps=None,  # позже можно передавать missing steps из рутины или post-purchase context
+                context_steps=None,
+                post_ctx=post_ctx,
             )
 
             next_offer_payload = None
