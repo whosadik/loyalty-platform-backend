@@ -14,13 +14,13 @@ from transactions.models import Transaction, TransactionItem, OwnedProduct
 from users_app.models import CustomerProfile
 from offers.models import Offer, OfferAssignment, CampaignBudget
 
-from ml_logic.next_best_reward import segment  # compute_rfm можно не трогать
+from ml_logic.next_best_reward import RFM, segment  # compute_rfm можно не трогать
 from ml_logic.recommender import (
     UserProfile as RecUserProfile,
     recommend as rec_recommend,
     build_cooccurrence,
 )
-
+from django.db.models import Count
 
 def _week_start(d: datetime) -> datetime.date:
     # Monday as week start
@@ -117,6 +117,30 @@ def _passes_cooldown(user, offer: Offer, now: datetime) -> bool:
         user=user, offer=offer, is_redeemed=True, assigned_at__gte=since
     ).exists()
 
+# Порог "уже достаточно" по категориям (MVP)
+SATURATION_LIMITS = {
+    "makeup": 3,      # 3+ товаров одного product_type (например mascara) = хватит
+    "skincare": 2,
+    "haircare": 2,
+    "fragrance": 2,
+}
+
+
+def _owned_type_count(user, category: str, product_type: str) -> int:
+    return (
+        OwnedProduct.objects.filter(
+            user=user,
+            is_active=True,
+            product__category=category,
+            product__product_type=product_type,
+        )
+        .count()
+    )
+
+
+def _is_saturated(user, category: str, product_type: str) -> bool:
+    limit = SATURATION_LIMITS.get(category, 2)
+    return _owned_type_count(user, category, product_type) >= limit
 
 def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: list[str] | None, post_ctx: dict | None):
     # 1) routine-context shortcut
@@ -170,68 +194,76 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
     prof = _build_rec_profile(cp)
 
-    suggestion = _derive_cross_sell_suggestion(post_ctx)
+    suggestions = _derive_cross_sell_suggestions(post_ctx)
 
-    # если оффер умеет таргетинг не на cart и есть осмысленная подсказка — используем её
-    if suggestion and offer.target_scope in {"category", "product_type", "product_id"}:
-        sug_cat = suggestion["category"]
-        sug_pt = suggestion["product_type"]
-
-        # если offer ограничивает allowed_categories / allowed_product_types — проверяем
-        if offer.allowed_categories and sug_cat not in (offer.allowed_categories or []):
-            suggestion = None
-        if offer.allowed_product_types and sug_pt not in (offer.allowed_product_types or []):
-            # можно деградировать до категории
+    # если offer ограничивает allowed_categories/types — отфильтруем кандидаты
+    filtered = []
+    for s in suggestions:
+        if offer.allowed_categories and s["category"] not in (offer.allowed_categories or []):
+            continue
+        if offer.allowed_product_types and s["product_type"] not in (offer.allowed_product_types or []):
+            # если offer scope=category — можно оставить кандидата по категории
             if offer.target_scope == "category":
                 pass
             else:
-                suggestion = None
+                continue
+        filtered.append(s)
 
-    if suggestion:
+    # теперь перебираем по приоритету
+    for s in filtered:
+        cat = s["category"]
+        pt = s["product_type"]
+
         # антиспам по категории
-        if not _passes_category_cooldown(user, suggestion["category"], now, days=3):
-            suggestion = None
+        if not _passes_category_cooldown(user, cat, now, days=3):
+            continue
 
-    if suggestion:
+        # saturation: если этого типа уже достаточно — пропускаем
+        if _is_saturated(user, cat, pt):
+            continue
+
+        # применяем target в зависимости от scope
         if offer.target_scope == "category":
-            return {"scope": "category", "value": suggestion["category"]}
+            return {"scope": "category", "value": cat, "picked_via": "post_purchase_rules"}
+
         if offer.target_scope == "product_type":
-            return {"scope": "product_type", "value": suggestion["product_type"], "category": suggestion["category"]}
+            return {"scope": "product_type", "value": pt, "category": cat, "picked_via": "post_purchase_rules"}
 
-        # product_id → возьмём top recommendation внутри suggested (category, product_type)
-        cp, _ = CustomerProfile.objects.get_or_create(user=user)
-        prof = _build_rec_profile(cp)
-        products = _load_products_for_recs()
-        co = _cooccurrence_90d(now)
-        owned_ids = list(
-            OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
-        )
+        if offer.target_scope == "product_id":
+            cp, _ = CustomerProfile.objects.get_or_create(user=user)
+            prof = _build_rec_profile(cp)
+            products = _load_products_for_recs()
+            co = _cooccurrence_90d(now)
+            owned_ids = list(
+                OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
+            )
 
-        recs = rec_recommend(
-            prof=prof,
-            products=products,
-            owned_active_ids=owned_ids,
-            context_product_ids=(post_ctx.get("product_ids") or owned_ids)[:50],
-            category=suggestion["category"],
-            product_type=suggestion["product_type"],
-            limit=1,
-            co=co,
-        )
-        if recs:
-            top = recs[0]
-            p = top["product"]
-            return {
-                "scope": "product_id",
-                "value": p["id"],
-                "category": p["category"],
-                "product_type": p["product_type"],
-                "rec_score": top.get("score"),
-                "rec_components": top.get("components", {}),
-                "rec_why": (top.get("why") or [])[:6],
-            }
+            recs = rec_recommend(
+                prof=prof,
+                products=products,
+                owned_active_ids=owned_ids,
+                context_product_ids=(post_ctx.get("product_ids") or owned_ids)[:50],
+                category=cat,
+                product_type=pt,
+                limit=1,
+                co=co,
+            )
+            if recs:
+                top = recs[0]
+                p = top["product"]
+                return {
+                    "scope": "product_id",
+                    "value": p["id"],
+                    "category": p["category"],
+                    "product_type": p["product_type"],
+                    "rec_score": top.get("score"),
+                    "rec_components": top.get("components", {}),
+                    "rec_why": (top.get("why") or [])[:6],
+                    "picked_via": "post_purchase_rules+recs",
+                }
 
-        # если рекомендаций нет — деградируем
-        return {"scope": "product_type", "value": suggestion["product_type"], "category": suggestion["category"]}
+            # если реков нет — деградируем до product_type
+            return {"scope": "product_type", "value": pt, "category": cat, "picked_via": "post_purchase_rules_fallback"}
 
     # fallback category choice based on filled profiles
     if not allowed_cats:
@@ -287,47 +319,78 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
         return {"scope": "product_type", "value": product_type, "category": category}
     return {"scope": "category", "value": category}
 
-def _derive_cross_sell_suggestion(post_ctx: dict | None) -> dict | None:
+def _derive_cross_sell_suggestions(post_ctx: dict | None) -> list[dict]:
     """
-    Возвращает желаемый target вида:
-    {"category": "...", "product_type": "..."} или None.
+    Возвращает список желаемых целей (по приоритету):
+    [{"category": "...", "product_type": "..."}, ...]
     """
     if not post_ctx:
-        return None
+        return []
 
     cats = set(post_ctx.get("categories") or [])
     pts = set(post_ctx.get("product_types") or [])
 
+    out: list[dict] = []
+
     # FRAGRANCE
     if "fragrance" in cats:
         if "edp" in pts or "edt" in pts:
-            return {"category": "fragrance", "product_type": "body_mist"}
+            out += [
+                {"category": "fragrance", "product_type": "body_mist"},
+                {"category": "fragrance", "product_type": "edt"},
+            ]
 
     # HAIRCARE
     if "haircare" in cats:
         if "shampoo" in pts:
-            return {"category": "haircare", "product_type": "conditioner"}
+            out += [
+                {"category": "haircare", "product_type": "conditioner"},
+                {"category": "haircare", "product_type": "hair_mask"},
+            ]
         if "conditioner" in pts:
-            return {"category": "haircare", "product_type": "hair_mask"}
+            out += [
+                {"category": "haircare", "product_type": "hair_mask"},
+                {"category": "haircare", "product_type": "hair_oil"},
+            ]
 
     # MAKEUP
     if "makeup" in cats:
         if "foundation" in pts:
-            # комплементарные типы
-            return {"category": "makeup", "product_type": "mascara"}
+            out += [
+                {"category": "makeup", "product_type": "mascara"},
+                {"category": "makeup", "product_type": "lipstick"},
+                {"category": "makeup", "product_type": "blush"},
+            ]
         if "lipstick" in pts:
-            return {"category": "makeup", "product_type": "blush"}
+            out += [
+                {"category": "makeup", "product_type": "blush"},
+                {"category": "makeup", "product_type": "eyeshadow"},
+            ]
         if "mascara" in pts:
-            return {"category": "makeup", "product_type": "eyeshadow"}
+            out += [
+                {"category": "makeup", "product_type": "eyeshadow"},
+                {"category": "makeup", "product_type": "blush"},
+            ]
 
     # SKINCARE
     if "skincare" in cats:
         if "serum" in pts or "cleanser" in pts:
-            return {"category": "skincare", "product_type": "moisturizer"}
+            out += [
+                {"category": "skincare", "product_type": "moisturizer"},
+                {"category": "skincare", "product_type": "spf"},
+            ]
         if "moisturizer" in pts:
-            return {"category": "skincare", "product_type": "spf"}
+            out += [{"category": "skincare", "product_type": "spf"}]
 
-    return None
+    # Удалим дубли, сохраним порядок
+    uniq = []
+    seen = set()
+    for x in out:
+        key = (x["category"], x["product_type"])
+        if key not in seen:
+            seen.add(key)
+            uniq.append(x)
+    return uniq
 
 def _passes_category_cooldown(user, category: str, now: datetime, days: int = 3) -> bool:
     since = now - timedelta(days=days)
@@ -350,7 +413,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None):
 
     # segment from RFM
     rfm = _rfm(user, now)
-    seg = segment(rfm)
+    seg = segment(RFM(**rfm))
 
     for o in offers:
         cost = Decimal(str(getattr(o, "estimated_cost", 0) or 0))
@@ -417,7 +480,13 @@ def get_or_assign_next_offer(
         return None
     
     if post_ctx:
-        reason = {**(reason or {}), "post_purchase": {"categories": post_ctx.get("categories"), "product_types": post_ctx.get("product_types")}}
+        reason = {
+            **(reason or {}),
+            "post_purchase": {
+                "categories": post_ctx.get("categories"),
+                "product_types": post_ctx.get("product_types"),
+            },
+        }
 
     target = _pick_target_for_offer(user, offer, now, context_steps, post_ctx)
 
