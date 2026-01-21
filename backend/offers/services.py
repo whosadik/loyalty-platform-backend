@@ -13,6 +13,7 @@ from catalog.models import Product
 from transactions.models import Transaction, TransactionItem, OwnedProduct
 from users_app.models import CustomerProfile
 from offers.models import Offer, OfferAssignment, CampaignBudget
+from ml_logic.recommender import bundle as rec_bundle
 
 from ml_logic.next_best_reward import RFM, segment  # compute_rfm можно не трогать
 from ml_logic.recommender import (
@@ -186,6 +187,16 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
     # 2) if cart
     if offer.target_scope == "cart":
         return {"scope": "cart"}
+    
+    # ---- Bundle-driven target (post-purchase) ----
+    if post_ctx and offer.target_scope == "product_id":
+        # если offer говорит, что целимся в конкретную категорию — учтём
+        allowed_cats = offer.allowed_categories or []
+        bundle_cat = allowed_cats[0] if allowed_cats else None
+
+        t = _pick_product_from_bundle(user, now, post_ctx, category=bundle_cat)
+        if t:
+            return t
 
     # 3) explicit restrictions
     allowed_cats = offer.allowed_categories or []
@@ -489,6 +500,16 @@ def get_or_assign_next_offer(
         }
 
     target = _pick_target_for_offer(user, offer, now, context_steps, post_ctx)
+    # если таргет выбран через bundle — обогащаем reason объяснением
+    if isinstance(target, dict) and target.get("picked_via") == "bundle":
+        reason = {
+            **(reason or {}),
+            "bundle": {
+                "based_on_product_id": target.get("based_on_product_id"),
+                "mode": target.get("bundle_mode"),
+                "why": target.get("bundle_why"),
+            },
+        }
 
     # 3) create assignment and spend budget
     budget = _get_budget_locked(now)
@@ -506,3 +527,58 @@ def get_or_assign_next_offer(
         **({"expires_at": expires_at} if hasattr(OfferAssignment, "expires_at") else {}),
     )
     return assignment
+
+def _pick_product_from_bundle(user, now: datetime, post_ctx: dict, category: str | None = None):
+    """
+    Возвращает target dict для product_id на основе bundle(cooc+fallback).
+    """
+    product_ids = post_ctx.get("product_ids") or []
+    if not product_ids:
+        return None
+
+    cp, _ = CustomerProfile.objects.get_or_create(user=user)
+    prof = _build_rec_profile(cp)
+
+    products = _load_products_for_recs()
+    co = _cooccurrence_90d(now)
+
+    owned_ids = list(
+        OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
+    )
+    owned_set = set(owned_ids)
+
+    # попробуем по 3 последним купленным товарам
+    for base_id in list(product_ids)[-3:][::-1]:
+        res = rec_bundle(
+            products=products,
+            base_product_id=int(base_id),
+            owned_active_ids=owned_ids,
+            prof=prof,
+            co=co,
+            limit=20,
+        )
+        # фильтры: category (если задана), saturation, in_stock уже учтён
+        for r in res:
+            p = r["product"]
+            if p["id"] in owned_set:
+                continue
+            if category and p.get("category") != category:
+                continue
+            # saturation by product_type
+            if _is_saturated(user, p["category"], p["product_type"]):
+                continue
+
+            return {
+                "scope": "product_id",
+                "value": p["id"],
+                "category": p["category"],
+                "product_type": p["product_type"],
+                "bundle_mode": r.get("components", {}).get("mode"),
+                "bundle_score": r.get("score"),
+                "bundle_components": r.get("components", {}),
+                "bundle_why": (r.get("why") or [])[:6],
+                "picked_via": "bundle",
+                "based_on_product_id": int(base_id),
+            }
+
+    return None
