@@ -21,15 +21,10 @@ from ml_logic.recommender import (
     build_cooccurrence,
 )
 from decimal import Decimal
-from django.db.models import Sum
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from .models import OfferAssignment
+from .serializers import OfferPreviewRequestSerializer
 
-from catalog.models import Product
-from loyalty.models import LoyaltyAccount, Tier
-from offers.models import OfferAssignment
-from offers.serializers import OfferPreviewRequestSerializer
+from checkout_app.pricing import Line, apply_offer_to_totals
 
 
 def _ensure_loyalty_account(user):
@@ -415,62 +410,32 @@ class RedeemOfferView(APIView):
             items = list(txn.items.select_related("product").all())
 
             target = assignment.target or {"scope": "cart"}
-            scope = target.get("scope", "cart")
-            value = target.get("value")
-
-            def is_eligible_item(it):
-                p = it.product
-                if scope == "cart":
-                    return True
-                if scope == "product_id":
-                    return int(p.id) == int(value)
-                if scope == "category":
-                    return p.category == value
-                if scope == "product_type":
-                    # value может быть None → значит любой тип внутри категории
-                    cat = target.get("category")
-                    if cat and p.category != cat:
-                        return False
-                    if value:
-                        return p.product_type == value
-                    return True
-                return True
-
-            eligible_total = 0.0
-            for it in items:
-                if is_eligible_item(it):
-                    eligible_total += float(it.unit_price) * int(it.quantity)
-
+            
             # Пересчёт tier перед начислением (MVP)
             account = _recalculate_tier(request.user, now)
-            points_rate = float(account.tier.points_rate) if account.tier else 1.0
+            points_rate = Decimal(str(account.tier.points_rate if account.tier else 1.0))
 
-            discount_amount = 0.0
-            multiplier = 1.0
+            lines = [
+                Line(product=it.product, quantity=int(it.quantity), unit_price=Decimal(str(it.unit_price)))
+                for it in items
+            ]
 
-            # базовые поинты по всему чеку
-            base_points = int(round(float(txn.total_amount) * points_rate))
-            earned_points = base_points
+            calc = apply_offer_to_totals(
+                offer_type=assignment.offer.offer_type,
+                offer_value=Decimal(str(assignment.offer.value)),
+                target=target,
+                lines=lines,
+                points_rate=points_rate,
+            )
 
-            if assignment.offer.offer_type == "points_multiplier":
-                multiplier = float(assignment.offer.value)
+            if not calc["ok"]:
+                return Response({"ok": False, "message": calc.get("message", "Offer not applicable")}, status=400)
 
-                if scope == "cart":
-                    earned_points = int(round(base_points * multiplier))
-                else:
-                    eligible_points = int(round(eligible_total * points_rate))
-                    rest_total = max(0.0, float(txn.total_amount) - eligible_total)
-                    rest_points = int(round(rest_total * points_rate))
-                    earned_points = rest_points + int(round(eligible_points * multiplier))
-
-            elif assignment.offer.offer_type == "discount":
-                percent = float(assignment.offer.value)
-                discount_amount = round(eligible_total * (percent / 100.0), 2)
-                net_total = max(0.0, float(txn.total_amount) - discount_amount)
-                earned_points = int(round(net_total * points_rate))
-
-            # gift: пока только фиксируем факт в meta (без инвентаря)
-
+            discount_amount = Decimal(str(calc["discount_amount"]))
+            eligible_total = Decimal(str(calc["eligible_total"]))
+            base_points = int(calc["base_points"])
+            earned_points = int(calc["estimated_points_earned"])
+            multiplier = Decimal(str(calc["points_multiplier"]))
 
             # Пишем ledger
             LoyaltyLedgerEntry.objects.create(
@@ -481,13 +446,13 @@ class RedeemOfferView(APIView):
                 meta={
                     "txn_total": str(txn.total_amount),
                     "tier": account.tier.name if account.tier else None,
-                    "points_rate": points_rate,
+                    "points_rate": str(points_rate),
                     "base_points": base_points,
-                    "multiplier": multiplier,
+                    "multiplier": str(multiplier),
                     "offer_type": assignment.offer.offer_type,
-                    "discount_amount": discount_amount,
+                    "discount_amount": str(discount_amount),
                     "target": target,
-                    "eligible_total": eligible_total,
+                    "eligible_total": str(eligible_total),
                 },
             )
 
@@ -504,7 +469,7 @@ class RedeemOfferView(APIView):
                 "earned_points": earned_points,
                 "new_balance": account.points_balance,
                 "tier": account.tier.name if account.tier else None,
-                "discount_amount": discount_amount,
+                "discount_amount": str(discount_amount),
             }
         )
 
@@ -544,11 +509,10 @@ class OfferPreviewView(APIView):
         s.is_valid(raise_exception=True)
         data = s.validated_data
 
-        now = dj_timezone.now()
+        now = datetime.now(dt_timezone.utc)
 
-        assignment = (
-            OfferAssignment.objects.select_related("offer")
-            .get(id=data["assignment_id"], user=request.user)
+        assignment = OfferAssignment.objects.select_related("offer").get(
+            id=data["assignment_id"], user=request.user
         )
 
         if assignment.is_redeemed:
@@ -557,113 +521,61 @@ class OfferPreviewView(APIView):
             return Response({"ok": False, "message": "Offer expired"}, status=400)
 
         target = assignment.target or {"scope": "cart"}
-        scope = target.get("scope", "cart")
-        value = target.get("value")
-        cat = target.get("category")
 
         items = data["items"]
         product_ids = [it["product"] for it in items]
         products = Product.objects.in_bulk(product_ids)
 
-        gross_total = Decimal("0")
-        eligible_total = Decimal("0")
-        eligible_item_ids = []
-
-        def is_eligible(prod: Product) -> bool:
-            if scope == "cart":
-                return True
-            if scope == "product_id":
-                return int(prod.id) == int(value)
-            if scope == "category":
-                return prod.category == value
-            if scope == "product_type":
-                if cat and prod.category != cat:
-                    return False
-                if value:
-                    return prod.product_type == value
-                return True
-            return True
-
+        lines = []
         for it in items:
             pid = it["product"]
-            qty = int(it["quantity"])
-            unit_price = Decimal(str(it["unit_price"]))
-
             prod = products.get(pid)
             if not prod:
                 return Response({"ok": False, "message": f"Unknown product_id={pid}"}, status=400)
 
-            line = unit_price * qty
-            gross_total += line
-
-            if is_eligible(prod):
-                eligible_total += line
-                eligible_item_ids.append(pid)
-
-        if scope != "cart" and eligible_total <= 0:
-            return Response(
-                {"ok": False, "message": "No eligible items for this offer in provided items"},
-                status=400,
+            lines.append(
+                Line(
+                    product=prod,
+                    quantity=int(it["quantity"]),
+                    unit_price=Decimal(str(it["unit_price"])),
+                )
             )
 
-        # points_rate from current tier
         account, _ = LoyaltyAccount.objects.get_or_create(user=request.user)
         if account.tier_id is None:
-            bronze, _ = Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": 1.0})
+            bronze, _ = Tier.objects.get_or_create(
+                name="Bronze",
+                defaults={"threshold_spend_90d": 0, "points_rate": 1.0},
+            )
             account.tier = bronze
             account.save(update_fields=["tier"])
+
         points_rate = Decimal(str(account.tier.points_rate if account.tier else 1.0))
 
-        discount_amount = Decimal("0")
-        net_total = gross_total
-        points_multiplier = Decimal("1")
+        calc = apply_offer_to_totals(
+            offer_type=assignment.offer.offer_type,
+            offer_value=Decimal(str(assignment.offer.value)),
+            target=target,
+            lines=lines,
+            points_rate=points_rate,
+        )
 
-        offer = assignment.offer
-
-        if offer.offer_type == "discount":
-            percent = Decimal(str(offer.value))
-            discount_amount = (eligible_total * (percent / Decimal("100"))).quantize(Decimal("0.01"))
-            net_total = gross_total - discount_amount
-            if net_total < 0:
-                net_total = Decimal("0")
-
-        elif offer.offer_type == "points_multiplier":
-            points_multiplier = Decimal(str(offer.value))
-
-        # estimated points (preview)
-        base_points = int(round(float(net_total * points_rate)))
-        est_points = base_points
-
-        if offer.offer_type == "points_multiplier" and points_multiplier != Decimal("1"):
-            if scope == "cart":
-                est_points = int(round(float(Decimal(base_points) * points_multiplier)))
-            else:
-                eligible_points = int(round(float(eligible_total * points_rate)))
-                rest_total = gross_total - eligible_total
-                if rest_total < 0:
-                    rest_total = Decimal("0")
-                rest_points = int(round(float(rest_total * points_rate)))
-                est_points = rest_points + int(round(float(Decimal(eligible_points) * points_multiplier)))
+        if not calc["ok"]:
+            return Response(calc, status=400)
 
         return Response(
             {
                 "ok": True,
                 "assignment_id": assignment.id,
                 "offer": {
-                    "id": offer.id,
-                    "name": offer.name,
-                    "type": offer.offer_type,
-                    "value": str(offer.value),
+                    "id": assignment.offer.id,
+                    "name": assignment.offer.name,
+                    "type": assignment.offer.offer_type,
+                    "value": str(assignment.offer.value),
                 },
-                "target": target,  # тут будет rec_why/rec_score если ты уже добавил
-                "gross_total": str(gross_total),
-                "eligible_total": str(eligible_total),
-                "eligible_item_ids": eligible_item_ids,
-                "discount_amount": str(discount_amount),
-                "net_total": str(net_total),
-                "estimated_points_earned": est_points,
+                "target": target,
+                **calc,
                 "tier": account.tier.name if account.tier else None,
                 "points_rate": str(points_rate),
-                "points_multiplier": str(points_multiplier),
             }
         )
