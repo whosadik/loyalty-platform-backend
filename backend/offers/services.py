@@ -113,8 +113,12 @@ def _cooccurrence_90d(now: datetime):
         txn_map.setdefault(r["transaction_id"], []).append(r["product_id"])
 
     co = build_cooccurrence(list(txn_map.values()))
-    cache.set(key, co, timeout=600)  # 10 минут
-    return co
+
+    # ✅ ВАЖНО: превратить defaultdict(...) в обычные dict, чтобы pickle/redis не падал
+    co_plain = {int(k): {int(kk): int(vv) for kk, vv in dict(v).items()} for k, v in dict(co).items()}
+
+    cache.set(key, co_plain, timeout=600)  # 10 минут
+    return co_plain
 
 
 def _passes_cooldown(user, offer: Offer, now: datetime) -> bool:
