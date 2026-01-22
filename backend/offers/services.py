@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+from django.conf import settings
 from dataclasses import dataclass
 from datetime import timedelta, datetime
 from decimal import Decimal
@@ -23,6 +23,7 @@ from ml_logic.recommender import (
     build_cooccurrence,
 )
 from django.db.models import Count
+from django.core.cache import cache
 
 def _week_start(d: datetime) -> datetime.date:
     # Monday as week start
@@ -80,26 +81,28 @@ def _build_rec_profile(cp: CustomerProfile) -> RecUserProfile:
 
 
 def _load_products_for_recs() -> list[dict[str, Any]]:
-    return list(
+    key = "recs:products:v1"
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
+    data = list(
         Product.objects.all().values(
-            "id",
-            "name",
-            "brand",
-            "price",
-            "category",
-            "product_type",
-            "concerns",
-            "attrs",
-            "actives",
-            "flags",
-            "supported_skin_types",
-            "strength",
-            "in_stock",
+            "id","name","brand","price","category","product_type",
+            "concerns","attrs","actives","flags","supported_skin_types","strength","in_stock",
         )
     )
+    cache.set(key, data, timeout=600)  # 10 минут
+    return data
+
 
 
 def _cooccurrence_90d(now: datetime):
+    key = "recs:cooc90d:v1"
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+
     since = now - timedelta(days=90)
     rows = (
         TransactionItem.objects.filter(transaction__created_at__gte=since)
@@ -108,7 +111,10 @@ def _cooccurrence_90d(now: datetime):
     txn_map: dict[int, list[int]] = {}
     for r in rows:
         txn_map.setdefault(r["transaction_id"], []).append(r["product_id"])
-    return build_cooccurrence(list(txn_map.values()))
+
+    co = build_cooccurrence(list(txn_map.values()))
+    cache.set(key, co, timeout=600)  # 10 минут
+    return co
 
 
 def _passes_cooldown(user, offer: Offer, now: datetime) -> bool:
@@ -147,7 +153,7 @@ def _is_saturated(user, category: str, product_type: str) -> bool:
 
 def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: list[str] | None, post_ctx: dict | None):
     # 1) routine-context shortcut
-    if context_steps and offer.target_scope in {"product_type", "product_id"}:
+    if settings.USE_ROUTINE_SHORTCUT and context_steps and offer.target_scope in {"product_type", "product_id"}:
         if "spf" in context_steps:
             # if offer allows skincare or doesn't restrict
             allowed = offer.allowed_categories or []
@@ -191,8 +197,7 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
         return {"scope": "cart"}
     
     # ---- Bundle-driven target (post-purchase) ----
-    if post_ctx and offer.target_scope == "product_id":
-        # если offer говорит, что целимся в конкретную категорию — учтём
+    if settings.USE_BUNDLE_TARGETING and post_ctx and offer.target_scope == "product_id":
         allowed_cats = offer.allowed_categories or []
         bundle_cat = allowed_cats[0] if allowed_cats else None
 
@@ -207,9 +212,10 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
     prof = _build_rec_profile(cp)
 
-    suggestions = _derive_cross_sell_suggestions(post_ctx)
+    suggestions = []
+    if settings.USE_POST_PURCHASE_RULES:
+        suggestions = _derive_cross_sell_suggestions(post_ctx)
 
-    # если offer ограничивает allowed_categories/types — отфильтруем кандидаты
     filtered = []
     for s in suggestions:
         if offer.allowed_categories and s["category"] not in (offer.allowed_categories or []):

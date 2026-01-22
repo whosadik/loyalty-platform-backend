@@ -156,3 +156,23 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+import os
+
+def env_bool(name: str, default: bool = False) -> bool:
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return v.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+USE_BUNDLE_TARGETING = env_bool("USE_BUNDLE_TARGETING", True)
+USE_POST_PURCHASE_RULES = env_bool("USE_POST_PURCHASE_RULES", True)
+USE_ROUTINE_SHORTCUT = env_bool("USE_ROUTINE_SHORTCUT", True)
+
+CACHES = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:6379/1",
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+    }
+}
