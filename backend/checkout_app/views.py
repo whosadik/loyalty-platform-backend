@@ -10,6 +10,7 @@ from django.db.models import Sum
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 
 from checkout_app.serializers import CheckoutRequestSerializer
 from checkout_app.pricing import Line, apply_offer_to_totals, calc_gross
@@ -55,6 +56,12 @@ def _recalculate_tier(user, now) -> LoyaltyAccount:
     return acc
 
 
+def _raise_validation(message: str) -> None:
+    err = ValidationError(message)
+    err.detail = {"ok": False, "message": message}
+    raise err
+
+
 class CheckoutView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -79,10 +86,9 @@ class CheckoutView(APIView):
             for it in data["items"]:
                 product_id = it["product"]
                 qty = int(it["quantity"])
-                unit_price = Decimal(str(it["unit_price"]))
-
                 # ensure product exists
                 prod = Product.objects.select_for_update().get(id=product_id)
+                unit_price = Decimal(str(prod.price))
 
                 ti = TransactionItem.objects.create(
                     transaction=txn,
@@ -118,7 +124,7 @@ class CheckoutView(APIView):
             gross_total = total
             discount_amount = Decimal("0")
             net_total = gross_total
-            eligible_total = Decimal("0")
+            eligible_total = gross_total  # если без оффера
             points_multiplier = Decimal("1")  # только для меты/ответа
 
             apply_assignment_id = data.get("apply_assignment_id")
@@ -130,10 +136,10 @@ class CheckoutView(APIView):
                 )
 
                 if assignment.is_redeemed:
-                    return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
+                    _raise_validation("Offer already redeemed")
 
                 if assignment.expires_at and assignment.expires_at <= now:
-                    return Response({"ok": False, "message": "Offer expired"}, status=400)
+                    _raise_validation("Offer expired")
 
                 applied_target = assignment.target or {"scope": "cart"}
 
@@ -146,7 +152,7 @@ class CheckoutView(APIView):
                 )
 
                 if not calc["ok"]:
-                    return Response({"ok": False, "message": calc.get("message", "Offer not applicable")}, status=400)
+                    _raise_validation(calc.get("message", "Offer not applicable"))
 
                 gross_total = Decimal(calc["gross_total"])
                 discount_amount = Decimal(calc["discount_amount"])
@@ -166,7 +172,7 @@ class CheckoutView(APIView):
             if redeem_points is not None:
                 redeem_points = int(redeem_points)
                 if account.points_balance < redeem_points:
-                    return Response({"ok": False, "message": "Insufficient points"}, status=400)
+                    _raise_validation("Insufficient points")
 
                 LoyaltyLedgerEntry.objects.create(
                     account=account,
@@ -284,7 +290,7 @@ class CheckoutPreviewView(APIView):
             prod = products.get(it["product"])
             if not prod:
                 return Response({"ok": False, "message": f"Unknown product_id={it['product']}"}, status=400)
-            lines.append(Line(product=prod, quantity=int(it["quantity"]), unit_price=Decimal(str(it["unit_price"]))))
+            lines.append(Line(product=prod, quantity=int(it["quantity"]), unit_price=Decimal(str(prod.price))))
 
         account, _ = LoyaltyAccount.objects.get_or_create(user=request.user)
         if account.tier_id is None:
@@ -297,7 +303,7 @@ class CheckoutPreviewView(APIView):
         gross_total = Decimal(str(calc_gross(lines)))  # or Decimal from apply result later
         discount_amount = Decimal("0")
         net_total = gross_total
-        eligible_total = Decimal("0")
+        eligible_total = gross_total  # если без оффера
         target = {"scope": "cart"}
         offer_applied = False
         offer_payload = None

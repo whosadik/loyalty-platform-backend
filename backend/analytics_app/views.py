@@ -12,6 +12,7 @@ from routines.models import RoutineSnapshot
 from transactions.models import Transaction
 
 from ml_logic.next_best_reward import compute_rfm, segment
+from offers.admin_metrics import offers_metrics_30d
 
 
 class AdminMetricsView(APIView):
@@ -31,7 +32,11 @@ class AdminMetricsView(APIView):
         redemptions_7d = OfferAssignment.objects.filter(assigned_at__gte=since_7d, is_redeemed=True).count()
 
         # Budget
-        budget, _ = CampaignBudget.objects.get_or_create(name="default")
+        budget, _ = CampaignBudget.objects.get_or_create(
+            name="default",
+            defaults={"weekly_limit": 1000, "weekly_spent": 0},
+        )
+
         budget_left = float(budget.weekly_limit) - float(budget.weekly_spent)
 
         # Loyalty: ledger sums
@@ -88,6 +93,7 @@ class AdminMetricsView(APIView):
                     "redemption_rate": round(redemption_rate, 4),
                     "assignments_7d": assignments_7d,
                     "redemptions_7d": redemptions_7d,
+                    "offers_v3": offers_metrics_30d(),
                 },
                 "budget": {
                     "weekly_limit": float(budget.weekly_limit),

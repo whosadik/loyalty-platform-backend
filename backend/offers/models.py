@@ -52,7 +52,7 @@ class CampaignBudget(models.Model):
     """
     MVP: single rolling budget (weekly). You can extend later.
     """
-    name = models.CharField(max_length=200, default="default")
+    name = models.CharField(max_length=64, unique=True)
     weekly_limit = models.DecimalField(max_digits=12, decimal_places=2, default=1000)
     weekly_spent = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 

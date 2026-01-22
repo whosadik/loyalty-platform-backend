@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import timedelta, datetime
 from decimal import Decimal
 from typing import Any
+from unicodedata import category
 
 from django.db import transaction as db_tx
 from django.utils import timezone
@@ -31,7 +32,8 @@ def _week_start(d: datetime) -> datetime.date:
 def _get_budget_locked(now: datetime) -> CampaignBudget:
     # single row budget (MVP). If you have multiple campaigns, adapt.
     b, _ = CampaignBudget.objects.select_for_update().get_or_create(
-        id=1, defaults={"weekly_limit": Decimal("1000.0"), "weekly_spent": Decimal("0.0")}
+        name="default",
+        defaults={"weekly_limit": Decimal("1000.0"), "weekly_spent": Decimal("0.0")},
     )
 
     # optional weekly reset if you already added week_start_date
@@ -294,7 +296,9 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
         return {"scope": "category", "value": category}
 
     if offer.target_scope == "product_type":
-        return {"scope": "product_type", "value": product_type, "category": category}
+        if product_type:
+            return {"scope": "product_type", "value": product_type, "category": category}
+        return {"scope": "category", "value": category}
 
     # product_id → choose top recommendation
     products = _load_products_for_recs()
@@ -482,8 +486,14 @@ def get_or_assign_next_offer(
         .order_by("-assigned_at")
         .first()
     )
-    if existing and (not existing.expires_at or existing.expires_at > now):
-        return existing
+
+    if existing:
+        # если истёк — помечаем, чтобы не висел активным, и продолжаем выдавать новый
+        if existing.expires_at and existing.expires_at <= now:
+            existing.is_redeemed = True
+            existing.save(update_fields=["is_redeemed"])
+        else:
+            return existing
 
     # 2) select offer under constraints (locks budget row)
     offer, reason = _select_offer(user, now, context_steps)
@@ -517,14 +527,15 @@ def get_or_assign_next_offer(
     budget.weekly_spent = Decimal(str(budget.weekly_spent)) + cost
     budget.save(update_fields=["weekly_spent"] + (["week_start_date"] if hasattr(budget, "week_start_date") else []))
 
-    expires_at = now + timedelta(days=int(getattr(offer, "expires_in_days", 7) or 7)) if hasattr(OfferAssignment, "expires_at") else None
+    ttl_days = int(getattr(offer, "expires_in_days", 7) or 7)
+    expires_at = now + timedelta(days=ttl_days)
 
     assignment = OfferAssignment.objects.create(
         user=user,
         offer=offer,
         reason=reason,
         target=target,
-        **({"expires_at": expires_at} if hasattr(OfferAssignment, "expires_at") else {}),
+        expires_at=expires_at,
     )
     return assignment
 
@@ -538,6 +549,7 @@ def _pick_product_from_bundle(user, now: datetime, post_ctx: dict, category: str
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
     prof = _build_rec_profile(cp)
+    recent_vals = _recent_target_values(user, days=7, now=now)
 
     products = _load_products_for_recs()
     co = _cooccurrence_90d(now)
@@ -560,6 +572,10 @@ def _pick_product_from_bundle(user, now: datetime, post_ctx: dict, category: str
         # фильтры: category (если задана), saturation, in_stock уже учтён
         for r in res:
             p = r["product"]
+
+             # НЕ давать тот же product_id, что уже выдавали недавно
+            if int(p["id"]) in recent_vals:
+                continue
             if p["id"] in owned_set:
                 continue
             if category and p.get("category") != category:
@@ -582,3 +598,15 @@ def _pick_product_from_bundle(user, now: datetime, post_ctx: dict, category: str
             }
 
     return None
+
+def _recent_target_values(user, days: int, now: datetime) -> set[int]:
+    since = now - timedelta(days=days)
+    vals = set()
+    qs = OfferAssignment.objects.filter(user=user, assigned_at__gte=since).values_list("target", flat=True)
+    for t in qs:
+        if isinstance(t, dict) and t.get("scope") == "product_id" and t.get("value"):
+            try:
+                vals.add(int(t["value"]))
+            except Exception:
+                pass
+    return vals

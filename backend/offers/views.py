@@ -12,7 +12,7 @@ from transactions.models import OwnedProduct, Transaction, TransactionItem
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from .models import Offer, OfferAssignment, CampaignBudget
 from .serializers import RedeemOfferRequestSerializer
-
+from offers.services import get_or_assign_next_offer 
 from ml_logic.next_best_reward import compute_rfm, segment, pick_next_offer
 from ml_logic.routine_builder import Profile, build_routine
 from ml_logic.recommender import (
@@ -61,209 +61,16 @@ def _recalculate_tier(user, now):
 
     return account
 
-def _load_products_for_recs():
-    return list(
-        Product.objects.all().values(
-            "id","name","brand","price",
-            "category","product_type",
-            "concerns","attrs",
-            "actives","flags","supported_skin_types","strength","in_stock"
-        )
-    )
-
-def _cooccurrence_90d(now):
-    since = now - timedelta(days=90)
-    items = (
-        TransactionItem.objects
-        .filter(transaction__created_at__gte=since)
-        .values("transaction_id", "product_id")
-    )
-    txn_map = defaultdict(list)
-    for row in items:
-        txn_map[row["transaction_id"]].append(row["product_id"])
-    return build_cooccurrence(list(txn_map.values()))
-
-def _build_rec_profile(cp: CustomerProfile) -> RecUserProfile:
-    return RecUserProfile(
-        skin_type=cp.skin_type,
-        goals=cp.goals or [],
-        avoid_flags=cp.avoid_flags or [],
-        budget=cp.budget,
-        hair=cp.hair_profile or {},
-        makeup=cp.makeup_profile or {},
-        fragrance=cp.fragrance_profile or {},
-    )
-
-def _compute_rec_explain(user, prof: RecUserProfile, now, category: str, product_type: str | None, strict: bool = False):
-    products = _load_products_for_recs()
-    owned_active_ids = list(
-        OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
-    )
-    co = _cooccurrence_90d(now)
-    context_ids = owned_active_ids[:50]
-
-    recs = rec_recommend(
-        prof=prof,
-        products=products,
-        owned_active_ids=owned_active_ids,
-        context_product_ids=context_ids,
-        category=category,
-        product_type=product_type,
-        limit=1,
-        co=co,
-    )
-
-    # расширяем только если НЕ strict
-    if (not recs) and (not strict) and (product_type is not None):
-        recs = rec_recommend(
-            prof=prof,
-            products=products,
-            owned_active_ids=owned_active_ids,
-            context_product_ids=context_ids,
-            category=category,
-            product_type=None,
-            limit=1,
-            co=co,
-        )
-
-    if recs:
-        top = recs[0]
-        p = top["product"]
-        return {
-            "example_product_id": p["id"],
-            "category": p["category"],
-            "product_type": p["product_type"],
-            "score": top.get("score"),
-            "components": top.get("components", {}),
-            "why": (top.get("why") or [])[:6],
-        }
-
-    return {"why": ["no recommendation candidate after filters"], "category": category, "product_type": product_type}
-
-
-def _pick_target_for_offer(user, offer_obj, now, context_steps: list[str] | None):
-    """
-    Возвращает dict target для OfferAssignment.
-    """
-    # 1) если рутина подсказала missing шаги — это самый сильный контекст
-    if context_steps:
-        if "spf" in context_steps and ("skincare" in (offer_obj.allowed_categories or []) or not offer_obj.allowed_categories):
-            return {"scope": "product_type", "value": "spf", "category": "skincare"}
-
-    # 2) если у оффера явно ограничены категории/типы — используем их
-    allowed_cats = offer_obj.allowed_categories or []
-    allowed_pts = offer_obj.allowed_product_types or []
-
-    # 3) иначе выбираем категорию по профилю (минимально)
-    cp, _ = CustomerProfile.objects.get_or_create(user=user)
-    prof = _build_rec_profile(cp)
-
-    if not allowed_cats:
-        if (prof.fragrance or {}).get("liked_families") or (prof.fragrance or {}).get("liked_notes"):
-            allowed_cats = ["fragrance"]
-        elif prof.makeup:
-            allowed_cats = ["makeup"]
-        elif prof.hair:
-            allowed_cats = ["haircare"]
-        else:
-            allowed_cats = ["skincare"]
-
-    category = allowed_cats[0]
-    product_type = allowed_pts[0] if allowed_pts else None
-
-    # если scope=cart — таргет не нужен
-    if offer_obj.target_scope == "cart":
-        return {"scope": "cart"}
-
-    # если scope=category / product_type — можно вернуть без конкретного товара
-    if offer_obj.target_scope == "category":
-        return {"scope": "category", "value": category}
-
-    if offer_obj.target_scope == "product_type":
-        if product_type is None:
-            # fallback: любой тип внутри категории
-            product_type = None
-        return {"scope": "product_type", "value": product_type, "category": category}
-
-    # scope=product_id → выберем top recommendation и зафиксируем конкретный товар
-    products = _load_products_for_recs()
-    owned_active_ids = list(
-        OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
-    )
-    co = _cooccurrence_90d(now)
-    context_ids = owned_active_ids[:50]
-
-    recs = rec_recommend(
-        prof=prof,
-        products=products,
-        owned_active_ids=owned_active_ids,
-        context_product_ids=context_ids,
-        category=category,
-        product_type=product_type,
-        limit=1,
-        co=co,
-    )
-    if recs:
-        top = recs[0]
-        p = top["product"]
-        return {
-            "scope": "product_id",
-            "value": p["id"],
-            "category": p["category"],
-            "product_type": p["product_type"],
-            "rec_score": top.get("score"),
-            "rec_components": top.get("components", {}),
-            "rec_why": (top.get("why") or [])[:6],
-        }
-
-    # если рекомендаций нет — деградируем до product_type/category
-    if product_type:
-        return {"scope": "product_type", "value": product_type, "category": category}
-    return {"scope": "category", "value": category}
-
-
 class MeNextOfferView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
-        now = datetime.now(dt_timezone.utc)
+        now = dj_timezone.now()
 
-        txs = list(Transaction.objects.filter(user=user).values("created_at", "total_amount"))
-        rfm = compute_rfm(txs, now)
-        seg = segment(rfm)
-
-        last = (
-            OfferAssignment.objects.filter(user=user)
-            .order_by("-assigned_at")
-            .values("assigned_at")
-            .first()
-        )
-        last_days_ago = None
-        if last:
-            last_days_ago = (now - last["assigned_at"]).days
-
-        budget, _ = CampaignBudget.objects.get_or_create(name="default")
-        budget_left = float(budget.weekly_limit) - float(budget.weekly_spent)
-
-        offers = list(
-            Offer.objects.filter(is_active=True).values(
-                "id",
-                "is_active",
-                "name",
-                "offer_type",
-                "value",
-                "estimated_cost",
-                "min_total_spend_90d",
-                "cooldown_days",
-                "allowed_steps",
-                "allowed_categories",
-                "allowed_product_types",
-                "target_scope",
-            )
-        )
+        # (опционально) контекст из рутины
         profile_obj, _ = CustomerProfile.objects.get_or_create(user=user)
-        profile = Profile(
+        prof = Profile(
             skin_type=profile_obj.skin_type,
             goals=profile_obj.goals or [],
             avoid_flags=profile_obj.avoid_flags or [],
@@ -275,110 +82,40 @@ class MeNextOfferView(APIView):
                 "id","name","brand","price",
                 "category","product_type","step",
                 "actives","flags","supported_skin_types",
-                "strength","in_stock",
-                "concerns","attrs",
+                "strength","in_stock","concerns","attrs",
             )
         )
-
         owned_ids = list(
             OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
         )
 
-        routine = build_routine(
-            profile=profile,
-            products=products_for_routine,
-            top_k=3,
-            owned_product_ids=owned_ids,
-        )
-        owned_steps = set(
-            OwnedProduct.objects.filter(user=user, is_active=True, product__category="skincare")
-            .select_related("product")
-            .values_list("product__product_type", flat=True)
-        )
-        owned_steps_list = list(owned_steps)
+        routine = build_routine(profile=prof, products=products_for_routine, top_k=3, owned_product_ids=owned_ids)
 
-        missing_steps = []
-        for item in routine["am"] + routine["pm"]:
-            if item.get("status") == "missing":
-                missing_steps.append(item.get("step"))
-
-        picked = pick_next_offer(
-            rfm=rfm,
-            segment_name=seg,
-            offers=offers,
-            last_assignment_days_ago=last_days_ago,
-            budget_left=budget_left,
-            context_steps=missing_steps or None,
-            owned_steps=owned_steps_list,
-        )
-
-        if picked is None:
-            return Response({"offer": None, "reason": {"segment": seg, "message": "No eligible offers"}})
+        missing_steps = [
+            x.get("step")
+            for x in (routine["am"] + routine["pm"])
+            if x.get("status") == "missing"
+        ] or None
 
         with db_tx.atomic():
-            offer_obj = Offer.objects.select_for_update().get(id=picked["offer_id"])
-            budget_obj = CampaignBudget.objects.select_for_update().get(id=budget.id)
+            a = get_or_assign_next_offer(user=user, now=now, context_steps=missing_steps, post_ctx=None)
 
-            cost = float(offer_obj.estimated_cost)
-            if float(budget_obj.weekly_spent) + cost > float(budget_obj.weekly_limit):
-                return Response({"offer": None, "reason": {"segment": seg, "message": "Budget exceeded"}})
-            target = _pick_target_for_offer(user, offer_obj, now, missing_steps or None)
+        if not a:
+            return Response({"offer": None, "reason": {"message": "No eligible offers"}})
 
-            reason = picked["reason"] | {"context_steps": missing_steps or None}
-
-            # строим explain всегда (не влияет на redeem логику)
-            rec_prof = _build_rec_profile(profile_obj)
-
-            if target.get("scope") == "product_id":
-                # если product_id — explain можно взять прямо из target
-                reason["rec_explain"] = {
-                    "example_product_id": target.get("value"),
-                    "category": target.get("category"),
-                    "product_type": target.get("product_type"),
-                    "score": target.get("rec_score"),
-                    "components": target.get("rec_components", {}),
-                    "why": target.get("rec_why", []),
-                }
-            else:
-                # category / product_type / cart — делаем explain отдельно
-                t_cat = target.get("category") or (target.get("value") if target.get("scope") == "category" else None) or "makeup"
-                t_pt = target.get("value") if target.get("scope") == "product_type" else None
-                if target.get("scope") == "cart":
-                    t_cat = "makeup"  # или любая дефолтная
-                    t_pt = None
-                scope = target.get("scope")
-                reason["rec_explain"] = _compute_rec_explain(
-                    user, rec_prof, now, t_cat, t_pt,
-                    strict=(scope == "product_type")
-                )
-
-
-            assignment = OfferAssignment.objects.create(
-                user=user,
-                offer=offer_obj,
-                reason=reason,
-                target=target,
-            )
-
-
-            budget_obj.weekly_spent = float(budget_obj.weekly_spent) + cost
-            budget_obj.save(update_fields=["weekly_spent"])
-
-        return Response(
-            {
-                "assignment_id": assignment.id,
-                "offer": {
-                    "id": offer_obj.id,
-                    "name": offer_obj.name,
-                    "type": offer_obj.offer_type,
-                    "value": str(offer_obj.value),
-                    "estimated_cost": str(offer_obj.estimated_cost),
-                    "target": assignment.target,
-                },
-                "reason": assignment.reason,
-            }
-        )
-
+        return Response({
+            "assignment_id": a.id,
+            "offer": {
+                "id": a.offer.id,
+                "name": a.offer.name,
+                "type": a.offer.offer_type,
+                "value": str(a.offer.value),
+                "estimated_cost": str(a.offer.estimated_cost),
+            },
+            "target": a.target,
+            "reason": a.reason,
+            "expires_at": a.expires_at,
+        })
 
 class RedeemOfferView(APIView):
     """
@@ -395,6 +132,8 @@ class RedeemOfferView(APIView):
         transaction_id = req.validated_data["transaction_id"]
 
         now = datetime.now(dt_timezone.utc)
+        if assignment.offer.offer_type == "discount":
+            return Response({"ok": False, "message": "Use /api/checkout with apply_assignment_id for discount offers"}, status=400)
 
         with db_tx.atomic():
             assignment = (
@@ -537,7 +276,7 @@ class OfferPreviewView(APIView):
                 Line(
                     product=prod,
                     quantity=int(it["quantity"]),
-                    unit_price=Decimal(str(it["unit_price"])),
+                    unit_price=Decimal(str(prod.price)),
                 )
             )
 
