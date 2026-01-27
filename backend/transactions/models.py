@@ -9,7 +9,16 @@ class Transaction(models.Model):
     total_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
 
     channel = models.CharField(max_length=20, default="offline")  # offline/online (MVP)
-
+    idempotency_key = models.CharField(max_length=64, null=True, blank=True)
+    pricing_meta = models.JSONField(default=dict, blank=True)
+    
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "idempotency_key"],
+                name="uniq_txn_user_idempotency_key",
+            )
+        ]
     def __str__(self) -> str:
         return f"Txn(id={self.id}, user_id={self.user_id}, total={self.total_amount})"
 

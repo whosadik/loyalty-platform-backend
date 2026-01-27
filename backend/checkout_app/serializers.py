@@ -9,6 +9,7 @@ class CheckoutItemSerializer(serializers.Serializer):
 class CheckoutRequestSerializer(serializers.Serializer):
     channel = serializers.CharField(required=False, default="offline")
     items = CheckoutItemSerializer(many=True)
+    idempotency_key = serializers.CharField(required=False, allow_blank=False)
 
     apply_assignment_id = serializers.IntegerField(required=False)
     redeem_points = serializers.IntegerField(required=False, min_value=1)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from cmath import exp
 from decimal import Decimal
 from datetime import datetime, timedelta
 
@@ -24,6 +25,7 @@ from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializ
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 
+from django.db import IntegrityError
 
 def _ensure_account(user) -> LoyaltyAccount:
     acc, _ = LoyaltyAccount.objects.get_or_create(user=user)
@@ -74,6 +76,12 @@ class CheckoutView(APIView):
         req.is_valid(raise_exception=True)
         data = req.validated_data
 
+        idem = data.get("idempotency_key")
+        if idem:
+            prev = Transaction.objects.filter(user=request.user, idempotency_key=idem).first()
+            if prev and prev.pricing_meta:
+                return Response({"ok": True, "idempotent_replay": True, **prev.pricing_meta})
+
         now = timezone.now()
 
         with db_tx.atomic():
@@ -82,7 +90,18 @@ class CheckoutView(APIView):
             account = LoyaltyAccount.objects.select_for_update().get(id=account.id)
 
             # 1) create transaction + items
-            txn = Transaction.objects.create(user=request.user, channel=data.get("channel", "offline"))
+            try:
+                txn = Transaction.objects.create(
+                    user=request.user,
+                    channel=data.get("channel", "offline"),
+                    idempotency_key=idem,
+                )
+            except IntegrityError:
+                prev = Transaction.objects.get(user=request.user, idempotency_key=idem)
+                if prev.pricing_meta:
+                    return Response({"ok": True, "idempotent_replay": True, **prev.pricing_meta})
+                return Response({"ok": False, "message": "Duplicate idempotency_key"}, status=409)
+
 
             total = Decimal("0")
             created_items: list[TransactionItem] = []
@@ -240,6 +259,7 @@ class CheckoutView(APIView):
 
             next_offer_payload = None
             if next_assignment:
+                exp = getattr(next_assignment, "expires_at", None)
                 next_offer_payload = {
                     "assignment_id": next_assignment.id,
                     "offer": {
@@ -251,12 +271,9 @@ class CheckoutView(APIView):
                     },
                     "target": next_assignment.target,
                     "reason": next_assignment.reason,
-                    "expires_at": getattr(next_assignment, "expires_at", None),
+                    "expires_at": exp.isoformat() if exp else None,
                 }
-
-        return Response(
-            {
-                "ok": True,
+            payload = {
                 "transaction_id": txn.id,
                 "gross_total": str(gross_total),
                 "discount_amount": str(discount_amount),
@@ -271,9 +288,12 @@ class CheckoutView(APIView):
                 "tier": account.tier.name if account.tier else None,
                 "next_offer": next_offer_payload,
             }
-        )
 
-from checkout_app.serializers import CheckoutRequestSerializer
+            # сохраняем снимок результата для replay
+            Transaction.objects.filter(id=txn.id).update(pricing_meta=payload)
+    
+        return Response({"ok": True, **payload})
+
 from offers.models import OfferAssignment
 from loyalty.models import LoyaltyAccount, Tier
 
