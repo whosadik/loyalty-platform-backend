@@ -51,6 +51,7 @@ INSTALLED_APPS = [
     "loyalty",
     "analytics_app",
     "drf_spectacular",
+    "drf_spectacular_sidecar",
     "recs_app",
     "checkout_app",
 ]
@@ -66,10 +67,15 @@ REST_FRAMEWORK = {
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "Loyalty + Personalized Skincare Platform",
-    "DESCRIPTION": "Routine Builder + Next Best Reward + Loyalty Ledger",
+    "TITLE": "Loyalty Platform API",
+    "DESCRIPTION": "Personalized loyalty + recommendations platform",
     "VERSION": "1.0.0",
+    # чтобы схема показывала только /api/v1/*
+    "SCHEMA_PATH_PREFIX": r"/api",
+    # красивее имена параметров pk
+    "SCHEMA_COERCE_PATH_PK": True,
 }
+
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

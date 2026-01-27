@@ -26,6 +26,9 @@ from .serializers import OfferPreviewRequestSerializer
 
 from checkout_app.pricing import Line, apply_offer_to_totals
 
+from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializer
+from drf_spectacular.types import OpenApiTypes
+from rest_framework import serializers
 
 def _ensure_loyalty_account(user):
     account, created = LoyaltyAccount.objects.get_or_create(user=user)
@@ -63,7 +66,37 @@ def _recalculate_tier(user, now):
 
 class MeNextOfferView(APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=["Offers"],
+        description="Get active offer assignment or auto-assign next offer under budget/cooldown constraints.",
+        responses={
+            200: OpenApiTypes.OBJECT,
+        },
+        examples=[
+            OpenApiExample(
+                "Next offer (bundle-driven example)",
+                response_only=True,
+                value={
+                    "assignment_id": 4,
+                    "offer": {"id": 1, "name": "whosadik", "type": "discount", "value": "2.00", "estimated_cost": "5.00"},
+                    "target": {
+                        "scope": "product_id",
+                        "value": 322,
+                        "category": "makeup",
+                        "product_type": "eyeshadow",
+                        "picked_via": "bundle",
+                        "bundle_mode": "cooccurrence",
+                        "bundle_why": ["frequently purchased with product_id=330 (count=1)"],
+                    },
+                    "reason": {
+                        "segment": "new_or_rare",
+                        "picked_because": "max(score) under eligibility + cooldown + budget constraints",
+                        "post_purchase": {"categories": ["makeup"], "product_types": ["foundation"]},
+                    },
+                },
+            ),
+        ],
+    )
     def get(self, request):
         user = request.user
         now = dj_timezone.now()
@@ -243,6 +276,56 @@ class MeOffersView(APIView):
 class OfferPreviewView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Offers"],
+        description="Preview offer effect on provided cart (no DB writes).",
+        request=OfferPreviewRequestSerializer,
+        responses={
+            200: inline_serializer(
+                name="OfferPreviewResponse",
+                fields={
+                    "ok": serializers.BooleanField(),
+                    "assignment_id": serializers.IntegerField(),
+                    "offer": serializers.DictField(),
+                    "target": serializers.DictField(),
+                    "gross_total": serializers.CharField(),
+                    "eligible_total": serializers.CharField(),
+                    "discount_amount": serializers.CharField(),
+                    "net_total": serializers.CharField(),
+                    "estimated_points_earned": serializers.IntegerField(),
+                },
+            ),
+            400: OpenApiTypes.OBJECT,
+        },
+        examples=[
+            OpenApiExample(
+                "Preview discount on target product",
+                request_only=True,
+                value={
+                    "assignment_id": 4,
+                    "items": [
+                        {"product": 330, "quantity": 1, "unit_price": "12.99"},
+                        {"product": 322, "quantity": 1, "unit_price": "12.99"},
+                    ],
+                },
+            ),
+            OpenApiExample(
+                "Preview response (sample)",
+                response_only=True,
+                value={
+                    "ok": True,
+                    "assignment_id": 4,
+                    "offer": {"id": 1, "name": "whosadik", "type": "discount", "value": "10.00"},
+                    "target": {"scope": "product_id", "value": 330, "category": "makeup", "product_type": "foundation"},
+                    "gross_total": "25.98",
+                    "eligible_total": "12.99",
+                    "discount_amount": "1.30",
+                    "net_total": "24.68",
+                    "estimated_points_earned": 25,
+                },
+            ),
+        ],
+    )
     def post(self, request):
         s = OfferPreviewRequestSerializer(data=request.data)
         s.is_valid(raise_exception=True)

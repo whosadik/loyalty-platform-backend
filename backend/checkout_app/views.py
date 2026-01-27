@@ -20,6 +20,10 @@ from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from catalog.models import Product
 from offers.services import get_or_assign_next_offer
 
+from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializer
+from drf_spectacular.types import OpenApiTypes
+from rest_framework import serializers
+
 
 def _ensure_account(user) -> LoyaltyAccount:
     acc, _ = LoyaltyAccount.objects.get_or_create(user=user)
@@ -275,7 +279,67 @@ from loyalty.models import LoyaltyAccount, Tier
 
 class CheckoutPreviewView(APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=["Checkout"],
+        description="Full checkout preview: offer + points redeem (no DB writes).",
+        request=CheckoutRequestSerializer,
+        responses={
+            200: inline_serializer(
+                name="CheckoutPreviewResponse",
+                fields={
+                    "ok": serializers.BooleanField(),
+                    "gross_total": serializers.CharField(),
+                    "discount_amount": serializers.CharField(),
+                    "net_total": serializers.CharField(),
+                    "offer_applied": serializers.BooleanField(),
+                    "applied_offer": serializers.DictField(allow_null=True),
+                    "eligible_total": serializers.CharField(),
+                    "estimated_points_earned": serializers.IntegerField(),
+                    "points_redeemed": serializers.IntegerField(),
+                    "balance_before": serializers.IntegerField(),
+                    "balance_after_estimated": serializers.IntegerField(),
+                    "tier": serializers.CharField(allow_null=True),
+                },
+            ),
+            400: OpenApiTypes.OBJECT,
+        },
+        examples=[
+            OpenApiExample(
+                "Preview with offer + redeem_points",
+                request_only=True,
+                value={
+                    "apply_assignment_id": 4,
+                    "redeem_points": 10,
+                    "items": [
+                        {"product": 330, "quantity": 1, "unit_price": "12.99"},
+                        {"product": 322, "quantity": 1, "unit_price": "12.99"},
+                    ],
+                },
+            ),
+            OpenApiExample(
+                "Preview response (sample)",
+                response_only=True,
+                value={
+                    "ok": True,
+                    "gross_total": "25.98",
+                    "discount_amount": "1.30",
+                    "net_total": "24.68",
+                    "offer_applied": True,
+                    "applied_offer": {
+                        "assignment_id": 4,
+                        "offer": {"id": 1, "name": "whosadik", "type": "discount", "value": "10.00"},
+                        "target": {"scope": "product_id", "value": 330},
+                    },
+                    "eligible_total": "12.99",
+                    "estimated_points_earned": 25,
+                    "points_redeemed": 10,
+                    "balance_before": 121,
+                    "balance_after_estimated": 136,
+                    "tier": "Bronze",
+                },
+            ),
+        ],
+    )
     def post(self, request):
         req = CheckoutRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)

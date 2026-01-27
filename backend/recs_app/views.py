@@ -12,6 +12,8 @@ from users_app.models import CustomerProfile
 
 from ml_logic.recommender import UserProfile, build_cooccurrence, recommend, bundle
 
+from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 
 class RecommendationsQuerySerializer(serializers.Serializer):
     category = serializers.ChoiceField(choices=["skincare", "haircare", "makeup", "fragrance"])
@@ -123,7 +125,37 @@ class MeRecommendationsView(APIView):
 
 class MeBundleView(APIView):
     permission_classes = [IsAuthenticated]
-
+    @extend_schema(
+        tags=["Recommendations"],
+        parameters=[
+            OpenApiParameter("product_id", OpenApiTypes.INT, required=True, description="Base product id"),
+            OpenApiParameter("limit", OpenApiTypes.INT, required=False, description="Max results (default 10)"),
+        ],
+        responses={200: OpenApiTypes.OBJECT},
+        examples=[
+            OpenApiExample(
+                "Bundle response (sample)",
+                response_only=True,
+                value={
+                    "query": {"product_id": 330, "limit": 10},
+                    "results": [
+                        {
+                            "product": {"id": 322, "name": "Eyeshadow 17", "category": "makeup", "product_type": "eyeshadow"},
+                            "score": 1.0,
+                            "components": {"mode": "cooccurrence", "cooccurrence": 1},
+                            "why": ["frequently purchased with product_id=330 (count=1)"],
+                        },
+                        {
+                            "product": {"id": 282, "name": "Blush 2", "category": "makeup", "product_type": "blush"},
+                            "score": 1.7,
+                            "components": {"mode": "fallback", "similarity": 1.3, "content": 0.8},
+                            "why": ["no/weak co-occurrence yet; showing similar items", "same brand", "same finish=matte"],
+                        },
+                    ],
+                },
+            ),
+        ],
+    )
     def get(self, request):
         q = BundleQuerySerializer(data=request.query_params)
         q.is_valid(raise_exception=True)
