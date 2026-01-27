@@ -2,6 +2,8 @@ from django.core.cache import cache
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAdminUser
+from audit.logging import log_event
+from audit.models import AuditEvent
 
 
 class AdminCacheInvalidateView(APIView):
@@ -13,4 +15,12 @@ class AdminCacheInvalidateView(APIView):
         for k in keys:
             if cache.delete(k):
                 deleted += 1
+        log_event(
+            request=request,
+            action=AuditEvent.Action.CACHE_INVALIDATE,
+            status_code=200,
+            meta={"keys": keys, "deleted": deleted},
+        )
+
         return Response({"ok": True, "deleted": deleted, "keys": keys})
+

@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     "drf_spectacular_sidecar",
     "recs_app",
     "checkout_app",
+    "audit",
 ]
 
 REST_FRAMEWORK = {
@@ -91,6 +92,8 @@ SPECTACULAR_SETTINGS = {
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    "django.middleware.security.SecurityMiddleware",
+    "audit.middleware.RequestIdMiddleware",
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',

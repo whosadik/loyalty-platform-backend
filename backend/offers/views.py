@@ -31,6 +31,9 @@ from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from backend.throttles import NextOfferRateThrottle
 
+from audit.logging import log_event
+from audit.models import AuditEvent
+
 def _ensure_loyalty_account(user):
     account, created = LoyaltyAccount.objects.get_or_create(user=user)
     if account.tier_id is None:
@@ -134,7 +137,32 @@ class MeNextOfferView(APIView):
         ] or None
 
         with db_tx.atomic():
+            existing = (
+                OfferAssignment.objects.filter(user=user, is_redeemed=False)
+                .order_by("-assigned_at")
+                .first()
+            )
             a = get_or_assign_next_offer(user=user, now=now, context_steps=missing_steps, post_ctx=None)
+
+        created_new = bool(a) and (existing is None or a.id != existing.id)
+        if created_new:
+            t = a.target or {}
+            log_event(
+                request=request,
+                action=AuditEvent.Action.NEXT_OFFER_ASSIGNED,
+                entity_type="OfferAssignment",
+                entity_id=a.id,
+                status_code=200,  # GET вернул 200, но запись создалась
+                meta={
+                    "picked_via": t.get("picked_via"),
+                    "scope": t.get("scope"),
+                    "value": t.get("value"),
+                    "category": t.get("category"),
+                    "product_type": t.get("product_type"),
+                    "context_steps": missing_steps,
+                },
+            )
+
 
         if not a:
             return Response({"offer": None, "reason": {"message": "No eligible offers"}})
@@ -237,6 +265,23 @@ class RedeemOfferView(APIView):
 
             assignment.is_redeemed = True
             assignment.save(update_fields=["is_redeemed"])
+            log_event(
+                request=request,
+                action=AuditEvent.Action.OFFER_REDEEM,
+                entity_type="OfferAssignment",
+                entity_id=assignment.id,
+                status_code=200,
+                meta={
+                    "transaction_id": txn.id,
+                    "offer_id": assignment.offer_id,
+                    "offer_type": assignment.offer.offer_type,
+                    "earned_points": earned_points,
+                    "tier": account.tier.name if account.tier else None,
+                    "target": target,
+                    "eligible_total": str(eligible_total),
+                    "multiplier": str(multiplier),
+                },
+            )
 
         return Response(
             {
@@ -387,6 +432,21 @@ class OfferPreviewView(APIView):
 
         if not calc["ok"]:
             return Response(calc, status=400)
+        
+        log_event(
+            request=request,
+            action=AuditEvent.Action.OFFER_PREVIEW,
+            entity_type="OfferAssignment",
+            entity_id=assignment.id,
+            status_code=200,
+            meta={
+                "offer_id": assignment.offer_id,
+                "offer_type": assignment.offer.offer_type,
+                "target": target,
+                "gross_total": calc.get("gross_total"),
+                "net_total": calc.get("net_total"),
+            },
+        )
 
         return Response(
             {

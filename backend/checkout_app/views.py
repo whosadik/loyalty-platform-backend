@@ -28,6 +28,9 @@ from rest_framework import serializers
 from django.db import IntegrityError
 from backend.throttles import CheckoutPreviewRateThrottle
 
+from audit.logging import log_event
+from audit.models import AuditEvent
+
 def _ensure_account(user) -> LoyaltyAccount:
     acc, _ = LoyaltyAccount.objects.get_or_create(user=user)
     if acc.tier_id is None:
@@ -81,6 +84,14 @@ class CheckoutView(APIView):
         if idem:
             prev = Transaction.objects.filter(user=request.user, idempotency_key=idem).first()
             if prev and prev.pricing_meta:
+                log_event(
+                    request=request,
+                    action=AuditEvent.Action.CHECKOUT_REPLAY,
+                    entity_type="Transaction",
+                    entity_id=prev.id,
+                    status_code=200,
+                    meta={"idempotency_key": idem},
+                )
                 return Response({"ok": True, "idempotent_replay": True, **prev.pricing_meta})
 
         now = timezone.now()
@@ -100,7 +111,24 @@ class CheckoutView(APIView):
             except IntegrityError:
                 prev = Transaction.objects.get(user=request.user, idempotency_key=idem)
                 if prev.pricing_meta:
+                    log_event(
+                        request=request,
+                        action=AuditEvent.Action.CHECKOUT_REPLAY,
+                        entity_type="Transaction",
+                        entity_id=prev.id,
+                        status_code=200,
+                        meta={"idempotency_key": idem, "source": "integrity_error"},
+                    )
                     return Response({"ok": True, "idempotent_replay": True, **prev.pricing_meta})
+
+                log_event(
+                    request=request,
+                    action=AuditEvent.Action.CHECKOUT_REPLAY,
+                    entity_type="Transaction",
+                    entity_id=prev.id,
+                    status_code=409,
+                    meta={"idempotency_key": idem, "source": "integrity_error", "pricing_meta_missing": True},
+                )
                 return Response({"ok": False, "message": "Duplicate idempotency_key"}, status=409)
 
 
@@ -274,6 +302,24 @@ class CheckoutView(APIView):
                     "reason": next_assignment.reason,
                     "expires_at": exp.isoformat() if exp else None,
                 }
+
+                # AUDIT: next offer assigned
+                t = next_assignment.target or {}
+                log_event(
+                    request=request,
+                    action=AuditEvent.Action.NEXT_OFFER_ASSIGNED,
+                    entity_type="OfferAssignment",
+                    entity_id=next_assignment.id,
+                    status_code=201,
+                    meta={
+                        "picked_via": t.get("picked_via"),
+                        "scope": t.get("scope"),
+                        "value": t.get("value"),
+                        "category": t.get("category"),
+                        "product_type": t.get("product_type"),
+                    },
+                )
+
             payload = {
                 "transaction_id": txn.id,
                 "gross_total": str(gross_total),
@@ -292,7 +338,28 @@ class CheckoutView(APIView):
 
             # сохраняем снимок результата для replay
             Transaction.objects.filter(id=txn.id).update(pricing_meta=payload)
-    
+
+            # AUDIT: checkout created
+            log_event(
+                request=request,
+                action=AuditEvent.Action.CHECKOUT_CREATED,
+                entity_type="Transaction",
+                entity_id=txn.id,
+                status_code=201,
+                meta={
+                    "idempotency_key": idem,
+                    "gross_total": str(gross_total),
+                    "net_total": str(net_total),
+                    "discount_amount": str(discount_amount),
+                    "offer_applied": bool(applied_assignment_id),
+                    "offer_assignment_id": applied_assignment_id,
+                    "points_redeemed": points_redeemed,
+                    "points_earned": points_earned,
+                    "items_count": len(created_items),
+                    "channel": data.get("channel", "offline"),
+                },
+            )
+
         return Response({"ok": True, **payload})
 
 from offers.models import OfferAssignment
