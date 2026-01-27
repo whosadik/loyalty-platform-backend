@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-*ptqzd-7zlnf-o66x9!2&-cyxa4+^+1^+y&g5(y8ct^f$vypmk
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['*']
 
 
 # Application definition
@@ -63,7 +63,19 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "EXCEPTION_HANDLER": "backend.api_errors.exception_handler",
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema"
+}
+REST_FRAMEWORK["DEFAULT_THROTTLE_CLASSES"] = [
+    "rest_framework.throttling.UserRateThrottle",
+    "rest_framework.throttling.AnonRateThrottle",
+]
+REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
+    "anon": "60/min",
+    "user": "240/min",
+    "recs": "30/min",
+    "next_offer": "20/min",
+    "checkout_preview": "30/min",
 }
 
 SPECTACULAR_SETTINGS = {

@@ -26,6 +26,7 @@ from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 
 from django.db import IntegrityError
+from backend.throttles import CheckoutPreviewRateThrottle
 
 def _ensure_account(user) -> LoyaltyAccount:
     acc, _ = LoyaltyAccount.objects.get_or_create(user=user)
@@ -299,6 +300,8 @@ from loyalty.models import LoyaltyAccount, Tier
 
 class CheckoutPreviewView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [CheckoutPreviewRateThrottle]
+
     @extend_schema(
         tags=["Checkout"],
         description="Full checkout preview: offer + points redeem (no DB writes).",

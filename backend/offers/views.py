@@ -29,6 +29,7 @@ from checkout_app.pricing import Line, apply_offer_to_totals
 from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
+from backend.throttles import NextOfferRateThrottle
 
 def _ensure_loyalty_account(user):
     account, created = LoyaltyAccount.objects.get_or_create(user=user)
@@ -66,6 +67,8 @@ def _recalculate_tier(user, now):
 
 class MeNextOfferView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [NextOfferRateThrottle]
+
     @extend_schema(
         tags=["Offers"],
         description="Get active offer assignment or auto-assign next offer under budget/cooldown constraints.",

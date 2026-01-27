@@ -6,6 +6,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import serializers
 
+from backend.throttles import RecsRateThrottle
 from catalog.models import Product
 from transactions.models import OwnedProduct, TransactionItem, Transaction
 from users_app.models import CustomerProfile
@@ -125,6 +126,7 @@ class MeRecommendationsView(APIView):
 
 class MeBundleView(APIView):
     permission_classes = [IsAuthenticated]
+    throttle_classes = [RecsRateThrottle]  
     @extend_schema(
         tags=["Recommendations"],
         parameters=[
