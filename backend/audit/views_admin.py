@@ -11,11 +11,28 @@ from audit.serializers import AuditEventSerializer
 from backend.pagination import AdminAuditPagination
 import csv
 from django.http import StreamingHttpResponse
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 
 class AdminAuditListView(APIView):
     permission_classes = [IsAdminUser]
-
+    @extend_schema(
+        tags=["Admin"],
+        description="Audit events list with filters and pagination.",
+        parameters=[
+            OpenApiParameter(name="action", required=False, type=str),
+            OpenApiParameter(name="user_id", required=False, type=int),
+            OpenApiParameter(name="request_id", required=False, type=str),
+            OpenApiParameter(name="entity_type", required=False, type=str),
+            OpenApiParameter(name="entity_id", required=False, type=str),
+            OpenApiParameter(name="path", required=False, type=str),
+            OpenApiParameter(name="status_code", required=False, type=int),
+            OpenApiParameter(name="since", required=False, type=str, description="ISO datetime, e.g. 2026-01-01T00:00:00Z"),
+            OpenApiParameter(name="until", required=False, type=str, description="ISO datetime"),
+            OpenApiParameter(name="page", required=False, type=int),
+            OpenApiParameter(name="page_size", required=False, type=int),
+        ],
+    )
     def get(self, request):
         qs = AuditEvent.objects.all().order_by("-created_at")
 
@@ -72,7 +89,23 @@ class Echo:
 
 class AdminAuditExportCsvView(APIView):
     permission_classes = [IsAdminUser]
-
+    @extend_schema(
+        tags=["Admin"],
+        description="CSV export of audit events (same filters as list).",
+        parameters=[
+            OpenApiParameter(name="action", required=False, type=str),
+            OpenApiParameter(name="user_id", required=False, type=int),
+            OpenApiParameter(name="request_id", required=False, type=str),
+            OpenApiParameter(name="entity_type", required=False, type=str),
+            OpenApiParameter(name="entity_id", required=False, type=str),
+            OpenApiParameter(name="path", required=False, type=str),
+            OpenApiParameter(name="status_code", required=False, type=int),
+            OpenApiParameter(name="since", required=False, type=str, description="ISO datetime, e.g. 2026-01-01T00:00:00Z"),
+            OpenApiParameter(name="until", required=False, type=str, description="ISO datetime"),
+            OpenApiParameter(name="page", required=False, type=int),
+            OpenApiParameter(name="page_size", required=False, type=int),
+        ],
+    )
     def get(self, request):
         # используем те же фильтры, что и list view
         qs = AuditEvent.objects.all().order_by("-created_at")

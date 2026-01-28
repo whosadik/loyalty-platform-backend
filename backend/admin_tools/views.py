@@ -12,10 +12,15 @@ from transactions.models import Transaction
 from datetime import timedelta
 from django.db.models import Sum, Count
 from loyalty.models import LoyaltyLedgerEntry
+from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 class AdminHealthView(APIView):
     permission_classes = [IsAdminUser]
 
+    @extend_schema(
+        tags=["Admin"],
+        description="Health check: database + cache + basic counters.",
+    )
     def get(self, request):
         # DB check
         db_ok = True
@@ -58,6 +63,10 @@ from offers.admin_metrics import offers_metrics_30d
 class AdminOverviewView(APIView):
     permission_classes = [IsAdminUser]
 
+    @extend_schema(
+        tags=["Admin"],
+        description="Aggregated overview for last 7 and 30 days.",
+    )
     def get(self, request):
         now = timezone.now()
         since7 = now - timedelta(days=7)
