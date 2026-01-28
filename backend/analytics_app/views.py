@@ -13,10 +13,11 @@ from transactions.models import Transaction
 
 from ml_logic.next_best_reward import compute_rfm, segment
 from offers.admin_metrics import offers_metrics_30d
+from backend.permissions import HasStaffPermission
 
 
 class AdminMetricsView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [HasStaffPermission.with_perm("view_metrics")]
 
     def get(self, request):
         now = datetime.now(timezone.utc)

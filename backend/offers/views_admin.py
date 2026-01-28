@@ -4,10 +4,11 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAdminUser
 from audit.logging import log_event
 from audit.models import AuditEvent
+from backend.permissions import HasStaffPermission
 
 
 class AdminCacheInvalidateView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [HasStaffPermission.with_perm("invalidate_cache")]
 
     def post(self, request):
         keys = ["recs:products:v1", "recs:cooc90d:v1"]

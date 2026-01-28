@@ -5,6 +5,7 @@ from django.db.models import Q
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAdminUser
+from backend.permissions import HasStaffPermission
 
 from audit.models import AuditEvent
 from audit.serializers import AuditEventSerializer
@@ -15,7 +16,7 @@ from drf_spectacular.utils import extend_schema, OpenApiParameter
 
 
 class AdminAuditListView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [HasStaffPermission.with_perm("view_audit")]
     @extend_schema(
         tags=["Admin"],
         description="Audit events list with filters and pagination.",
@@ -88,7 +89,7 @@ class Echo:
 
 
 class AdminAuditExportCsvView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [HasStaffPermission.with_perm("view_audit")]
     @extend_schema(
         tags=["Admin"],
         description="CSV export of audit events (same filters as list).",

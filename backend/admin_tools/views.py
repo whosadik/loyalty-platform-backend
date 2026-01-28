@@ -13,6 +13,7 @@ from datetime import timedelta
 from django.db.models import Sum, Count
 from loyalty.models import LoyaltyLedgerEntry
 from drf_spectacular.utils import extend_schema, OpenApiParameter
+from backend.permissions import HasStaffPermission
 
 class AdminHealthView(APIView):
     permission_classes = [IsAdminUser]
@@ -61,7 +62,7 @@ class AdminHealthView(APIView):
 from offers.admin_metrics import offers_metrics_30d
 
 class AdminOverviewView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [HasStaffPermission.with_perm("view_metrics")]
 
     @extend_schema(
         tags=["Admin"],
