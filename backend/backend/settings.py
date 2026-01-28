@@ -198,3 +198,7 @@ CACHES = {
         "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
     }
 }
+
+AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
+
+OFFERS_RETENTION_DAYS = int(os.getenv("OFFERS_RETENTION_DAYS", "180"))
