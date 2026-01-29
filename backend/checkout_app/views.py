@@ -30,7 +30,7 @@ from backend.throttles import CheckoutPreviewRateThrottle
 
 from audit.logging import log_event
 from audit.models import AuditEvent
-
+from recs_analytics.services import attribute_purchase
 def _ensure_account(user) -> LoyaltyAccount:
     acc, _ = LoyaltyAccount.objects.get_or_create(user=user)
     if acc.tier_id is None:
@@ -359,6 +359,15 @@ class CheckoutView(APIView):
                     "channel": data.get("channel", "offline"),
                 },
             )
+        try:
+            attribute_purchase(
+                user=request.user,
+                purchased_product_ids=[int(x) for x in purchased_ids], 
+                window_days=7,
+                request_id=getattr(request, "request_id", None),
+            )
+        except Exception:
+            pass
 
         return Response({"ok": True, **payload})
 

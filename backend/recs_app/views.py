@@ -37,6 +37,7 @@ from users_app.models import CustomerProfile
 
 from ml_logic.recommender import recommend as rec_recommend
 from ml_logic.recommender import bundle as rec_bundle
+from recs_analytics.models import RecommendationEvent
 
 # ВАЖНО: чтобы не переписывать, используем твои уже готовые хелперы.
 # Если эти функции лежат в offers/services.py — импортируй оттуда.
@@ -428,6 +429,34 @@ class HomeRecommendationsView(APIView):
                 continue
             trending_filtered.append(r)
         trending = _dedupe_limit(trending_filtered, seen, limit)
+        events = []
+        rid = getattr(request, "request_id", None)
+
+        def push_impressions(section_key: str, results: list[dict], page: str = "home"):
+            for r in results:
+                p = r.get("product") or {}
+                pid = p.get("id")
+                if not pid:
+                    continue
+                comps = r.get("components") or {}
+                events.append(RecommendationEvent(
+                    user=request.user,
+                    action=RecommendationEvent.Action.IMPRESSION,
+                    page=page,
+                    section_key=section_key,
+                    request_id=rid,
+                    product_id=int(pid),
+                    algo_mode=str(comps.get("mode") or comps.get("source") or ""),
+                    score=float(r.get("score")) if r.get("score") is not None else None,
+                    components=comps,
+                    context={"why": (r.get("why") or [])[:6]},
+                ))
+
+        push_impressions("for_you", for_you)
+        push_impressions("because_you_bought", because)
+        push_impressions("trending", trending)
+
+        RecommendationEvent.objects.bulk_create(events, batch_size=500)
 
         return Response({
             "ok": True,

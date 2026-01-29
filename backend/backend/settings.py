@@ -56,6 +56,7 @@ INSTALLED_APPS = [
     "checkout_app",
     "audit",
     "admin_tools.apps.AdminToolsConfig",
+    "recs_analytics",
 ]
 
 REST_FRAMEWORK = {

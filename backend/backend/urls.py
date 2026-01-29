@@ -17,4 +17,5 @@ urlpatterns = [
     path("api/", include("checkout_app.urls")),
     path("api/", include("audit.urls")),
     path("api/", include("admin_tools.urls")),
+    path("api/", include("recs_analytics.urls")),
 ]
