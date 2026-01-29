@@ -203,3 +203,11 @@ CACHES = {
 AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
 
 OFFERS_RETENTION_DAYS = int(os.getenv("OFFERS_RETENTION_DAYS", "180"))
+
+RECS_FATIGUE_WINDOW_DAYS = int(os.getenv("RECS_FATIGUE_WINDOW_DAYS", "14"))
+RECS_FATIGUE_IMPRESSIONS_MIN = int(os.getenv("RECS_FATIGUE_IMPRESSIONS_MIN", "6"))
+RECS_FATIGUE_HARD_SKIP = os.getenv("RECS_FATIGUE_HARD_SKIP", "1").strip() in {"1","true","yes","on"}
+
+RECS_UPLIFT_CLICK = float(os.getenv("RECS_UPLIFT_CLICK", "0.15"))          # +к score за клик
+RECS_UPLIFT_PURCHASE = float(os.getenv("RECS_UPLIFT_PURCHASE", "0.5"))     # +к score за attributed purchase
+RECS_PENALTY_IMP = float(os.getenv("RECS_PENALTY_IMP", "0.05"))     

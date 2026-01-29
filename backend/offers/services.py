@@ -24,6 +24,7 @@ from ml_logic.recommender import (
 )
 from django.db.models import Count
 from django.core.cache import cache
+from recs_analytics.fatigue import adjust_recs
 
 def _week_start(d: datetime) -> datetime.date:
     # Monday as week start
@@ -173,6 +174,8 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
                 owned_ids = list(
                     OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
                 )
+                recent_vals = _recent_target_values(user, days=7, now=now)
+
                 recs = rec_recommend(
                     prof=prof,
                     products=products,
@@ -180,11 +183,12 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
                     context_product_ids=owned_ids[:50],
                     category="skincare",
                     product_type="spf",
-                    limit=1,
+                    limit=10,   
                     co=co,
                 )
-                if recs:
-                    top = recs[0]
+
+                top = _pick_best_rec_target(user, recs, now=now, recent_vals=recent_vals)
+                if top:
                     p = top["product"]
                     return {
                         "scope": "product_id",
@@ -194,6 +198,8 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
                         "rec_score": top.get("score"),
                         "rec_components": top.get("components", {}),
                         "rec_why": (top.get("why") or [])[:6],
+                        "adjusted_score": top.get("adjusted_score"),
+                        "picked_via": "routine_shortcut+recs",
                     }
 
     # 2) if cart
@@ -261,6 +267,8 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
                 OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
             )
 
+            recent_vals = _recent_target_values(user, days=7, now=now)
+
             recs = rec_recommend(
                 prof=prof,
                 products=products,
@@ -268,11 +276,12 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
                 context_product_ids=(post_ctx.get("product_ids") or owned_ids)[:50],
                 category=cat,
                 product_type=pt,
-                limit=1,
+                limit=10,   
                 co=co,
             )
-            if recs:
-                top = recs[0]
+
+            top = _pick_best_rec_target(user, recs, now=now, recent_vals=recent_vals)
+            if top:
                 p = top["product"]
                 return {
                     "scope": "product_id",
@@ -282,6 +291,7 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
                     "rec_score": top.get("score"),
                     "rec_components": top.get("components", {}),
                     "rec_why": (top.get("why") or [])[:6],
+                    "adjusted_score": top.get("adjusted_score"),
                     "picked_via": "post_purchase_rules+recs",
                 }
 
@@ -316,6 +326,8 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
     owned_ids = list(
         OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
     )
+    recent_vals = _recent_target_values(user, days=7, now=now)
+
     recs = rec_recommend(
         prof=prof,
         products=products,
@@ -323,11 +335,12 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
         context_product_ids=owned_ids[:50],
         category=category,
         product_type=product_type,
-        limit=1,
+        limit=10,   
         co=co,
     )
-    if recs:
-        top = recs[0]
+
+    top = _pick_best_rec_target(user, recs, now=now, recent_vals=recent_vals)
+    if top:
         p = top["product"]
         return {
             "scope": "product_id",
@@ -337,6 +350,7 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
             "rec_score": top.get("score"),
             "rec_components": top.get("components", {}),
             "rec_why": (top.get("why") or [])[:6],
+            "adjusted_score": top.get("adjusted_score"),
         }
 
     # degrade
@@ -521,7 +535,7 @@ def get_or_assign_next_offer(
 
     target = _pick_target_for_offer(user, offer, now, context_steps, post_ctx)
     # если таргет выбран через bundle — обогащаем reason объяснением
-    if isinstance(target, dict) and target.get("picked_via") == "bundle":
+    if isinstance(target, dict) and str(target.get("picked_via", "")).startswith("bundle"):
         reason = {
             **(reason or {}),
             "bundle": {
@@ -580,29 +594,38 @@ def _pick_product_from_bundle(user, now: datetime, post_ctx: dict, category: str
             limit=20,
         )
         # фильтры: category (если задана), saturation, in_stock уже учтён
+        candidates = []
+
         for r in res:
             p = r["product"]
+            pid = int(p["id"])
 
-             # НЕ давать тот же product_id, что уже выдавали недавно
-            if int(p["id"]) in recent_vals:
+            if pid in recent_vals:
                 continue
-            if p["id"] in owned_set:
+            if pid in owned_set:
                 continue
             if category and p.get("category") != category:
                 continue
-            # saturation by product_type
             if _is_saturated(user, p["category"], p["product_type"]):
                 continue
 
+            candidates.append(r)
+            if len(candidates) >= 20:
+                break
+
+        top = _pick_best_rec_target(user, candidates, now=now, recent_vals=recent_vals)
+        if top:
+            p = top["product"]
             return {
                 "scope": "product_id",
                 "value": p["id"],
                 "category": p["category"],
                 "product_type": p["product_type"],
-                "bundle_mode": r.get("components", {}).get("mode"),
-                "bundle_score": r.get("score"),
-                "bundle_components": r.get("components", {}),
-                "bundle_why": (r.get("why") or [])[:6],
+                "bundle_mode": top.get("components", {}).get("mode"),
+                "bundle_score": top.get("score"),
+                "bundle_components": top.get("components", {}),
+                "bundle_why": (top.get("why") or [])[:6],
+                "adjusted_score": top.get("adjusted_score"),
                 "picked_via": "bundle",
                 "based_on_product_id": int(base_id),
             }
@@ -620,3 +643,22 @@ def _recent_target_values(user, days: int, now: datetime) -> set[int]:
             except Exception:
                 pass
     return vals
+
+def _pick_best_rec_target(user, recs: list[dict], *, now: datetime, recent_vals: set[int] | None = None):
+    recent_vals = recent_vals or set()
+    adjusted = adjust_recs(user, recs, now=now)
+
+    for r in adjusted:
+        p = r.get("product") or {}
+        pid = int(p.get("id"))
+        fat = (r.get("components") or {}).get("fatigue") or {}
+        is_fatigued = bool(fat.get("fatigued"))
+
+        if pid in recent_vals:
+            continue
+        if getattr(settings, "RECS_FATIGUE_HARD_SKIP", True) and is_fatigued:
+            continue
+
+        return r
+
+    return adjusted[0] if adjusted else None
