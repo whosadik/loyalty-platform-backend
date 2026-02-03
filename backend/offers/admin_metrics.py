@@ -1,9 +1,10 @@
 from datetime import timedelta
+from decimal import Decimal
+
 from django.utils import timezone
-from django.db.models import Count
+from django.db.models import Count, Q
 
-from offers.models import OfferAssignment
-
+from offers.models import OfferAssignment, CampaignBudget
 
 def offers_metrics_30d():
     now = timezone.now()
@@ -52,3 +53,45 @@ def offers_metrics_30d():
         "bundle_mode_distribution_30d": bundle_mode,
         "offer_target_category_distribution_30d": cat_dist,
     }
+
+def campaigns_metrics_30d():
+    now = timezone.now()
+    since = now - timedelta(days=30)
+
+    # assignments per campaign (через offer__campaign)
+    rows = (
+        OfferAssignment.objects.filter(assigned_at__gte=since)
+        .values("offer__campaign__name")
+        .annotate(
+            assignments=Count("id"),
+            redemptions=Count("id", filter=Q(is_redeemed=True)),
+        )
+        .order_by("-assignments")
+    )
+
+    out = []
+    for r in rows:
+        name = r["offer__campaign__name"] or "none"
+        a = int(r["assignments"] or 0)
+        red = int(r["redemptions"] or 0)
+        out.append({
+            "campaign": name,
+            "assignments_30d": a,
+            "redemptions_30d": red,
+            "redemption_rate": round(red / a, 4) if a else 0.0,
+        })
+
+    # current weekly spend/left
+    current = []
+    for c in CampaignBudget.objects.all().order_by("priority", "name"):
+        left = float(Decimal(str(c.weekly_limit)) - Decimal(str(c.weekly_spent)))
+        current.append({
+            "campaign": c.name,
+            "priority": c.priority,
+            "is_active": bool(c.is_active),
+            "weekly_limit": float(c.weekly_limit),
+            "weekly_spent": float(c.weekly_spent),
+            "weekly_left": left,
+        })
+
+    return {"window_days": 30, "current_week": current, "last_30d": out}

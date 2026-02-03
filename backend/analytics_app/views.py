@@ -15,6 +15,7 @@ from ml_logic.next_best_reward import compute_rfm, segment
 from offers.admin_metrics import offers_metrics_30d
 from backend.permissions import HasStaffPermission
 from recs_analytics.admin_metrics import recs_metrics_30d
+from offers.admin_metrics import offers_metrics_30d, campaigns_metrics_30d
 
 class AdminMetricsView(APIView):
     permission_classes = [HasStaffPermission.with_perm("view_metrics")]
@@ -114,5 +115,6 @@ class AdminMetricsView(APIView):
                     "users_sampled": len(user_ids[:500]),
                 },
                 "recs": recs_metrics_30d(),
+                "campaigns": campaigns_metrics_30d(),
             }
         )

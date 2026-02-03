@@ -32,22 +32,50 @@ def _week_start(d: datetime) -> datetime.date:
     return (d - timedelta(days=d.weekday())).date()
 
 
-def _get_budget_locked(now: datetime) -> CampaignBudget:
-    # single row budget (MVP). If you have multiple campaigns, adapt.
-    b, _ = CampaignBudget.objects.select_for_update().get_or_create(
-        name="default",
-        defaults={"weekly_limit": Decimal("1000.0"), "weekly_spent": Decimal("0.0")},
-    )
-
-    # optional weekly reset if you already added week_start_date
-    if hasattr(b, "week_start_date"):
+def _reset_campaign_week_if_needed(camp: CampaignBudget, now: datetime) -> None:
+    if hasattr(camp, "week_start_date"):
         ws = _week_start(now)
-        if b.week_start_date != ws:
-            b.week_start_date = ws
-            b.weekly_spent = Decimal("0.0")
-            b.save(update_fields=["week_start_date", "weekly_spent"])
+        if camp.week_start_date != ws:
+            camp.week_start_date = ws
+            camp.weekly_spent = Decimal("0.0")
+            camp.save(update_fields=["week_start_date", "weekly_spent"])
 
-    return b
+
+def _campaign_candidates(context_steps: list[str] | None, post_ctx: dict | None) -> list[CampaignBudget]:
+    """
+    Берём активные кампании, чуть фильтруем по steps.
+    (Категории мы не жёстко фильтруем тут, чтобы не обрубать fallback.)
+    """
+    qs = CampaignBudget.objects.filter(is_active=True).order_by("priority", "id")
+
+    out: list[CampaignBudget] = []
+    for c in qs:
+        if (c.allowed_steps or []) and not context_steps:
+            continue
+        if (c.allowed_steps or []) and context_steps and not (set(c.allowed_steps) & set(context_steps)):
+            continue
+        out.append(c)
+    return out
+
+
+def _effective_allowed_categories(offer: Offer, camp: CampaignBudget | None) -> list[str]:
+    """
+    Ограничение по категориям = пересечение offer.allowed_categories и camp.allowed_categories (если оба заданы).
+    """
+    o = offer.allowed_categories or []
+    c = (camp.allowed_categories or []) if camp else []
+    if o and c:
+        return [x for x in o if x in c]
+    return o or c
+
+
+def _effective_allowed_steps(offer: Offer, camp: CampaignBudget | None) -> list[str]:
+    o = offer.allowed_steps or []
+    c = (camp.allowed_steps or []) if camp else []
+    if o and c:
+        return [x for x in o if x in c]
+    return o or c
+
 
 
 def _rfm(user, now: datetime) -> dict[str, Any]:
@@ -157,12 +185,19 @@ def _is_saturated(user, category: str, product_type: str) -> bool:
     limit = SATURATION_LIMITS.get(category, 2)
     return _owned_type_count(user, category, product_type) >= limit
 
-def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: list[str] | None, post_ctx: dict | None):
+def _pick_target_for_offer(
+    user,
+    offer: Offer,
+    now: datetime,
+    context_steps: list[str] | None,
+    post_ctx: dict | None,
+    campaign: CampaignBudget | None = None,
+):
     # 1) routine-context shortcut
     if settings.USE_ROUTINE_SHORTCUT and context_steps and offer.target_scope in {"product_type", "product_id"}:
         if "spf" in context_steps:
             # if offer allows skincare or doesn't restrict
-            allowed = offer.allowed_categories or []
+            allowed = _effective_allowed_categories(offer, campaign)
             if not allowed or "skincare" in allowed:
                 if offer.target_scope == "product_type":
                     return {"scope": "product_type", "value": "spf", "category": "skincare"}
@@ -209,7 +244,7 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
     
     # ---- Bundle-driven target (post-purchase) ----
     if settings.USE_BUNDLE_TARGETING and post_ctx and offer.target_scope == "product_id":
-        allowed_cats = offer.allowed_categories or []
+        allowed_cats = _effective_allowed_categories(offer, campaign)
         bundle_cat = allowed_cats[0] if allowed_cats else None
 
         t = _pick_product_from_bundle(user, now, post_ctx, category=bundle_cat)
@@ -217,7 +252,7 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
             return t
 
     # 3) explicit restrictions
-    allowed_cats = offer.allowed_categories or []
+    allowed_cats = _effective_allowed_categories(offer, campaign)
     allowed_pts = offer.allowed_product_types or []
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
@@ -229,14 +264,14 @@ def _pick_target_for_offer(user, offer: Offer, now: datetime, context_steps: lis
 
     filtered = []
     for s in suggestions:
-        if offer.allowed_categories and s["category"] not in (offer.allowed_categories or []):
+        if allowed_cats and s["category"] not in allowed_cats:
             continue
+
         if offer.allowed_product_types and s["product_type"] not in (offer.allowed_product_types or []):
-            # если offer scope=category — можно оставить кандидата по категории
-            if offer.target_scope == "category":
-                pass
-            else:
+            # если scope=category — тип продукта можно игнорировать
+            if offer.target_scope != "category":
                 continue
+
         filtered.append(s)
 
     # теперь перебираем по приоритету
@@ -441,122 +476,132 @@ def _passes_category_cooldown(user, category: str, now: datetime, days: int = 3)
         target__category=category,
     ).exists()
 
-def _select_offer(user, now: datetime, context_steps: list[str] | None):
-    def _expected_category_for_offer(o, context_steps):
-        # 1) context shortcut
+def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx: dict | None):
+    def _expected_category_for_offer(o: Offer, camp: CampaignBudget | None, context_steps: list[str] | None):
+        # routine shortcut подсказка: SPF -> skincare
         if context_steps and "spf" in context_steps:
-            # если оффер разрешает skincare или не ограничивает — считаем skincare
-            allowed = o.allowed_categories or []
+            allowed = _effective_allowed_categories(o, camp)
             if not allowed or "skincare" in allowed:
                 return "skincare"
 
-        # 2) если оффер ограничен категориями — берём первую
-        allowed = o.allowed_categories or []
+        allowed = _effective_allowed_categories(o, camp)
         if allowed:
             return allowed[0]
-
-        # 3) иначе неизвестно — вернём None
         return None
 
-    # Pick best offer under: is_active + cooldown + budget.
-    offers = list(Offer.objects.filter(is_active=True))
+    campaigns = _campaign_candidates(context_steps, post_ctx)
+    if not campaigns:
+        # сегмент/рфм всё равно вернём
+        rfm = _rfm(user, now)
+        seg = segment(RFM(**rfm))
+        return None, {"segment": seg, "rfm": rfm, "picked_because": "no active campaigns"}
 
-    budget = _get_budget_locked(now)
-    left = Decimal(str(budget.weekly_limit)) - Decimal(str(budget.weekly_spent))
+    # ВАЖНО: select_for_update работает корректно только внутри atomic
+    locked = list(
+        CampaignBudget.objects.select_for_update().filter(id__in=[c.id for c in campaigns])
+    )
+    locked.sort(key=lambda x: (x.priority, x.id))
 
-    best = None
-    best_score = -1e9
-
-    # segment from RFM
     rfm = _rfm(user, now)
     seg = segment(RFM(**rfm))
 
-    for o in offers:
-        cost = Decimal(str(getattr(o, "estimated_cost", 0) or 0))
-        if cost > left:
+    best_pair: tuple[Offer, CampaignBudget] | None = None
+    best_score = -1e9
+    best_reason: dict | None = None
+
+    for camp in locked:
+        _reset_campaign_week_if_needed(camp, now)
+
+        left = Decimal(str(camp.weekly_limit)) - Decimal(str(camp.weekly_spent))
+        if left <= 0:
             continue
-        if not _passes_cooldown(user, o, now):
-            continue
 
-        score = 0.0
+        offers = list(Offer.objects.filter(is_active=True, campaign=camp))
 
-        # segment boosts (как у тебя, но чуть сильнее)
-        if seg == "at_risk" and o.offer_type == "discount":
-            score += 2.5
-        if seg in {"vip", "active"} and o.offer_type == "points_multiplier":
-            score += 2.0
-        if seg == "new_or_rare" and o.offer_type == "discount":
-            score += 0.5  # помочь “первой покупке”
+        for o in offers:
+            eff_cats = _effective_allowed_categories(o, camp)
+            if (o.allowed_categories or []) and (camp.allowed_categories or []) and not eff_cats:
+                continue
 
-        # context boosts (как было)
-        if context_steps and (o.allowed_steps or []):
-            if set(o.allowed_steps).intersection(set(context_steps)):
-                score += 10.0
+            cost = Decimal(str(getattr(o, "estimated_cost", 0) or 0))
+            if cost > left:
+                continue
+            if not _passes_cooldown(user, o, now):
+                continue
 
-        # ---- NEW: category effectiveness loop ----
-        exp_cat = _expected_category_for_offer(o, context_steps)
-        cat_adj = 0.0
-        cat_perf = None
-        if exp_cat:
-            cat_adj, cat_perf = category_uplift(exp_cat, now=now)
-            # подмешиваем глобальный сигнал
-            score += cat_adj
+            score = 0.0
 
-            # выбор типа оффера по эффективности категории:
-            # - если категория “и так конвертит” -> выгоднее points_multiplier
-            # - если конвертит плохо -> discount помогает
-            baseline = float(getattr(settings, "RECS_GLOBAL_BASELINE_CR", 0.02))
-            if cat_perf and cat_perf.impressions >= int(getattr(settings, "RECS_GLOBAL_MIN_IMP", 20)):
-                if cat_perf.cr >= baseline:
-                    if o.offer_type == "points_multiplier":
-                        score += 0.6
-                    if o.offer_type == "discount":
-                        score -= 0.4
-                else:
-                    if o.offer_type == "discount":
-                        score += 0.6
-                    if o.offer_type == "points_multiplier":
-                        score -= 0.2
+            # segment boosts
+            if seg == "at_risk" and o.offer_type == "discount":
+                score += 2.5
+            if seg in {"vip", "active"} and o.offer_type == "points_multiplier":
+                score += 2.0
+            if seg == "new_or_rare" and o.offer_type == "discount":
+                score += 0.5
 
-        # ---- NEW: budget optimizer ----
-        weekly_limit = Decimal(str(getattr(budget, "weekly_limit", 0) or 0))
-        stretch = float(left / weekly_limit) if weekly_limit > 0 else 1.0
-        # когда бюджета мало — сильнее штрафуем дорогие офферы
-        score -= float(cost) * (0.02 + (0.06 if stretch < 0.3 else 0.02))
+            # context boosts по steps (учитываем и кампанию и оффер)
+            eff_steps = _effective_allowed_steps(o, camp)
+            if context_steps and eff_steps:
+                if set(eff_steps).intersection(set(context_steps)):
+                    score += 10.0
 
-        # cheaper offers slightly preferred (как у тебя, но слабее, чтобы не перебить сигналы)
-        score += float(1.0 / (1.0 + float(cost))) * 0.5
+            # campaign priority boost
+            score += max(0.0, (100 - float(camp.priority))) * 0.01
 
-        # tie-breaker: чуть поощряем офферы с таргетингом (если есть target_scope != cart)
-        if getattr(o, "target_scope", None) and o.target_scope != "cart":
-            score += 0.05
+            # global effectiveness loop (по ожидаемой категории)
+            exp_cat = _expected_category_for_offer(o, camp, context_steps)
+            cat_adj = 0.0
+            cat_perf = None
+            if exp_cat:
+                cat_adj, cat_perf = category_uplift(exp_cat, now=now)
+                score += cat_adj
 
-        if score > best_score:
-            best_score = score
-            best = o
-            best_reason = {
-                "segment": seg,
-                "rfm": rfm,
-                "picked_because": "max(score) under eligibility + cooldown + budget + global_effectiveness",
-                "context_steps": context_steps or None,
-                "budget_left": float(left),
-                "budget_stretch": round(stretch, 3),
-                "expected_category": exp_cat,
-                "category_adjust": round(cat_adj, 4),
-                "category_perf": (
-                    {
-                        "impressions": cat_perf.impressions,
-                        "clicks": cat_perf.clicks,
-                        "purchases": cat_perf.purchases,
-                        "ctr": round(cat_perf.ctr, 4),
-                        "cr": round(cat_perf.cr, 4),
-                    }
-                    if cat_perf else None
-                ),
-            }
+                baseline = float(getattr(settings, "RECS_GLOBAL_BASELINE_CR", 0.02))
+                if cat_perf and cat_perf.impressions >= int(getattr(settings, "RECS_GLOBAL_MIN_IMP", 20)):
+                    if cat_perf.cr >= baseline:
+                        if o.offer_type == "points_multiplier":
+                            score += 0.6
+                        if o.offer_type == "discount":
+                            score -= 0.4
+                    else:
+                        if o.offer_type == "discount":
+                            score += 0.6
+                        if o.offer_type == "points_multiplier":
+                            score -= 0.2
 
+            # бюджет внутри кампании: чуть предпочитаем дешёвые
+            score += float(1.0 / (1.0 + float(cost))) * 0.5
 
-    if not best:
+            # tie-breaker: таргетные офферы
+            if getattr(o, "target_scope", None) and o.target_scope != "cart":
+                score += 0.05
+
+            if score > best_score:
+                best_score = score
+                best_pair = (o, camp)
+                best_reason = {
+                    "segment": seg,
+                    "rfm": rfm,
+                    "picked_because": "max(score) across campaigns under cooldown+budget+global_effectiveness",
+                    "context_steps": context_steps or None,
+                    "campaign": camp.name,
+                    "campaign_left": float(left),
+                    "campaign_priority": camp.priority,
+                    "expected_category": exp_cat,
+                    "category_adjust": round(cat_adj, 4),
+                    "category_perf": (
+                        {
+                            "impressions": cat_perf.impressions,
+                            "clicks": cat_perf.clicks,
+                            "purchases": cat_perf.purchases,
+                            "ctr": round(cat_perf.ctr, 4),
+                            "cr": round(cat_perf.cr, 4),
+                        }
+                        if cat_perf else None
+                    ),
+                }
+
+    if not best_pair:
         return None, {
             "segment": seg,
             "rfm": rfm,
@@ -564,8 +609,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None):
             "context_steps": context_steps or None,
         }
 
-    return best, best_reason
-
+    return best_pair, (best_reason or {})
 
 
 def get_or_assign_next_offer(
@@ -574,11 +618,6 @@ def get_or_assign_next_offer(
     context_steps: list[str] | None = None,
     post_ctx: dict | None = None,
 ) -> OfferAssignment | None:
-    """
-    Returns existing active assignment if present, else creates a new one.
-    Must be called inside an atomic block if you want strict budget consistency.
-    """
-    # 1) if user already has active unredeemed offer, reuse it
     existing = (
         OfferAssignment.objects.filter(user=user, is_redeemed=False)
         .select_related("offer")
@@ -587,56 +626,60 @@ def get_or_assign_next_offer(
     )
 
     if existing:
-        # если истёк — помечаем, чтобы не висел активным, и продолжаем выдавать новый
         if existing.expires_at and existing.expires_at <= now:
             existing.is_redeemed = True
             existing.save(update_fields=["is_redeemed"])
         else:
             return existing
 
-    # 2) select offer under constraints (locks budget row)
-    offer, reason = _select_offer(user, now, context_steps)
-    if not offer:
-        return None
-    
-    if post_ctx:
-        reason = {
-            **(reason or {}),
-            "post_purchase": {
-                "categories": post_ctx.get("categories"),
-                "product_types": post_ctx.get("product_types"),
-            },
-        }
+    # всё, что связано с select_for_update + списанием бюджета — в atomic
+    with db_tx.atomic():
+        picked, reason = _select_offer(user, now, context_steps, post_ctx)
+        if not picked:
+            return None
 
-    target = _pick_target_for_offer(user, offer, now, context_steps, post_ctx)
-    # если таргет выбран через bundle — обогащаем reason объяснением
-    if isinstance(target, dict) and str(target.get("picked_via", "")).startswith("bundle"):
-        reason = {
-            **(reason or {}),
-            "bundle": {
-                "based_on_product_id": target.get("based_on_product_id"),
-                "mode": target.get("bundle_mode"),
-                "why": target.get("bundle_why"),
-            },
-        }
+        offer, camp = picked
 
-    # 3) create assignment and spend budget
-    budget = _get_budget_locked(now)
-    cost = Decimal(str(getattr(offer, "estimated_cost", 0) or 0))
-    budget.weekly_spent = Decimal(str(budget.weekly_spent)) + cost
-    budget.save(update_fields=["weekly_spent"] + (["week_start_date"] if hasattr(budget, "week_start_date") else []))
+        if post_ctx:
+            reason = {
+                **(reason or {}),
+                "post_purchase": {
+                    "categories": post_ctx.get("categories"),
+                    "product_types": post_ctx.get("product_types"),
+                },
+            }
 
-    ttl_days = int(getattr(offer, "expires_in_days", 7) or 7)
-    expires_at = now + timedelta(days=ttl_days)
+        target = _pick_target_for_offer(user, offer, now, context_steps, post_ctx, campaign=camp)
 
-    assignment = OfferAssignment.objects.create(
-        user=user,
-        offer=offer,
-        reason=reason,
-        target=target,
-        expires_at=expires_at,
-    )
-    return assignment
+        if isinstance(target, dict) and str(target.get("picked_via", "")).startswith("bundle"):
+            reason = {
+                **(reason or {}),
+                "bundle": {
+                    "based_on_product_id": target.get("based_on_product_id"),
+                    "mode": target.get("bundle_mode"),
+                    "why": target.get("bundle_why"),
+                },
+            }
+
+        # spend campaign budget
+        cost = Decimal(str(getattr(offer, "estimated_cost", 0) or 0))
+        camp.weekly_spent = Decimal(str(camp.weekly_spent)) + cost
+        camp.save(
+            update_fields=["weekly_spent"]
+            + (["week_start_date"] if hasattr(camp, "week_start_date") else [])
+        )
+
+        ttl_days = int(getattr(offer, "expires_in_days", 7) or 7)
+        expires_at = now + timedelta(days=ttl_days)
+
+        assignment = OfferAssignment.objects.create(
+            user=user,
+            offer=offer,
+            reason=reason,
+            target=target,
+            expires_at=expires_at,
+        )
+        return assignment
 
 def _pick_product_from_bundle(user, now: datetime, post_ctx: dict, category: str | None = None):
     """

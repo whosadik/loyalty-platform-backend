@@ -10,6 +10,14 @@ class Offer(models.Model):
 
     is_active = models.BooleanField(default=True)
 
+    campaign = models.ForeignKey(
+        "offers.CampaignBudget",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="offers",
+    )
+
     name = models.CharField(max_length=200)
     offer_type = models.CharField(max_length=40, choices=Type.choices)
 
@@ -49,15 +57,22 @@ class Offer(models.Model):
 
 
 class CampaignBudget(models.Model):
-    """
-    MVP: single rolling budget (weekly). You can extend later.
-    """
     name = models.CharField(max_length=64, unique=True)
+
+    is_active = models.BooleanField(default=True)
+    priority = models.IntegerField(default=100)  # меньше = выше приоритет
+
     weekly_limit = models.DecimalField(max_digits=12, decimal_places=2, default=1000)
     weekly_spent = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
-    updated_at = models.DateTimeField(auto_now=True)
     week_start_date = models.DateField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    allowed_categories = models.JSONField(default=list, blank=True)  # ["skincare","makeup",...]
+    allowed_steps = models.JSONField(default=list, blank=True)       # ["spf","serum",...]
+
+    def __str__(self) -> str:
+        return self.name
 
     def __str__(self) -> str:
         return f"{self.name} budget"
