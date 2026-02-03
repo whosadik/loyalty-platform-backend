@@ -25,6 +25,7 @@ from ml_logic.recommender import (
 from django.db.models import Count
 from django.core.cache import cache
 from recs_analytics.fatigue import adjust_recs
+from recs_analytics.effectiveness import category_uplift
 
 def _week_start(d: datetime) -> datetime.date:
     # Monday as week start
@@ -441,6 +442,22 @@ def _passes_category_cooldown(user, category: str, now: datetime, days: int = 3)
     ).exists()
 
 def _select_offer(user, now: datetime, context_steps: list[str] | None):
+    def _expected_category_for_offer(o, context_steps):
+        # 1) context shortcut
+        if context_steps and "spf" in context_steps:
+            # если оффер разрешает skincare или не ограничивает — считаем skincare
+            allowed = o.allowed_categories or []
+            if not allowed or "skincare" in allowed:
+                return "skincare"
+
+        # 2) если оффер ограничен категориями — берём первую
+        allowed = o.allowed_categories or []
+        if allowed:
+            return allowed[0]
+
+        # 3) иначе неизвестно — вернём None
+        return None
+
     # Pick best offer under: is_active + cooldown + budget.
     offers = list(Offer.objects.filter(is_active=True))
 
@@ -461,36 +478,94 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None):
         if not _passes_cooldown(user, o, now):
             continue
 
-        # simple scoring (MVP). You can refine later.
         score = 0.0
 
-        # context boosts
+        # segment boosts (как у тебя, но чуть сильнее)
+        if seg == "at_risk" and o.offer_type == "discount":
+            score += 2.5
+        if seg in {"vip", "active"} and o.offer_type == "points_multiplier":
+            score += 2.0
+        if seg == "new_or_rare" and o.offer_type == "discount":
+            score += 0.5  # помочь “первой покупке”
+
+        # context boosts (как было)
         if context_steps and (o.allowed_steps or []):
             if set(o.allowed_steps).intersection(set(context_steps)):
                 score += 10.0
 
-        # segment boosts
-        if seg == "at_risk" and o.offer_type == "discount":
-            score += 2.0
-        if seg in {"vip", "active"} and o.offer_type == "points_multiplier":
-            score += 2.0
+        # ---- NEW: category effectiveness loop ----
+        exp_cat = _expected_category_for_offer(o, context_steps)
+        cat_adj = 0.0
+        cat_perf = None
+        if exp_cat:
+            cat_adj, cat_perf = category_uplift(exp_cat, now=now)
+            # подмешиваем глобальный сигнал
+            score += cat_adj
 
-        # cheaper offers slightly preferred to stretch budget
-        score += float(1.0 / (1.0 + float(cost)))
+            # выбор типа оффера по эффективности категории:
+            # - если категория “и так конвертит” -> выгоднее points_multiplier
+            # - если конвертит плохо -> discount помогает
+            baseline = float(getattr(settings, "RECS_GLOBAL_BASELINE_CR", 0.02))
+            if cat_perf and cat_perf.impressions >= int(getattr(settings, "RECS_GLOBAL_MIN_IMP", 20)):
+                if cat_perf.cr >= baseline:
+                    if o.offer_type == "points_multiplier":
+                        score += 0.6
+                    if o.offer_type == "discount":
+                        score -= 0.4
+                else:
+                    if o.offer_type == "discount":
+                        score += 0.6
+                    if o.offer_type == "points_multiplier":
+                        score -= 0.2
+
+        # ---- NEW: budget optimizer ----
+        weekly_limit = Decimal(str(getattr(budget, "weekly_limit", 0) or 0))
+        stretch = float(left / weekly_limit) if weekly_limit > 0 else 1.0
+        # когда бюджета мало — сильнее штрафуем дорогие офферы
+        score -= float(cost) * (0.02 + (0.06 if stretch < 0.3 else 0.02))
+
+        # cheaper offers slightly preferred (как у тебя, но слабее, чтобы не перебить сигналы)
+        score += float(1.0 / (1.0 + float(cost))) * 0.5
+
+        # tie-breaker: чуть поощряем офферы с таргетингом (если есть target_scope != cart)
+        if getattr(o, "target_scope", None) and o.target_scope != "cart":
+            score += 0.05
 
         if score > best_score:
             best_score = score
             best = o
+            best_reason = {
+                "segment": seg,
+                "rfm": rfm,
+                "picked_because": "max(score) under eligibility + cooldown + budget + global_effectiveness",
+                "context_steps": context_steps or None,
+                "budget_left": float(left),
+                "budget_stretch": round(stretch, 3),
+                "expected_category": exp_cat,
+                "category_adjust": round(cat_adj, 4),
+                "category_perf": (
+                    {
+                        "impressions": cat_perf.impressions,
+                        "clicks": cat_perf.clicks,
+                        "purchases": cat_perf.purchases,
+                        "ctr": round(cat_perf.ctr, 4),
+                        "cr": round(cat_perf.cr, 4),
+                    }
+                    if cat_perf else None
+                ),
+            }
+
 
     if not best:
-        return None, {"segment": seg, "rfm": rfm, "picked_because": "no eligible offers under constraints"}
+        return None, {
+            "segment": seg,
+            "rfm": rfm,
+            "picked_because": "no eligible offers under constraints",
+            "context_steps": context_steps or None,
+        }
 
-    return best, {
-        "segment": seg,
-        "rfm": rfm,
-        "picked_because": "max(score) under eligibility + cooldown + budget constraints",
-        "context_steps": context_steps or None,
-    }
+    return best, best_reason
+
 
 
 def get_or_assign_next_offer(
@@ -650,14 +725,30 @@ def _pick_best_rec_target(user, recs: list[dict], *, now: datetime, recent_vals:
 
     for r in adjusted:
         p = r.get("product") or {}
-        pid = int(p.get("id"))
-        fat = (r.get("components") or {}).get("fatigue") or {}
-        is_fatigued = bool(fat.get("fatigued"))
+        pid_raw = p.get("id")
+        if not pid_raw:
+            continue
+        pid = int(pid_raw)
 
+        # anti-repeat
         if pid in recent_vals:
             continue
+
+        # fatigue hard-skip
+        fat = (r.get("components") or {}).get("fatigue") or {}
+        is_fatigued = bool(fat.get("fatigued"))
         if getattr(settings, "RECS_FATIGUE_HARD_SKIP", True) and is_fatigued:
             continue
+
+        # global hard-skip
+        glob = (r.get("components") or {}).get("global") or {}
+        g_imp = int(glob.get("impressions") or 0)
+        g_cr = float(glob.get("cr") or 0.0)
+        if getattr(settings, "RECS_GLOBAL_HARD_SKIP", False):
+            if g_imp >= int(getattr(settings, "RECS_GLOBAL_MIN_IMP", 20)) and g_cr <= float(
+                getattr(settings, "RECS_GLOBAL_HARD_SKIP_CR", 0.002)
+            ):
+                continue
 
         return r
 

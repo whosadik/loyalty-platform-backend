@@ -1,12 +1,12 @@
-# ----MIGRATIONS----- #
-python manage.py makemigrations 
-python manage.py migrate
+# ----VENV ACTIVATION----- #
+.\.venv\Scripts\Activate.ps1
 
 # ----RUN SERVER----- #
 python manage.py runserver
 
-# ----VENV ACTIVATION----- #
-.\.venv\Scripts\Activate.ps1
+# ----MIGRATIONS----- #
+python manage.py makemigrations 
+python manage.py migrate
 
 # ----CHECK FOR NEW MIGRATIONS----- #
 python manage.py check

@@ -211,3 +211,18 @@ RECS_FATIGUE_HARD_SKIP = os.getenv("RECS_FATIGUE_HARD_SKIP", "1").strip() in {"1
 RECS_UPLIFT_CLICK = float(os.getenv("RECS_UPLIFT_CLICK", "0.15"))          # +к score за клик
 RECS_UPLIFT_PURCHASE = float(os.getenv("RECS_UPLIFT_PURCHASE", "0.5"))     # +к score за attributed purchase
 RECS_PENALTY_IMP = float(os.getenv("RECS_PENALTY_IMP", "0.05"))     
+
+RECS_GLOBAL_WINDOW_DAYS = int(os.getenv("RECS_GLOBAL_WINDOW_DAYS", "30"))
+RECS_GLOBAL_MIN_IMP = int(os.getenv("RECS_GLOBAL_MIN_IMP", "20"))
+
+# baseline “нормальная конверсия” (атрибутированная покупка / impression)
+RECS_GLOBAL_BASELINE_CR = float(os.getenv("RECS_GLOBAL_BASELINE_CR", "0.02"))
+
+# масштаб и ограничения бонуса
+RECS_GLOBAL_SCALE = float(os.getenv("RECS_GLOBAL_SCALE", "6.0"))
+RECS_GLOBAL_MAX_UPLIFT = float(os.getenv("RECS_GLOBAL_MAX_UPLIFT", "0.35"))
+RECS_GLOBAL_MAX_PENALTY = float(os.getenv("RECS_GLOBAL_MAX_PENALTY", "0.35"))
+
+# если хочется жёстко не брать “мертвое”
+RECS_GLOBAL_HARD_SKIP = os.getenv("RECS_GLOBAL_HARD_SKIP", "0").strip().lower() in {"1","true","yes","on"}
+RECS_GLOBAL_HARD_SKIP_CR = float(os.getenv("RECS_GLOBAL_HARD_SKIP_CR", "0.002"))  # 0.2%

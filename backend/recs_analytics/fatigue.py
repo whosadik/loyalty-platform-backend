@@ -8,6 +8,7 @@ from django.db.models import Count
 from django.utils import timezone
 
 from recs_analytics.models import RecommendationEvent
+from recs_analytics.effectiveness import global_uplift
 
 
 @dataclass
@@ -94,7 +95,8 @@ def adjust_recs(user, recs: list[dict[str, Any]], *, now=None) -> list[dict[str,
         if st.purchases > 0:
             uplift += float(getattr(settings, "RECS_UPLIFT_PURCHASE", 0.5))
 
-        adjusted = base + uplift - penalty
+        g_adj, g_st = global_uplift(pid, now=now)
+        adjusted = base + uplift - penalty + g_adj
 
         comps = dict(r.get("components") or {})
         comps["fatigue"] = {
@@ -107,8 +109,19 @@ def adjust_recs(user, recs: list[dict[str, Any]], *, now=None) -> list[dict[str,
             "fatigued": bool(st.is_fatigued),
         }
 
+        comps["global"] = {
+            "window_days": int(getattr(settings, "RECS_GLOBAL_WINDOW_DAYS", 30)),
+            "impressions": g_st.impressions,
+            "clicks": g_st.clicks,
+            "purchases": g_st.purchases,
+            "ctr": round(g_st.ctr, 4),
+            "cr": round(g_st.cr, 4),
+            "adjust": round(g_adj, 4),
+        }
+
         why = list(r.get("why") or [])
         why.append(f"fatigue: imp={st.impressions}, clk={st.clicks}, pur={st.purchases}")
+        why.append(f"global: cr={round(g_st.cr,4)} adj={round(g_adj,4)}")  # NEW
         if uplift:
             why.append("uplifted due to engagement")
         if penalty:
