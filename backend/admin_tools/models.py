@@ -9,8 +9,8 @@ class StaffRole(models.TextChoices):
 
 
 ROLE_PERMISSIONS = {
-    StaffRole.ADMIN: {"view_metrics", "view_audit", "invalidate_cache"},
-    StaffRole.MANAGER: {"view_metrics", "invalidate_cache"},
+    StaffRole.ADMIN: {"view_metrics", "view_audit", "invalidate_cache", "manage_campaigns", "manage_offers"},
+    StaffRole.MANAGER: {"view_metrics", "invalidate_cache", "manage_campaigns", "manage_offers"},
     StaffRole.ANALYST: {"view_metrics", "view_audit"},
 }
 

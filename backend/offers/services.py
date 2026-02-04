@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import timedelta, datetime
 from decimal import Decimal
 from typing import Any
-from unicodedata import category
 
 from django.db import transaction as db_tx
 from django.utils import timezone
@@ -41,21 +40,97 @@ def _reset_campaign_week_if_needed(camp: CampaignBudget, now: datetime) -> None:
             camp.save(update_fields=["week_start_date", "weekly_spent"])
 
 
-def _campaign_candidates(context_steps: list[str] | None, post_ctx: dict | None) -> list[CampaignBudget]:
+def _campaign_candidates(context_steps: list[str] | None, post_ctx: dict | None):
     """
-    Берём активные кампании, чуть фильтруем по steps.
-    (Категории мы не жёстко фильтруем тут, чтобы не обрубать fallback.)
+    Returns (campaigns_in_order, routing_info)
+    Hard preference order:
+      fragrance_crosssell (if fragrance in post_ctx.categories)
+      skincare_retention (if "spf" in context_steps)
+      makeup_push (fallback)
+      default (always last)
+      then any remaining active campaigns by priority
     """
-    qs = CampaignBudget.objects.filter(is_active=True).order_by("priority", "id")
+    cats = set((post_ctx or {}).get("categories") or [])
+    steps = set(context_steps or [])
 
-    out: list[CampaignBudget] = []
+    has_fragrance = "fragrance" in cats
+    has_spf = "spf" in steps
+
+    preferred = []
+    if has_fragrance:
+        preferred.append("fragrance_crosssell")
+    if has_spf:
+        preferred.append("skincare_retention")
+    if not preferred:
+        preferred.append("makeup_push")
+    preferred.append("default")
+
+    qs = list(CampaignBudget.objects.filter(is_active=True).order_by("priority", "id"))
+    by_name = {c.name: c for c in qs}
+
+    def passes_gates(c: CampaignBudget) -> bool:
+        # allowed_steps gate
+        if getattr(c, "allowed_steps", None):
+            if not steps:
+                return False
+            if not (set(c.allowed_steps or []) & steps):
+                return False
+
+        # allowed_categories gate (если есть контекст категорий — требуем пересечение)
+        if getattr(c, "allowed_categories", None):
+            if cats and not (set(c.allowed_categories or []) & cats):
+                return False
+
+        return True
+
+    ordered: list[CampaignBudget] = []
+    included_why: list[dict] = []
+
+    def add(name: str, why: str):
+        c = by_name.get(name)
+        if not c:
+            return
+        if c in ordered:
+            return
+        if not passes_gates(c):
+            return
+        ordered.append(c)
+        included_why.append({"campaign": c.name, "why": why, "priority": c.priority})
+
+    # 1) preferred campaigns first
+    if has_fragrance:
+        add("fragrance_crosssell", "preferred: post_ctx contains fragrance")
+    if has_spf:
+        add("skincare_retention", "preferred: routine context contains spf")
+    if not (has_fragrance or has_spf):
+        add("makeup_push", "preferred: default fallback when no fragrance/spf signal")
+
+    # 2) then any other campaigns by priority (excluding ones already added and excluding default for now)
     for c in qs:
-        if (c.allowed_steps or []) and not context_steps:
+        if c in ordered:
             continue
-        if (c.allowed_steps or []) and context_steps and not (set(c.allowed_steps) & set(context_steps)):
+        if c.name in {"default", "fragrance_crosssell", "skincare_retention", "makeup_push"}:
             continue
-        out.append(c)
-    return out
+        if passes_gates(c):
+            ordered.append(c)
+            included_why.append({"campaign": c.name, "why": "eligible: by priority", "priority": c.priority})
+
+    # 3) default last (if active & passes gates)
+    add("default", "always: fallback campaign")
+
+    routing_info = {
+        "signals": {
+            "categories": sorted(cats),
+            "context_steps": sorted(steps),
+            "has_fragrance": has_fragrance,
+            "has_spf": has_spf,
+        },
+        "preferred_order": preferred,
+        "included": [c.name for c in ordered],
+        "included_why": included_why,
+    }
+
+    return ordered, routing_info
 
 
 def _effective_allowed_categories(offer: Offer, camp: CampaignBudget | None) -> list[str]:
@@ -478,7 +553,6 @@ def _passes_category_cooldown(user, category: str, now: datetime, days: int = 3)
 
 def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx: dict | None):
     def _expected_category_for_offer(o: Offer, camp: CampaignBudget | None, context_steps: list[str] | None):
-        # routine shortcut подсказка: SPF -> skincare
         if context_steps and "spf" in context_steps:
             allowed = _effective_allowed_categories(o, camp)
             if not allowed or "skincare" in allowed:
@@ -489,26 +563,29 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             return allowed[0]
         return None
 
-    campaigns = _campaign_candidates(context_steps, post_ctx)
-    if not campaigns:
-        # сегмент/рфм всё равно вернём
-        rfm = _rfm(user, now)
-        seg = segment(RFM(**rfm))
-        return None, {"segment": seg, "rfm": rfm, "picked_because": "no active campaigns"}
-
-    # ВАЖНО: select_for_update работает корректно только внутри atomic
-    locked = list(
-        CampaignBudget.objects.select_for_update().filter(id__in=[c.id for c in campaigns])
-    )
-    locked.sort(key=lambda x: (x.priority, x.id))
-
+    # сегмент/рфм считаем один раз — и кладём в любые reason
     rfm = _rfm(user, now)
     seg = segment(RFM(**rfm))
 
-    best_pair: tuple[Offer, CampaignBudget] | None = None
-    best_score = -1e9
-    best_reason: dict | None = None
+    campaigns, routing = _campaign_candidates(context_steps, post_ctx)
+    if not campaigns:
+        return None, {
+            "segment": seg,
+            "rfm": rfm,
+            "picked_because": "no active campaigns",
+            "context_steps": context_steps or None,
+            "campaign_routing": routing,
+        }
 
+    # сохранить ПОРЯДОК кампаний из routing, но при этом залочить строки
+    ids_in_order = [c.id for c in campaigns]
+    locked_map = {
+        c.id: c
+        for c in CampaignBudget.objects.select_for_update().filter(id__in=ids_in_order)
+    }
+    locked = [locked_map[i] for i in ids_in_order if i in locked_map]
+
+    # STRICT routing: идём по кампаниям в порядке locked (это routing order)
     for camp in locked:
         _reset_campaign_week_if_needed(camp, now)
 
@@ -517,8 +594,15 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             continue
 
         offers = list(Offer.objects.filter(is_active=True, campaign=camp))
+        if not offers:
+            continue
+
+        best_offer = None
+        best_score = -1e9
+        best_reason = None
 
         for o in offers:
+            # пересечение ограничений offer/campaign по категориям
             eff_cats = _effective_allowed_categories(o, camp)
             if (o.allowed_categories or []) and (camp.allowed_categories or []) and not eff_cats:
                 continue
@@ -539,16 +623,15 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             if seg == "new_or_rare" and o.offer_type == "discount":
                 score += 0.5
 
-            # context boosts по steps (учитываем и кампанию и оффер)
+            # context boosts по steps (offer ∩ campaign)
             eff_steps = _effective_allowed_steps(o, camp)
-            if context_steps and eff_steps:
-                if set(eff_steps).intersection(set(context_steps)):
-                    score += 10.0
+            if context_steps and eff_steps and (set(eff_steps) & set(context_steps)):
+                score += 10.0
 
-            # campaign priority boost
+            # campaign priority: слабый бонус (routing решает порядок, это просто tie-breaker)
             score += max(0.0, (100 - float(camp.priority))) * 0.01
 
-            # global effectiveness loop (по ожидаемой категории)
+            # global effectiveness по ожидаемой категории
             exp_cat = _expected_category_for_offer(o, camp, context_steps)
             cat_adj = 0.0
             cat_perf = None
@@ -569,7 +652,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
                         if o.offer_type == "points_multiplier":
                             score -= 0.2
 
-            # бюджет внутри кампании: чуть предпочитаем дешёвые
+            # предпочтение дешёвых внутри кампании
             score += float(1.0 / (1.0 + float(cost))) * 0.5
 
             # tie-breaker: таргетные офферы
@@ -578,11 +661,11 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
 
             if score > best_score:
                 best_score = score
-                best_pair = (o, camp)
+                best_offer = o
                 best_reason = {
                     "segment": seg,
                     "rfm": rfm,
-                    "picked_because": "max(score) across campaigns under cooldown+budget+global_effectiveness",
+                    "picked_because": "best offer within first eligible campaign (routing order) under cooldown+budget+global_effectiveness",
                     "context_steps": context_steps or None,
                     "campaign": camp.name,
                     "campaign_left": float(left),
@@ -599,17 +682,21 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
                         }
                         if cat_perf else None
                     ),
+                    "campaign_routing": routing,
                 }
 
-    if not best_pair:
-        return None, {
-            "segment": seg,
-            "rfm": rfm,
-            "picked_because": "no eligible offers under constraints",
-            "context_steps": context_steps or None,
-        }
+        # если в этой кампании нашли оффер — возвращаем СРАЗУ (это и есть “сначала пробуем …”)
+        if best_offer:
+            return (best_offer, camp), best_reason
 
-    return best_pair, (best_reason or {})
+    # если прошли все кампании и ничего не нашли
+    return None, {
+        "segment": seg,
+        "rfm": rfm,
+        "picked_because": "no eligible offers under constraints across routed campaigns",
+        "context_steps": context_steps or None,
+        "campaign_routing": routing,
+    }
 
 
 def get_or_assign_next_offer(
