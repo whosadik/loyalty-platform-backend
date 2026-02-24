@@ -4,7 +4,11 @@ from rest_framework.permissions import IsAuthenticated
 
 from .models import CustomerProfile
 from .serializers import CustomerProfileSerializer
-from .services import maybe_award_profile_completion_bonus
+from .services import (
+    favorite_category_snapshot,
+    is_profile_complete,
+    maybe_award_profile_completion_bonus,
+)
 
 
 class MeProfileView(APIView):
@@ -27,5 +31,28 @@ class MeProfileView(APIView):
                 "ok": True,
                 "profile": CustomerProfileSerializer(profile).data,
                 "profile_completion_bonus": bonus_result,
+            }
+        )
+
+
+class MeFavoriteCategoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        profile, _ = CustomerProfile.objects.get_or_create(user=request.user)
+        snap = favorite_category_snapshot(request.user)
+        return Response(
+            {
+                "ok": True,
+                "favorite_category": snap["favorite_category"],
+                "window_days": snap["window_days"],
+                "profile_complete": is_profile_complete(profile),
+                "explain": {
+                    "window_start": snap["window_start"],
+                    "window_end": snap["window_end"],
+                    "history_items_considered": snap["history_items_considered"],
+                    "picked_by": snap["picked_by"],
+                    "signals": snap["signals"],
+                },
             }
         )

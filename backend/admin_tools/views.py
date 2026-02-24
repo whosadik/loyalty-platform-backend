@@ -1,5 +1,7 @@
+import os
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
 from django.db.models import Count, Sum
@@ -163,33 +165,42 @@ class AdminOverviewView(APIView):
         description="Single dashboard payload for defense/demo: txns, offers lifecycle, promo, retention, recs.",
     )
     def get(self, request):
+        ttl = int(getattr(settings, "ADMIN_OVERVIEW_CACHE_TTL_SECONDS", 60))
+        db_name = connection.settings_dict.get("NAME", "default")
+        cache_key = f"admin:overview:v1:{db_name}:{os.getpid()}"
+        if ttl > 0:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
         now = timezone.now()
         since7 = now - timedelta(days=7)
         since30 = now - timedelta(days=30)
 
-        return Response(
-            {
-                "ok": True,
-                "generated_at": now.isoformat(),
-                "transactions": {
-                    "7d": _txn_block(since7),
-                    "30d": _txn_block(since30),
-                },
-                "points": {
-                    "7d": _points_block(since7),
-                    "30d": _points_block(since30),
-                },
-                "offers": {
-                    "7d": _offers_lifecycle_block(since7),
-                    "30d": _offers_lifecycle_block(since30),
-                    "events_kpis": offers_events_kpis(),
-                    "promo_efficiency_30d": offers_promo_efficiency_30d(),
-                },
-                "retention": _repeat_purchase_block(now),
-                "recs": {
-                    "7d": _recs_block(since7),
-                    "30d": _recs_block(since30),
-                    "details_30d": recs_metrics_30d(),
-                },
-            }
-        )
+        payload = {
+            "ok": True,
+            "generated_at": now.isoformat(),
+            "transactions": {
+                "7d": _txn_block(since7),
+                "30d": _txn_block(since30),
+            },
+            "points": {
+                "7d": _points_block(since7),
+                "30d": _points_block(since30),
+            },
+            "offers": {
+                "7d": _offers_lifecycle_block(since7),
+                "30d": _offers_lifecycle_block(since30),
+                "events_kpis": offers_events_kpis(),
+                "promo_efficiency_30d": offers_promo_efficiency_30d(),
+            },
+            "retention": _repeat_purchase_block(now),
+            "recs": {
+                "7d": _recs_block(since7),
+                "30d": _recs_block(since30),
+                "details_30d": recs_metrics_30d(),
+            },
+        }
+        if ttl > 0:
+            cache.set(cache_key, payload, timeout=ttl)
+        return Response(payload)

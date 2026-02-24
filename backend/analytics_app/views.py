@@ -1,6 +1,10 @@
+import os
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 
+from django.conf import settings
+from django.core.cache import cache
+from django.db import connection
 from django.db.models import Count, Sum
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -24,6 +28,14 @@ class AdminMetricsView(APIView):
     permission_classes = [HasStaffPermission.with_perm("view_metrics")]
 
     def get(self, request):
+        ttl = int(getattr(settings, "ADMIN_METRICS_CACHE_TTL_SECONDS", 60))
+        db_name = connection.settings_dict.get("NAME", "default")
+        cache_key = f"admin:metrics:v1:{db_name}:{os.getpid()}"
+        if ttl > 0:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
         now = datetime.now(timezone.utc)
         since_7d = now - timedelta(days=7)
         since_30d = now - timedelta(days=30)
@@ -106,47 +118,48 @@ class AdminMetricsView(APIView):
         au60, ru60, rr60 = repeat_rate(60)
         au90, ru90, rr90 = repeat_rate(90)
 
-        return Response(
-            {
-                "offers": {
-                    "assignments_total": assignments_total,
-                    "redemptions_total": redemptions_total,
-                    "redemption_rate": round(redemption_rate, 4),
-                    "assignments_7d": assignments_7d,
-                    "redemptions_7d": redemptions_7d,
-                    "offers_v3": offers_metrics_30d(),
-                    "events_kpis": offers_events_kpis(),
-                    "promo_efficiency_30d": offers_promo_efficiency_30d(),
-                },
-                "budget": {
-                    "weekly_limit": float(budget.weekly_limit),
-                    "weekly_spent": float(budget.weekly_spent),
-                    "weekly_left": float(budget_left),
-                },
-                "loyalty": {
-                    "earned_points_total": int(earned_points),
-                    "redeemed_points_total": int(redeemed_points_abs),
-                    "tier_distribution": tier_distribution,
-                },
-                "routines": {
-                    "top_missing_steps_30d": top_missing_steps,
-                },
-                "segments": {
-                    "distribution_30d": segment_distribution,
-                    "users_sampled": len(user_ids[:500]),
-                },
-                "retention": {
-                    "repeat_purchase_rate_30d": round(rr30, 4),
-                    "repeat_purchase_rate_60d": round(rr60, 4),
-                    "repeat_purchase_rate_90d": round(rr90, 4),
-                    "active_users_30d": int(au30),
-                    "repeat_users_30d": int(ru30),
-                    "active_users_60d": int(au60),
-                    "repeat_users_60d": int(ru60),
-                    "active_users_90d": int(au90),
-                    "repeat_users_90d": int(ru90),
-                },
-                "recs": recs_metrics_30d(),
-                "campaigns": campaigns_metrics_30d(),
-            }
-        )
+        payload = {
+            "offers": {
+                "assignments_total": assignments_total,
+                "redemptions_total": redemptions_total,
+                "redemption_rate": round(redemption_rate, 4),
+                "assignments_7d": assignments_7d,
+                "redemptions_7d": redemptions_7d,
+                "offers_v3": offers_metrics_30d(),
+                "events_kpis": offers_events_kpis(),
+                "promo_efficiency_30d": offers_promo_efficiency_30d(),
+            },
+            "budget": {
+                "weekly_limit": float(budget.weekly_limit),
+                "weekly_spent": float(budget.weekly_spent),
+                "weekly_left": float(budget_left),
+            },
+            "loyalty": {
+                "earned_points_total": int(earned_points),
+                "redeemed_points_total": int(redeemed_points_abs),
+                "tier_distribution": tier_distribution,
+            },
+            "routines": {
+                "top_missing_steps_30d": top_missing_steps,
+            },
+            "segments": {
+                "distribution_30d": segment_distribution,
+                "users_sampled": len(user_ids[:500]),
+            },
+            "retention": {
+                "repeat_purchase_rate_30d": round(rr30, 4),
+                "repeat_purchase_rate_60d": round(rr60, 4),
+                "repeat_purchase_rate_90d": round(rr90, 4),
+                "active_users_30d": int(au30),
+                "repeat_users_30d": int(ru30),
+                "active_users_60d": int(au60),
+                "repeat_users_60d": int(ru60),
+                "active_users_90d": int(au90),
+                "repeat_users_90d": int(ru90),
+            },
+            "recs": recs_metrics_30d(),
+            "campaigns": campaigns_metrics_30d(),
+        }
+        if ttl > 0:
+            cache.set(cache_key, payload, timeout=ttl)
+        return Response(payload)
