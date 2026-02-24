@@ -13,3 +13,8 @@ class PreviewItemSerializer(serializers.Serializer):
 class OfferPreviewRequestSerializer(serializers.Serializer):
     assignment_id = serializers.IntegerField()
     items = PreviewItemSerializer(many=True)
+
+
+class OfferClickRequestSerializer(serializers.Serializer):
+    assignment_id = serializers.IntegerField()
+    context = serializers.JSONField(required=False)

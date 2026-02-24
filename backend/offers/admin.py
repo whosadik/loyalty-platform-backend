@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Offer, OfferAssignment, CampaignBudget
+from .models import Offer, OfferAssignment, CampaignBudget, OfferEvent
 
 @admin.register(Offer)
 class OfferAdmin(admin.ModelAdmin):
@@ -16,3 +16,10 @@ class OfferAssignmentAdmin(admin.ModelAdmin):
 @admin.register(CampaignBudget)
 class CampaignBudgetAdmin(admin.ModelAdmin):
     list_display = ("id", "name", "weekly_limit", "weekly_spent", "updated_at")
+
+
+@admin.register(OfferEvent)
+class OfferEventAdmin(admin.ModelAdmin):
+    list_display = ("id", "event_type", "assignment", "campaign_name", "created_at")
+    list_filter = ("event_type", "campaign_name", "created_at")
+    search_fields = ("campaign_name", "assignment__id", "user__username", "offer__name", "request_id")

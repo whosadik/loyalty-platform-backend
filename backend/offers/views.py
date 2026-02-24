@@ -10,9 +10,10 @@ from catalog.models import Product
 from users_app.models import CustomerProfile
 from transactions.models import OwnedProduct, Transaction, TransactionItem
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
-from .models import Offer, OfferAssignment, CampaignBudget
+from .models import Offer, OfferAssignment, CampaignBudget, OfferEvent
 from .serializers import RedeemOfferRequestSerializer
 from offers.services import get_or_assign_next_offer 
+from offers.events import record_offer_event
 from ml_logic.next_best_reward import compute_rfm, segment, pick_next_offer
 from ml_logic.routine_builder import Profile, build_routine
 from ml_logic.recommender import (
@@ -21,8 +22,7 @@ from ml_logic.recommender import (
     build_cooccurrence,
 )
 from decimal import Decimal
-from .models import OfferAssignment
-from .serializers import OfferPreviewRequestSerializer
+from .serializers import OfferPreviewRequestSerializer, OfferClickRequestSerializer
 
 from checkout_app.pricing import Line, apply_offer_to_totals
 
@@ -167,6 +167,14 @@ class MeNextOfferView(APIView):
         if not a:
             return Response({"offer": None, "reason": {"message": "No eligible offers"}})
 
+        request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+        record_offer_event(
+            a,
+            OfferEvent.Type.EXPOSED,
+            request_id=request_id,
+            context={"endpoint": "GET /api/me/next-offer", "variant": "v1"},
+        )
+
         return Response({
             "assignment_id": a.id,
             "offer": {
@@ -271,6 +279,13 @@ class RedeemOfferView(APIView):
             assignment.is_redeemed = True
             assignment.redeemed_transaction_id = txn.id
             assignment.save(update_fields=["is_redeemed", "redeemed_transaction_id"])
+            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+            record_offer_event(
+                assignment,
+                OfferEvent.Type.REDEEMED,
+                request_id=request_id,
+                context={"endpoint": "POST /api/offers/redeem", "variant": "v1"},
+            )
             log_event(
                 request=request,
                 action=AuditEvent.Action.OFFER_REDEEM,
@@ -307,9 +322,16 @@ class MeOffersView(APIView):
         qs = OfferAssignment.objects.filter(user=request.user, is_redeemed=False).select_related("offer").order_by("-assigned_at")
 
         out = []
+        request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
         for a in qs[:50]:
             if a.expires_at and a.expires_at <= now:
                 continue
+            record_offer_event(
+                a,
+                OfferEvent.Type.EXPOSED,
+                request_id=request_id,
+                context={"endpoint": "GET /api/me/offers", "variant": "v1"},
+            )
             out.append(
                 {
                     "assignment_id": a.id,
@@ -468,5 +490,53 @@ class OfferPreviewView(APIView):
                 **calc,
                 "tier": account.tier.name if account.tier else None,
                 "points_rate": str(points_rate),
+            }
+        )
+
+
+class OfferClickView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Offers"],
+        description="Record user click on active offer assignment (idempotent per assignment).",
+        request=OfferClickRequestSerializer,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    )
+    def post(self, request):
+        s = OfferClickRequestSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        data = s.validated_data
+
+        now = dj_timezone.now()
+        assignment = (
+            OfferAssignment.objects.select_related("offer")
+            .get(id=data["assignment_id"], user=request.user)
+        )
+
+        if assignment.is_redeemed:
+            return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
+        if assignment.expires_at and assignment.expires_at <= now:
+            return Response({"ok": False, "message": "Offer expired"}, status=400)
+
+        existed = OfferEvent.objects.filter(
+            assignment=assignment,
+            event_type=OfferEvent.Type.CLICKED,
+        ).exists()
+        request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+        base_ctx = {"endpoint": "POST /api/offers/click", "variant": "v1"}
+        extra_ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
+        base_ctx.update(extra_ctx)
+        record_offer_event(
+            assignment,
+            OfferEvent.Type.CLICKED,
+            request_id=request_id,
+            context=base_ctx,
+        )
+        return Response(
+            {
+                "ok": True,
+                "assignment_id": assignment.id,
+                "clicked_recorded": not existed,
             }
         )

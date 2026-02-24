@@ -12,7 +12,8 @@ from django.db.models import Sum, Max
 from catalog.models import Product
 from transactions.models import Transaction, TransactionItem, OwnedProduct
 from users_app.models import CustomerProfile
-from offers.models import Offer, OfferAssignment, CampaignBudget
+from offers.models import Offer, OfferAssignment, CampaignBudget, OfferEvent
+from offers.events import record_offer_event
 from ml_logic.recommender import bundle as rec_bundle
 
 from ml_logic.next_best_reward import RFM, segment  # compute_rfm можно не трогать
@@ -869,6 +870,12 @@ def get_or_assign_next_offer(
         if existing.expires_at and existing.expires_at <= now:
             existing.is_redeemed = True
             existing.save(update_fields=["is_redeemed"])
+            record_offer_event(
+                existing,
+                OfferEvent.Type.EXPIRED,
+                request_id=None,
+                context={"source": "get_or_assign_next_offer"},
+            )
         elif not existing.is_redeemed:
             return existing
 
@@ -918,6 +925,12 @@ def get_or_assign_next_offer(
             reason=reason,
             target=target,
             expires_at=expires_at,
+        )
+        record_offer_event(
+            assignment,
+            OfferEvent.Type.ASSIGNED,
+            request_id=None,
+            context={"source": "get_or_assign_next_offer"},
         )
         return assignment
 

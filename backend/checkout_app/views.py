@@ -15,10 +15,11 @@ from rest_framework.exceptions import ValidationError
 from checkout_app.serializers import CheckoutRequestSerializer
 from checkout_app.pricing import Line, apply_offer_to_totals, calc_gross
 from transactions.models import Transaction, TransactionItem, OwnedProduct
-from offers.models import OfferAssignment
+from offers.models import OfferAssignment, OfferEvent
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from catalog.models import Product
 from offers.services import get_or_assign_next_offer
+from offers.events import record_offer_event
 
 from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializer
 from drf_spectacular.types import OpenApiTypes
@@ -213,7 +214,15 @@ class CheckoutView(APIView):
 
                 # помечаем оффер redeemed (rollback откатит, если дальше будет ошибка)
                 assignment.is_redeemed = True
-                assignment.save(update_fields=["is_redeemed"])
+                assignment.redeemed_transaction_id = txn.id
+                assignment.save(update_fields=["is_redeemed", "redeemed_transaction_id"])
+                request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+                record_offer_event(
+                    assignment,
+                    OfferEvent.Type.REDEEMED,
+                    request_id=request_id,
+                    context={"endpoint": "POST /api/checkout", "variant": "v1"},
+                )
                 applied_assignment_id = assignment.id
 
 

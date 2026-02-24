@@ -3,7 +3,8 @@ from django.core.management.base import BaseCommand
 from django.conf import settings
 from django.utils import timezone
 
-from offers.models import OfferAssignment
+from offers.events import record_offer_event
+from offers.models import OfferAssignment, OfferEvent
 
 
 class Command(BaseCommand):
@@ -18,13 +19,27 @@ class Command(BaseCommand):
         now = timezone.now()
 
         # 1) mark expired as redeemed (so they aren't active)
-        expired_qs = OfferAssignment.objects.filter(is_redeemed=False, expires_at__isnull=False, expires_at__lte=now)
+        expired_qs = (
+            OfferAssignment.objects
+            .select_related("offer", "offer__campaign", "user")
+            .filter(is_redeemed=False, expires_at__isnull=False, expires_at__lte=now)
+        )
         expired_cnt = expired_qs.count()
 
         if opt["dry_run"]:
             self.stdout.write(self.style.WARNING(f"DRY RUN: would mark {expired_cnt} expired offers as redeemed"))
         else:
-            updated = expired_qs.update(is_redeemed=True)
+            updated = 0
+            for a in expired_qs.iterator():
+                a.is_redeemed = True
+                a.save(update_fields=["is_redeemed"])
+                record_offer_event(
+                    a,
+                    OfferEvent.Type.EXPIRED,
+                    request_id=None,
+                    context={"source": "cleanup_offers"},
+                )
+                updated += 1
             self.stdout.write(self.style.SUCCESS(f"Marked {updated} expired offers as redeemed"))
 
         # 2) delete very old (optional)

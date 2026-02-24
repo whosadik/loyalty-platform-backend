@@ -41,7 +41,7 @@ class Offer(models.Model):
     allowed_categories = models.JSONField(default=list, blank=True)      # ["makeup","fragrance"]
     allowed_product_types = models.JSONField(default=list, blank=True)   # ["lipstick","edp"]
 
-    # как применять оффер (если cart — на весь чек)
+    # how to apply the offer (cart means whole basket)
     target_scope = models.CharField(
         max_length=20,
         choices=[
@@ -61,7 +61,7 @@ class CampaignBudget(models.Model):
     name = models.CharField(max_length=64, unique=True)
 
     is_active = models.BooleanField(default=True)
-    priority = models.IntegerField(default=100)  # меньше = выше приоритет
+    priority = models.IntegerField(default=100)  # smaller number = higher priority
 
     weekly_limit = models.DecimalField(max_digits=12, decimal_places=2, default=1000)
     weekly_spent = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -86,6 +86,40 @@ class OfferAssignment(models.Model):
     reason = models.JSONField(default=dict, blank=True)  # explainability payload
     is_redeemed = models.BooleanField(default=False)
     redeemed_transaction_id = models.IntegerField(null=True, blank=True)
-    target = models.JSONField(default=dict, blank=True)  # например {"scope":"product_type","value":"lipstick","category":"makeup"}
+    target = models.JSONField(default=dict, blank=True)  # e.g. {"scope":"product_type","value":"lipstick","category":"makeup"}
+
     def __str__(self) -> str:
         return f"Assign(user={self.user_id}, offer={self.offer_id}, redeemed={self.is_redeemed})"
+
+
+class OfferEvent(models.Model):
+    class Type(models.TextChoices):
+        ASSIGNED = "offer_assigned", "Offer assigned"
+        EXPOSED = "offer_exposed", "Offer exposed"
+        CLICKED = "offer_clicked", "Offer clicked"
+        REDEEMED = "offer_redeemed", "Offer redeemed"
+        EXPIRED = "offer_expired", "Offer expired"
+
+    assignment = models.ForeignKey("offers.OfferAssignment", on_delete=models.CASCADE, related_name="events")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="offer_events")
+    offer = models.ForeignKey("offers.Offer", on_delete=models.CASCADE, related_name="events")
+
+    campaign_name = models.CharField(max_length=128, db_index=True)
+    event_type = models.CharField(max_length=32, choices=Type.choices, db_index=True)
+    event_version = models.PositiveSmallIntegerField(default=1)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    request_id = models.CharField(max_length=64, blank=True, null=True, db_index=True)
+    context = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["assignment", "event_type"], name="uq_offer_event_assignment_type"),
+        ]
+        indexes = [
+            models.Index(fields=["campaign_name", "created_at"]),
+            models.Index(fields=["event_type", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"OfferEvent(assign={self.assignment_id}, type={self.event_type})"
