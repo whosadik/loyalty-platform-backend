@@ -4,6 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from .models import CustomerProfile
 from .serializers import CustomerProfileSerializer
+from .services import maybe_award_profile_completion_bonus
 
 
 class MeProfileView(APIView):
@@ -15,7 +16,16 @@ class MeProfileView(APIView):
 
     def put(self, request):
         profile, _ = CustomerProfile.objects.get_or_create(user=request.user)
-        serializer = CustomerProfileSerializer(profile, data=request.data)
+        serializer = CustomerProfileSerializer(profile, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
-        serializer.save()
-        return Response(serializer.data)
+        profile = serializer.save()
+
+        bonus_result = maybe_award_profile_completion_bonus(request.user, profile)
+
+        return Response(
+            {
+                "ok": True,
+                "profile": CustomerProfileSerializer(profile).data,
+                "profile_completion_bonus": bonus_result,
+            }
+        )

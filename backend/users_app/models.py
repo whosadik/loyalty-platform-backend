@@ -24,6 +24,8 @@ class CustomerProfile(models.Model):
     hair_profile = models.JSONField(default=dict, blank=True)
     makeup_profile = models.JSONField(default=dict, blank=True)
     fragrance_profile = models.JSONField(default=dict, blank=True)
+    profile_completed_at = models.DateTimeField(null=True, blank=True)
+    profile_completion_rewarded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

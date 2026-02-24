@@ -13,7 +13,14 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
             "hair_profile",
             "makeup_profile",
             "fragrance_profile",
+            "profile_completed_at",
+            "profile_completion_rewarded_at",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = [
+            "profile_completed_at",
+            "profile_completion_rewarded_at",
+            "created_at",
+            "updated_at",
+        ]
