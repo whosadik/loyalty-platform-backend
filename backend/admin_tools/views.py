@@ -1,19 +1,24 @@
-from django.db import connection
+from datetime import timedelta
+
 from django.core.cache import cache
+from django.db import connection
+from django.db.models import Count, Sum
 from django.utils import timezone
 
-from rest_framework.views import APIView
-from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema
 from rest_framework.permissions import IsAdminUser
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from audit.models import AuditEvent
-from offers.models import OfferAssignment
-from transactions.models import Transaction
-from datetime import timedelta
-from django.db.models import Sum, Count
-from loyalty.models import LoyaltyLedgerEntry
-from drf_spectacular.utils import extend_schema, OpenApiParameter
 from backend.permissions import HasStaffPermission
+from loyalty.models import LoyaltyLedgerEntry
+from offers.admin_metrics import offers_events_kpis, offers_promo_efficiency_30d
+from offers.models import OfferAssignment, OfferEvent
+from recs_analytics.admin_metrics import recs_metrics_30d
+from recs_analytics.models import RecommendationEvent
+from transactions.models import Transaction
+
 
 class AdminHealthView(APIView):
     permission_classes = [IsAdminUser]
@@ -23,7 +28,6 @@ class AdminHealthView(APIView):
         description="Health check: database + cache + basic counters.",
     )
     def get(self, request):
-        # DB check
         db_ok = True
         db_error = None
         try:
@@ -34,13 +38,12 @@ class AdminHealthView(APIView):
             db_ok = False
             db_error = str(e)
 
-        # Cache check
         cache_ok = True
         cache_error = None
         try:
             key = f"health:{timezone.now().timestamp()}"
             cache.set(key, "ok", timeout=10)
-            cache_ok = (cache.get(key) == "ok")
+            cache_ok = cache.get(key) == "ok"
         except Exception as e:
             cache_ok = False
             cache_error = str(e)
@@ -48,57 +51,145 @@ class AdminHealthView(APIView):
         counts = {
             "transactions": Transaction.objects.count(),
             "offer_assignments": OfferAssignment.objects.count(),
+            "offer_events": OfferEvent.objects.count(),
             "audit_events": AuditEvent.objects.count(),
         }
 
-        return Response({
-            "ok": db_ok and cache_ok,
-            "db": {"ok": db_ok, "error": db_error},
-            "cache": {"ok": cache_ok, "error": cache_error},
-            "counts": counts,
-            "server_time": timezone.now().isoformat(),
-        })
+        return Response(
+            {
+                "ok": db_ok and cache_ok,
+                "db": {"ok": db_ok, "error": db_error},
+                "cache": {"ok": cache_ok, "error": cache_error},
+                "counts": counts,
+                "server_time": timezone.now().isoformat(),
+            }
+        )
 
-from offers.admin_metrics import offers_metrics_30d
+
+def _txn_block(since):
+    qs = Transaction.objects.filter(created_at__gte=since)
+    count = qs.count()
+    revenue = qs.aggregate(s=Sum("total_amount"))["s"] or 0
+    unique_buyers = qs.values("user_id").distinct().count()
+    aov = (float(revenue) / count) if count else 0.0
+    return {
+        "count": int(count),
+        "revenue_sum": float(revenue),
+        "aov": round(aov, 4),
+        "unique_buyers": int(unique_buyers),
+    }
+
+
+def _points_block(since):
+    qs = LoyaltyLedgerEntry.objects.filter(created_at__gte=since)
+    earned = qs.filter(entry_type=LoyaltyLedgerEntry.Type.EARN).aggregate(s=Sum("points_delta"))["s"] or 0
+    redeemed = qs.filter(entry_type=LoyaltyLedgerEntry.Type.REDEEM).aggregate(s=Sum("points_delta"))["s"] or 0
+    return {"earned": int(earned), "redeemed": int(abs(redeemed))}
+
+
+def _offers_lifecycle_block(since):
+    ev = OfferEvent.objects.filter(created_at__gte=since)
+    assigned = ev.filter(event_type=OfferEvent.Type.ASSIGNED).count()
+    exposed = ev.filter(event_type=OfferEvent.Type.EXPOSED).count()
+    clicked = ev.filter(event_type=OfferEvent.Type.CLICKED).count()
+    redeemed = ev.filter(event_type=OfferEvent.Type.REDEEMED).count()
+    expired = ev.filter(event_type=OfferEvent.Type.EXPIRED).count()
+
+    ctr = (clicked / exposed) if exposed else 0.0
+    redemption_rate = (redeemed / exposed) if exposed else 0.0
+
+    return {
+        "assigned": int(assigned),
+        "exposed": int(exposed),
+        "clicked": int(clicked),
+        "redeemed": int(redeemed),
+        "expired": int(expired),
+        "ctr_clicks_exposed": round(ctr, 4),
+        "redemption_rate_exposed": round(redemption_rate, 4),
+    }
+
+
+def _repeat_purchase_block(now):
+    def _repeat_rate(days: int):
+        since = now - timedelta(days=days)
+        per_user = (
+            Transaction.objects.filter(created_at__gte=since)
+            .values("user_id")
+            .annotate(txn_count=Count("id"))
+        )
+        active_users = per_user.count()
+        repeat_users = per_user.filter(txn_count__gte=2).count()
+        rate = (repeat_users / active_users) if active_users else 0.0
+        return int(active_users), int(repeat_users), round(rate, 4)
+
+    au30, ru30, rr30 = _repeat_rate(30)
+    au60, ru60, rr60 = _repeat_rate(60)
+    au90, ru90, rr90 = _repeat_rate(90)
+
+    return {
+        "repeat_purchase_rate_30d": rr30,
+        "repeat_purchase_rate_60d": rr60,
+        "repeat_purchase_rate_90d": rr90,
+        "active_users_30d": au30,
+        "repeat_users_30d": ru30,
+        "active_users_60d": au60,
+        "repeat_users_60d": ru60,
+        "active_users_90d": au90,
+        "repeat_users_90d": ru90,
+    }
+
+
+def _recs_block(since):
+    qs = RecommendationEvent.objects.filter(created_at__gte=since)
+    impressions = qs.filter(action=RecommendationEvent.Action.IMPRESSION).count()
+    clicks = qs.filter(action=RecommendationEvent.Action.CLICK).count()
+    purchases = qs.filter(action=RecommendationEvent.Action.PURCHASE_ATTRIBUTED).count()
+    ctr = (clicks / impressions) if impressions else 0.0
+    cr = (purchases / impressions) if impressions else 0.0
+    return {
+        "impressions": int(impressions),
+        "clicks": int(clicks),
+        "purchase_attributed": int(purchases),
+        "ctr": round(ctr, 4),
+        "cr": round(cr, 4),
+    }
+
 
 class AdminOverviewView(APIView):
     permission_classes = [HasStaffPermission.with_perm("view_metrics")]
 
     @extend_schema(
         tags=["Admin"],
-        description="Aggregated overview for last 7 and 30 days.",
+        description="Single dashboard payload for defense/demo: txns, offers lifecycle, promo, retention, recs.",
     )
     def get(self, request):
         now = timezone.now()
         since7 = now - timedelta(days=7)
         since30 = now - timedelta(days=30)
 
-        def txn_block(since):
-            qs = Transaction.objects.filter(created_at__gte=since)
-            total = qs.count()
-            revenue = qs.aggregate(s=Sum("total_amount"))["s"] or 0
-            return {"count": total, "revenue": float(revenue)}
-
-        def points_block(since):
-            qs = LoyaltyLedgerEntry.objects.filter(created_at__gte=since)
-            earned = qs.filter(entry_type="EARN").aggregate(s=Sum("points_delta"))["s"] or 0
-            redeemed = qs.filter(entry_type="REDEEM").aggregate(s=Sum("points_delta"))["s"] or 0
-            return {"earned": int(earned), "redeemed": int(abs(redeemed))}
-
-
-        return Response({
-            "ok": True,
-            "last_7d": {
-                "transactions": txn_block(since7),
-                "points": points_block(since7),
-                "offers": {
-                    "assignments": OfferAssignment.objects.filter(assigned_at__gte=since7).count(),
-                    "redemptions": OfferAssignment.objects.filter(assigned_at__gte=since7, is_redeemed=True).count(),
+        return Response(
+            {
+                "ok": True,
+                "generated_at": now.isoformat(),
+                "transactions": {
+                    "7d": _txn_block(since7),
+                    "30d": _txn_block(since30),
                 },
-            },
-            "last_30d": {
-                "transactions": txn_block(since30),
-                "points": points_block(since30),
-                "offers_v3": offers_metrics_30d(),
-            },
-        })
+                "points": {
+                    "7d": _points_block(since7),
+                    "30d": _points_block(since30),
+                },
+                "offers": {
+                    "7d": _offers_lifecycle_block(since7),
+                    "30d": _offers_lifecycle_block(since30),
+                    "events_kpis": offers_events_kpis(),
+                    "promo_efficiency_30d": offers_promo_efficiency_30d(),
+                },
+                "retention": _repeat_purchase_block(now),
+                "recs": {
+                    "7d": _recs_block(since7),
+                    "30d": _recs_block(since30),
+                    "details_30d": recs_metrics_30d(),
+                },
+            }
+        )

@@ -2,7 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.utils import timezone
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Q
 
 from offers.models import OfferAssignment, CampaignBudget, OfferEvent
 from transactions.models import Transaction
@@ -181,13 +181,19 @@ def offers_promo_efficiency_30d():
     now = timezone.now()
     since = now - timedelta(days=30)
 
-    redeemed_assignment_ids = list(
-        OfferEvent.objects.filter(
-            created_at__gte=since,
-            event_type=OfferEvent.Type.REDEEMED,
-        ).values_list("assignment_id", flat=True)
+    redeemed_assignment_ids_qs = OfferEvent.objects.filter(
+        created_at__gte=since,
+        event_type=OfferEvent.Type.REDEEMED,
+    ).values("assignment_id")
+
+    assignments_qs = (
+        OfferAssignment.objects.filter(id__in=redeemed_assignment_ids_qs)
+        .select_related("offer", "offer__campaign")
+        .only("id", "redeemed_transaction_id", "offer__estimated_cost", "offer__campaign__name")
     )
-    if not redeemed_assignment_ids:
+
+    assignments = list(assignments_qs)
+    if not assignments:
         return {
             "window_days": 30,
             "redeemed_count": 0,
@@ -197,21 +203,9 @@ def offers_promo_efficiency_30d():
             "by_campaign_30d": [],
         }
 
-    assignments = list(
-        OfferAssignment.objects.filter(id__in=redeemed_assignment_ids)
-        .select_related("offer", "offer__campaign")
-        .only("id", "redeemed_transaction_id", "offer__estimated_cost", "offer__campaign__name")
-    )
-
     txn_ids = [a.redeemed_transaction_id for a in assignments if a.redeemed_transaction_id]
-    txn_sum = (
-        Transaction.objects.filter(id__in=txn_ids).aggregate(s=Sum("total_amount"))["s"]
-        or Decimal("0")
-    )
-    txn_map = {
-        tid: total
-        for tid, total in Transaction.objects.filter(id__in=txn_ids).values_list("id", "total_amount")
-    }
+    txn_map = dict(Transaction.objects.filter(id__in=txn_ids).values_list("id", "total_amount"))
+    txn_sum = sum((Decimal(str(v)) for v in txn_map.values()), Decimal("0"))
 
     est_total = sum((Decimal(str(a.offer.estimated_cost or 0)) for a in assignments), Decimal("0"))
     efficiency = (txn_sum / est_total) if est_total > 0 else Decimal("0")

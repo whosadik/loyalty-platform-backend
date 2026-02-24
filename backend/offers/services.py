@@ -697,9 +697,11 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
     locked = [locked_map[i] for i in ids_in_order if i in locked_map]
     has_any_txn = _user_has_any_transactions(user)
     ordered_locked: list[CampaignBudget] = []
+    if not has_any_txn:
+        ordered_locked.extend([c for c in locked if _is_onboarding_first_order_campaign(c)])
     if winback_eligible:
-        ordered_locked.extend([c for c in locked if _is_winback_30d_campaign(c)])
-    if favorite_cat:
+        ordered_locked.extend([c for c in locked if _is_winback_30d_campaign(c) and c not in ordered_locked])
+    if favorite_cat and not post_ctx and not context_steps:
         ordered_locked.extend([c for c in locked if _is_favorite_category_campaign(c) and c not in ordered_locked])
     ordered_locked.extend([c for c in locked if c not in ordered_locked])
     locked = ordered_locked
@@ -714,6 +716,8 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             if not _passes_winback_assignment_cooldown(user, camp, now):
                 continue
         if _is_favorite_category_campaign(camp):
+            if post_ctx:
+                continue
             if not favorite_cat:
                 continue
             if not _passes_favorite_category_assignment_cooldown(user, camp, now):

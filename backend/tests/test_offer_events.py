@@ -1,12 +1,15 @@
+from datetime import timedelta
 from decimal import Decimal
 
+from django.core.management import call_command
+from django.utils import timezone
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
 from catalog.models import Product
 from loyalty.models import LoyaltyAccount, Tier
 from offers.admin_metrics import offers_events_kpis
-from offers.models import CampaignBudget, Offer, OfferEvent
+from offers.models import CampaignBudget, Offer, OfferAssignment, OfferEvent
 from users_app.models import CustomerProfile
 
 
@@ -107,3 +110,19 @@ class OfferEventsFlowTests(APITestCase):
         kpis = offers_events_kpis()
         self.assertGreaterEqual(kpis["clicked_7d"], 1)
         self.assertGreaterEqual(kpis["ctr_clicks_exposed_7d"], 0.0)
+
+    def test_cleanup_offers_writes_expired_event(self):
+        r = self.client.get("/api/me/next-offer")
+        self.assertEqual(r.status_code, 200)
+        aid = r.data["assignment_id"]
+
+        OfferAssignment.objects.filter(id=aid).update(expires_at=timezone.now() - timedelta(minutes=1))
+
+        call_command("cleanup_offers")
+
+        a = OfferAssignment.objects.get(id=aid)
+        self.assertTrue(a.is_redeemed)
+        self.assertEqual(
+            OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.EXPIRED).count(),
+            1,
+        )
