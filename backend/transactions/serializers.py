@@ -1,5 +1,6 @@
+from decimal import Decimal
+
 from rest_framework import serializers
-from .models import Transaction, TransactionItem
 from .models import Transaction, TransactionItem, OwnedProduct
 
 
@@ -23,7 +24,7 @@ class TransactionSerializer(serializers.ModelSerializer):
 
         txn = Transaction.objects.create(user=user, **validated_data)
 
-        total = 0
+        total = Decimal("0.00")
         for it in items_data:
             TransactionItem.objects.create(transaction=txn, **it)
             owned, created = OwnedProduct.objects.get_or_create(user=user, product=it["product"])
@@ -32,7 +33,7 @@ class TransactionSerializer(serializers.ModelSerializer):
             owned.last_acquired_at = txn.created_at
             owned.save(update_fields=["quantity_total", "is_active", "last_acquired_at"])
 
-            total += float(it["unit_price"]) * int(it["quantity"])
+            total += Decimal(str(it["unit_price"])) * int(it["quantity"])
 
         txn.total_amount = total
         txn.save(update_fields=["total_amount"])

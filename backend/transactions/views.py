@@ -8,7 +8,7 @@ from .models import Transaction, OwnedProduct
 from .serializers import TransactionSerializer, OwnedProductSerializer
 
 
-class TransactionViewSet(viewsets.ModelViewSet):
+class TransactionViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = TransactionSerializer
     permission_classes = [IsAuthenticated]
 

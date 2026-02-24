@@ -216,7 +216,7 @@ def recommend(
     products: list[dict[str, Any]],
     owned_active_ids: list[int],
     context_product_ids: list[int],
-    category: str,
+    category: str | None,
     product_type: str | None,
     limit: int = 10,
     co: dict[int, dict[int, int]] | None = None,
@@ -226,7 +226,7 @@ def recommend(
 
     candidates = []
     for p in products:
-        if p.get("category") != category:
+        if category and p.get("category") != category:
             continue
         if product_type and p.get("product_type") != product_type:
             continue

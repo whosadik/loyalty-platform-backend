@@ -10,10 +10,19 @@ class AdminCampaignsTests(APITestCase):
     def setUp(self):
         User = get_user_model()
         self.admin = User.objects.create_user(username="admin1", password="pass12345")
-        self.client.force_authenticate(self.admin)
+        self.admin.is_staff = True
+        self.admin.is_superuser = True
+        self.admin.save(update_fields=["is_staff", "is_superuser"])
 
         # staff profile with manage_campaigns
-        StaffProfile.objects.create(user=self.admin, role=StaffRole.ADMIN)
+        StaffProfile.objects.update_or_create(
+            user=self.admin,
+            defaults={
+                "role": StaffRole.ADMIN,
+                "permissions": ["manage_campaigns", "manage_offers", "view_metrics", "invalidate_cache"],
+            },
+        )
+        self.client.force_authenticate(self.admin)
 
     def test_list_campaigns(self):
         CampaignBudget.objects.get_or_create(name="default", defaults={"weekly_limit": Decimal("1000.00"), "weekly_spent": Decimal("0.00")})

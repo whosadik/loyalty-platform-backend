@@ -5,7 +5,7 @@ from datetime import timedelta, datetime
 from decimal import Decimal
 from typing import Any
 
-from django.db import transaction as db_tx
+from django.db import transaction as db_tx, connection
 from django.utils import timezone
 from django.db.models import Sum
 
@@ -186,10 +186,16 @@ def _build_rec_profile(cp: CustomerProfile) -> RecUserProfile:
 
 
 def _load_products_for_recs() -> list[dict[str, Any]]:
-    key = "recs:products:v1"
+    db_name = connection.settings_dict.get("NAME", "default")
+    key = f"recs:products:v1:{db_name}"
     cached = cache.get(key)
     if cached is not None:
-        return cached
+        sample_ids = [int(p["id"]) for p in cached[:100] if isinstance(p, dict) and p.get("id")]
+        if not sample_ids:
+            return cached
+        existing = set(Product.objects.filter(id__in=sample_ids).values_list("id", flat=True))
+        if len(existing) == len(set(sample_ids)):
+            return cached
 
     data = list(
         Product.objects.all().values(
@@ -203,7 +209,8 @@ def _load_products_for_recs() -> list[dict[str, Any]]:
 
 
 def _cooccurrence_90d(now: datetime):
-    key = "recs:cooc90d:v1"
+    db_name = connection.settings_dict.get("NAME", "default")
+    key = f"recs:cooc90d:v1:{db_name}"
     cached = cache.get(key)
     if cached is not None:
         return cached
@@ -756,7 +763,7 @@ def get_or_assign_next_offer(
             + (["week_start_date"] if hasattr(camp, "week_start_date") else [])
         )
 
-        ttl_days = int(getattr(offer, "expires_in_days", 7) or 7)
+        ttl_days = max(1, int(getattr(offer, "expires_in_days", 7) or 7))
         expires_at = now + timedelta(days=ttl_days)
 
         assignment = OfferAssignment.objects.create(

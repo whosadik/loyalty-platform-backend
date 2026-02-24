@@ -1,7 +1,7 @@
-from datetime import datetime
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from django.core.cache import cache
+from django.db import connection
 
 from offers.services import _load_products_for_recs, _cooccurrence_90d
 
@@ -14,8 +14,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **opt):
         if opt["clear"]:
-            cache.delete("recs:products:v1")
-            cache.delete("recs:cooc90d:v1")
+            db_name = connection.settings_dict.get("NAME", "default")
+            cache.delete(f"recs:products:v1:{db_name}")
+            cache.delete(f"recs:cooc90d:v1:{db_name}")
             self.stdout.write(self.style.WARNING("Cleared recs cache keys."))
 
         now = timezone.now()

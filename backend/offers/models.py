@@ -35,6 +35,7 @@ class Offer(models.Model):
 
     # frequency cap: do not assign more often than every N days
     cooldown_days = models.PositiveIntegerField(default=14)
+    expires_in_days = models.PositiveIntegerField(default=7)
 
     created_at = models.DateTimeField(auto_now_add=True)
     allowed_categories = models.JSONField(default=list, blank=True)      # ["makeup","fragrance"]
@@ -70,9 +71,6 @@ class CampaignBudget(models.Model):
 
     allowed_categories = models.JSONField(default=list, blank=True)  # ["skincare","makeup",...]
     allowed_steps = models.JSONField(default=list, blank=True)       # ["spf","serum",...]
-
-    def __str__(self) -> str:
-        return self.name
 
     def __str__(self) -> str:
         return f"{self.name} budget"

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from cmath import exp
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from django.db import transaction as db_tx
 from django.utils import timezone
@@ -288,7 +287,7 @@ class CheckoutView(APIView):
 
             next_offer_payload = None
             if next_assignment:
-                exp = getattr(next_assignment, "expires_at", None)
+                expires_at_value = getattr(next_assignment, "expires_at", None)
                 next_offer_payload = {
                     "assignment_id": next_assignment.id,
                     "offer": {
@@ -300,7 +299,7 @@ class CheckoutView(APIView):
                     },
                     "target": next_assignment.target,
                     "reason": next_assignment.reason,
-                    "expires_at": exp.isoformat() if exp else None,
+                    "expires_at": expires_at_value.isoformat() if expires_at_value else None,
                 }
 
                 # AUDIT: next offer assigned
@@ -369,10 +368,7 @@ class CheckoutView(APIView):
         except Exception:
             pass
 
-        return Response({"ok": True, **payload})
-
-from offers.models import OfferAssignment
-from loyalty.models import LoyaltyAccount, Tier
+        return Response({"ok": True, **payload}, status=201)
 
 class CheckoutPreviewView(APIView):
     permission_classes = [IsAuthenticated]

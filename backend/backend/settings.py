@@ -93,7 +93,6 @@ SPECTACULAR_SETTINGS = {
 
 
 MIDDLEWARE = [
-    'django.middleware.security.SecurityMiddleware',
     "django.middleware.security.SecurityMiddleware",
     "audit.middleware.RequestIdMiddleware",
     'django.contrib.sessions.middleware.SessionMiddleware',

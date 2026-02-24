@@ -38,7 +38,7 @@ class CheckoutIdempotencyTests(APITestCase):
         }
 
         r1 = self.client.post(url, body, format="json")
-        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r1.status_code, 201)
         txn_id_1 = r1.data["transaction_id"]
 
         r2 = self.client.post(url, body, format="json")

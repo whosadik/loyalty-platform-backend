@@ -1,6 +1,5 @@
 from decimal import Decimal
 from django.contrib.auth import get_user_model
-from django.db import transaction as db_tx
 from rest_framework.test import APITestCase
 
 from catalog.models import Product
@@ -38,7 +37,7 @@ class CheckoutOfferFlowTests(APITestCase):
             value=Decimal("2.00"),
             estimated_cost=Decimal("5.00"),
             is_active=True,
-            target_scope="product_id",
+            target_scope="cart",
             cooldown_days=0,
             expires_in_days=7,
             allowed_categories=["skincare"],

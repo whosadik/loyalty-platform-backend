@@ -1,3 +1,1 @@
-from django.test import TestCase
-
-# Create your tests here.
+from tests.test_recs_analytics import *  # noqa: F401,F403

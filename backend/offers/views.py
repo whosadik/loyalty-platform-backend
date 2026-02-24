@@ -195,9 +195,7 @@ class RedeemOfferView(APIView):
         assignment_id = req.validated_data["assignment_id"]
         transaction_id = req.validated_data["transaction_id"]
 
-        now = datetime.now(dt_timezone.utc)
-        if assignment.offer.offer_type == "discount":
-            return Response({"ok": False, "message": "Use /api/checkout with apply_assignment_id for discount offers"}, status=400)
+        now = dj_timezone.now()
 
         with db_tx.atomic():
             assignment = (
@@ -206,6 +204,13 @@ class RedeemOfferView(APIView):
                 .get(id=assignment_id, user=request.user)
             )
 
+            if assignment.offer.offer_type == "discount":
+                return Response(
+                    {"ok": False, "message": "Use /api/checkout with apply_assignment_id for discount offers"},
+                    status=400,
+                )
+            if assignment.expires_at and assignment.expires_at <= now:
+                return Response({"ok": False, "message": "Offer expired"}, status=400)
             if assignment.is_redeemed:
                 return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
 
@@ -264,7 +269,8 @@ class RedeemOfferView(APIView):
             account.save(update_fields=["points_balance"])
 
             assignment.is_redeemed = True
-            assignment.save(update_fields=["is_redeemed"])
+            assignment.redeemed_transaction_id = txn.id
+            assignment.save(update_fields=["is_redeemed", "redeemed_transaction_id"])
             log_event(
                 request=request,
                 action=AuditEvent.Action.OFFER_REDEEM,

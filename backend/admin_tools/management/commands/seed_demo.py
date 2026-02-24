@@ -170,19 +170,23 @@ class Command(BaseCommand):
             cp.skin_type = random.choice(skin_types)
             cp.goals = random.sample(goals, k=random.randint(1, 2))
             cp.avoid_flags = random.sample(avoid_flags, k=random.randint(0, 2))
-            cp.budget = float(random.choice([10, 15, 20, 30, 50]))
+            cp.budget = random.choice(["low", "medium", "high"])
 
             cp.hair_profile = {
-                "type": random.choice(hair_types),
+                "hair_type": random.choice(hair_types),
+                "scalp_type": random.choice(["dry", "normal", "oily"]),
+                "hair_thickness": random.choice(["fine", "medium", "thick"]),
                 "concerns": random.sample(hair_concerns, k=random.randint(1, 2)),
             }
             cp.makeup_profile = {
-                "finish": random.choice(["matte", "dewy"]),
-                "prefs": random.sample(makeup_prefs, k=random.randint(1, 2)),
+                "finish_pref": random.sample(["matte", "dewy", "natural"], k=random.randint(1, 2)),
+                "coverage_pref": random.sample(["light", "medium", "full"], k=random.randint(1, 2)),
+                "concerns": random.sample(makeup_prefs, k=random.randint(1, 2)),
             }
             cp.fragrance_profile = {
-                "family": random.choice(frag_families),
-                "intensity": random.choice(["light", "medium", "strong"]),
+                "liked_families": random.sample(frag_families, k=random.randint(1, 2)),
+                "disliked_families": random.sample(frag_families, k=random.randint(0, 1)),
+                "intensity_pref": random.choice(["light", "medium", "strong"]),
             }
             cp.save()
 

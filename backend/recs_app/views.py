@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
 from collections import defaultdict
+from decimal import Decimal
+from typing import Any
 
+from django.core.cache import cache
+from django.db.models import Sum
+from django.utils import timezone as dj_timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -17,23 +22,6 @@ from ml_logic.recommender import UserProfile, build_cooccurrence, recommend, bun
 
 from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
-
-from decimal import Decimal
-from typing import Any
-
-from django.utils import timezone
-from django.db.models import Sum
-from django.core.cache import cache
-
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-
-from backend.throttles import RecsRateThrottle
-
-from catalog.models import Product
-from transactions.models import Transaction, TransactionItem, OwnedProduct
-from users_app.models import CustomerProfile
 
 from ml_logic.recommender import recommend as rec_recommend
 from ml_logic.recommender import bundle as rec_bundle
@@ -117,7 +105,7 @@ class MeRecommendationsView(APIView):
         cp, _ = CustomerProfile.objects.get_or_create(user=request.user)
         prof = _build_profile(cp)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(dt_timezone.utc)
 
         owned_active_ids = list(
             OwnedProduct.objects.filter(user=request.user, is_active=True)
@@ -194,7 +182,7 @@ class MeBundleView(APIView):
         cp, _ = CustomerProfile.objects.get_or_create(user=request.user)
         prof = _build_profile(cp)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(dt_timezone.utc)
         owned_active_ids = list(
             OwnedProduct.objects.filter(user=request.user, is_active=True)
             .values_list("product_id", flat=True)
@@ -292,7 +280,7 @@ def _trending_30d(*, now, category=None, product_type=None, price_min=None, pric
     if cached is not None:
         return cached
 
-    since = now - timezone.timedelta(days=30)
+    since = now - timedelta(days=30)
 
     items = TransactionItem.objects.filter(transaction__created_at__gte=since, product__in_stock=True)
 
@@ -349,7 +337,7 @@ class HomeRecommendationsView(APIView):
         price_min = _to_decimal(qp.get("price_min"))
         price_max = _to_decimal(qp.get("price_max"))
 
-        now = timezone.now()
+        now = dj_timezone.now()
 
         cp, _ = CustomerProfile.objects.get_or_create(user=request.user)
         prof = _build_rec_profile(cp)
@@ -429,6 +417,15 @@ class HomeRecommendationsView(APIView):
                 continue
             trending_filtered.append(r)
         trending = _dedupe_limit(trending_filtered, seen, limit)
+
+        event_product_ids = set()
+        for section in (for_you, because, trending):
+            for row in section:
+                pid = (row.get("product") or {}).get("id")
+                if pid is not None:
+                    event_product_ids.add(int(pid))
+        existing_event_ids = set(Product.objects.filter(id__in=event_product_ids).values_list("id", flat=True))
+
         events = []
         rid = getattr(request, "request_id", None)
 
@@ -437,6 +434,8 @@ class HomeRecommendationsView(APIView):
                 p = r.get("product") or {}
                 pid = p.get("id")
                 if not pid:
+                    continue
+                if int(pid) not in existing_event_ids:
                     continue
                 comps = r.get("components") or {}
                 events.append(RecommendationEvent(

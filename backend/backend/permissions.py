@@ -1,4 +1,5 @@
 from rest_framework.permissions import BasePermission
+from admin_tools.models import StaffProfile
 
 
 class HasStaffPermission(BasePermission):
@@ -20,8 +21,9 @@ class HasStaffPermission(BasePermission):
         if not perm:
             return True  # only staff required
 
-        sp = getattr(user, "staff_profile", None)
-        if not sp:
+        try:
+            sp = StaffProfile.objects.get(user=user)
+        except StaffProfile.DoesNotExist:
             return False
         return perm in sp.effective_permissions()
 
