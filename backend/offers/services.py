@@ -7,7 +7,7 @@ from typing import Any
 
 from django.db import transaction as db_tx, connection
 from django.utils import timezone
-from django.db.models import Sum
+from django.db.models import Sum, Max
 
 from catalog.models import Product
 from transactions.models import Transaction, TransactionItem, OwnedProduct
@@ -28,6 +28,7 @@ from recs_analytics.effectiveness import category_uplift
 
 ONBOARDING_FIRST_ORDER_CAMPAIGN = "onboarding_first_order"
 WINBACK_30D_CAMPAIGN = "winback_30d"
+FAVORITE_CATEGORY_CAMPAIGN = "favorite_category"
 
 
 def _week_start(d: datetime) -> datetime.date:
@@ -259,6 +260,10 @@ def _is_winback_30d_campaign(camp: CampaignBudget | None) -> bool:
     return bool(camp and camp.name == WINBACK_30D_CAMPAIGN)
 
 
+def _is_favorite_category_campaign(camp: CampaignBudget | None) -> bool:
+    return bool(camp and camp.name == FAVORITE_CATEGORY_CAMPAIGN)
+
+
 def _winback_inactivity_days() -> int:
     return int(getattr(settings, "WINBACK_INACTIVITY_DAYS", 30))
 
@@ -282,6 +287,42 @@ def _is_winback_eligible(user, now: datetime) -> bool:
 
 def _passes_winback_assignment_cooldown(user, camp: CampaignBudget, now: datetime) -> bool:
     since = now - timedelta(days=_winback_reassign_days())
+    return not OfferAssignment.objects.filter(
+        user=user,
+        offer__campaign=camp,
+        assigned_at__gte=since,
+    ).exists()
+
+
+def _favorite_category_window_days() -> int:
+    return int(getattr(settings, "FAVORITE_CATEGORY_WINDOW_DAYS", 90))
+
+
+def _favorite_category_reassign_days() -> int:
+    return int(getattr(settings, "FAVORITE_CATEGORY_REASSIGN_DAYS", 14))
+
+
+def _favorite_category(user, now: datetime) -> str | None:
+    since = now - timedelta(days=_favorite_category_window_days())
+    rows = (
+        TransactionItem.objects.filter(
+            transaction__user=user,
+            transaction__created_at__gte=since,
+        )
+        .values("product__category")
+        .annotate(
+            total_qty=Sum("quantity"),
+            line_count=Count("id"),
+            last_at=Max("transaction__created_at"),
+        )
+        .order_by("-total_qty", "-line_count", "-last_at", "product__category")
+    )
+    best = rows.first()
+    return best["product__category"] if best else None
+
+
+def _passes_favorite_category_assignment_cooldown(user, camp: CampaignBudget, now: datetime) -> bool:
+    since = now - timedelta(days=_favorite_category_reassign_days())
     return not OfferAssignment.objects.filter(
         user=user,
         offer__campaign=camp,
@@ -321,6 +362,10 @@ def _pick_target_for_offer(
     post_ctx: dict | None,
     campaign: CampaignBudget | None = None,
 ):
+    forced_category = _favorite_category(user, now) if _is_favorite_category_campaign(campaign) else None
+    if forced_category and offer.target_scope == "category":
+        return {"scope": "category", "value": forced_category, "picked_via": "favorite_category"}
+
     # 1) routine-context shortcut
     if settings.USE_ROUTINE_SHORTCUT and context_steps and offer.target_scope in {"product_type", "product_id"}:
         if "spf" in context_steps:
@@ -373,6 +418,10 @@ def _pick_target_for_offer(
     # ---- Bundle-driven target (post-purchase) ----
     if settings.USE_BUNDLE_TARGETING and post_ctx and offer.target_scope == "product_id":
         allowed_cats = _effective_allowed_categories(offer, campaign)
+        if forced_category:
+            if allowed_cats and forced_category not in allowed_cats:
+                return {"scope": "category", "value": forced_category, "picked_via": "favorite_category_fallback"}
+            allowed_cats = [forced_category]
         bundle_cat = allowed_cats[0] if allowed_cats else None
 
         t = _pick_product_from_bundle(user, now, post_ctx, category=bundle_cat)
@@ -381,6 +430,10 @@ def _pick_target_for_offer(
 
     # 3) explicit restrictions
     allowed_cats = _effective_allowed_categories(offer, campaign)
+    if forced_category:
+        if allowed_cats and forced_category not in allowed_cats:
+            return {"scope": "category", "value": forced_category, "picked_via": "favorite_category_fallback"}
+        allowed_cats = [forced_category]
     allowed_pts = offer.allowed_product_types or []
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
@@ -622,6 +675,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
 
     campaigns, routing = _campaign_candidates(context_steps, post_ctx)
     winback_eligible = _is_winback_eligible(user, now)
+    favorite_cat = _favorite_category(user, now)
     if not campaigns:
         return None, {
             "segment": seg,
@@ -630,6 +684,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             "context_steps": context_steps or None,
             "campaign_routing": routing,
             "winback_eligible": winback_eligible,
+            "favorite_category": favorite_cat,
         }
 
     # сохранить ПОРЯДОК кампаний из routing, но при этом залочить строки
@@ -640,10 +695,13 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
     }
     locked = [locked_map[i] for i in ids_in_order if i in locked_map]
     has_any_txn = _user_has_any_transactions(user)
+    ordered_locked: list[CampaignBudget] = []
     if winback_eligible:
-        locked = [c for c in locked if _is_winback_30d_campaign(c)] + [
-            c for c in locked if not _is_winback_30d_campaign(c)
-        ]
+        ordered_locked.extend([c for c in locked if _is_winback_30d_campaign(c)])
+    if favorite_cat:
+        ordered_locked.extend([c for c in locked if _is_favorite_category_campaign(c) and c not in ordered_locked])
+    ordered_locked.extend([c for c in locked if c not in ordered_locked])
+    locked = ordered_locked
 
     # STRICT routing: идём по кампаниям в порядке locked (это routing order)
     for camp in locked:
@@ -653,6 +711,11 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             if not winback_eligible:
                 continue
             if not _passes_winback_assignment_cooldown(user, camp, now):
+                continue
+        if _is_favorite_category_campaign(camp):
+            if not favorite_cat:
+                continue
+            if not _passes_favorite_category_assignment_cooldown(user, camp, now):
                 continue
         _reset_campaign_week_if_needed(camp, now)
 
@@ -673,6 +736,11 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             eff_cats = _effective_allowed_categories(o, camp)
             if (o.allowed_categories or []) and (camp.allowed_categories or []) and not eff_cats:
                 continue
+            if _is_favorite_category_campaign(camp):
+                if o.target_scope == "cart":
+                    continue
+                if eff_cats and favorite_cat not in eff_cats:
+                    continue
 
             cost = Decimal(str(getattr(o, "estimated_cost", 0) or 0))
             if cost > left:
@@ -697,9 +765,13 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
 
             # campaign priority: слабый бонус (routing решает порядок, это просто tie-breaker)
             score += max(0.0, (100 - float(camp.priority))) * 0.01
+            if _is_favorite_category_campaign(camp):
+                score += 0.8
 
             # global effectiveness по ожидаемой категории
             exp_cat = _expected_category_for_offer(o, camp, context_steps)
+            if _is_favorite_category_campaign(camp) and favorite_cat:
+                exp_cat = favorite_cat
             cat_adj = 0.0
             cat_perf = None
             if exp_cat:
@@ -751,6 +823,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
                     ),
                     "campaign_routing": routing,
                     "winback_eligible": winback_eligible,
+                    "favorite_category": favorite_cat,
                 }
 
         # если в этой кампании нашли оффер — возвращаем СРАЗУ (это и есть “сначала пробуем …”)
@@ -765,6 +838,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
         "context_steps": context_steps or None,
         "campaign_routing": routing,
         "winback_eligible": winback_eligible,
+        "favorite_category": favorite_cat,
     }
 
 
@@ -787,6 +861,9 @@ def get_or_assign_next_offer(
             existing.is_redeemed = True
             existing.save(update_fields=["is_redeemed"])
         if _is_winback_30d_campaign(existing_campaign) and not _is_winback_eligible(user, now):
+            existing.is_redeemed = True
+            existing.save(update_fields=["is_redeemed"])
+        if _is_favorite_category_campaign(existing_campaign) and not _favorite_category(user, now):
             existing.is_redeemed = True
             existing.save(update_fields=["is_redeemed"])
         if existing.expires_at and existing.expires_at <= now:

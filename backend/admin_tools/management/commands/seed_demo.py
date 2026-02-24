@@ -191,6 +191,19 @@ class Command(BaseCommand):
             winback_campaign.weekly_limit = Decimal("50000.0")
             winback_campaign.save(update_fields=["weekly_limit"])
 
+        favorite_campaign, _ = CampaignBudget.objects.get_or_create(
+            name="favorite_category",
+            defaults={
+                "weekly_limit": Decimal("50000.0"),
+                "weekly_spent": Decimal("0.0"),
+                "priority": 30,
+                "is_active": True,
+            },
+        )
+        if favorite_campaign.weekly_limit < Decimal("50000.0"):
+            favorite_campaign.weekly_limit = Decimal("50000.0")
+            favorite_campaign.save(update_fields=["weekly_limit"])
+
         Offer.objects.update_or_create(
             campaign=default_campaign,
             name="[DEMO] Default x2 points",
@@ -233,6 +246,22 @@ class Command(BaseCommand):
                 "is_active": True,
                 "target_scope": "cart",
                 "cooldown_days": 30,
+                "expires_in_days": 10,
+                "allowed_categories": [],
+                "allowed_product_types": [],
+            },
+        )
+
+        Offer.objects.update_or_create(
+            campaign=favorite_campaign,
+            name="[DEMO] Favorite category -12%",
+            defaults={
+                "offer_type": Offer.Type.DISCOUNT,
+                "value": Decimal("12.00"),
+                "estimated_cost": Decimal("9.00"),
+                "is_active": True,
+                "target_scope": "category",
+                "cooldown_days": 14,
                 "expires_in_days": 10,
                 "allowed_categories": [],
                 "allowed_product_types": [],
