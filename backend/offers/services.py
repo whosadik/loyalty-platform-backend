@@ -26,6 +26,10 @@ from django.core.cache import cache
 from recs_analytics.fatigue import adjust_recs
 from recs_analytics.effectiveness import category_uplift
 
+ONBOARDING_FIRST_ORDER_CAMPAIGN = "onboarding_first_order"
+WINBACK_30D_CAMPAIGN = "winback_30d"
+
+
 def _week_start(d: datetime) -> datetime.date:
     # Monday as week start
     return (d - timedelta(days=d.weekday())).date()
@@ -243,6 +247,48 @@ def _passes_cooldown(user, offer: Offer, now: datetime) -> bool:
     ).exists()
 
 # Порог "уже достаточно" по категориям (MVP)
+def _is_onboarding_first_order_campaign(camp: CampaignBudget | None) -> bool:
+    return bool(camp and camp.name == ONBOARDING_FIRST_ORDER_CAMPAIGN)
+
+
+def _user_has_any_transactions(user) -> bool:
+    return Transaction.objects.filter(user=user).exists()
+
+
+def _is_winback_30d_campaign(camp: CampaignBudget | None) -> bool:
+    return bool(camp and camp.name == WINBACK_30D_CAMPAIGN)
+
+
+def _winback_inactivity_days() -> int:
+    return int(getattr(settings, "WINBACK_INACTIVITY_DAYS", 30))
+
+
+def _winback_reassign_days() -> int:
+    return int(getattr(settings, "WINBACK_REASSIGN_DAYS", 30))
+
+
+def _is_winback_eligible(user, now: datetime) -> bool:
+    last_txn = (
+        Transaction.objects.filter(user=user)
+        .only("created_at")
+        .order_by("-created_at")
+        .first()
+    )
+    if not last_txn:
+        return False
+    inactivity_days = max(0, (now.date() - last_txn.created_at.date()).days)
+    return inactivity_days >= _winback_inactivity_days()
+
+
+def _passes_winback_assignment_cooldown(user, camp: CampaignBudget, now: datetime) -> bool:
+    since = now - timedelta(days=_winback_reassign_days())
+    return not OfferAssignment.objects.filter(
+        user=user,
+        offer__campaign=camp,
+        assigned_at__gte=since,
+    ).exists()
+
+
 SATURATION_LIMITS = {
     "makeup": 3,      # 3+ товаров одного product_type (например mascara) = хватит
     "skincare": 2,
@@ -575,6 +621,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
     seg = segment(RFM(**rfm))
 
     campaigns, routing = _campaign_candidates(context_steps, post_ctx)
+    winback_eligible = _is_winback_eligible(user, now)
     if not campaigns:
         return None, {
             "segment": seg,
@@ -582,6 +629,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             "picked_because": "no active campaigns",
             "context_steps": context_steps or None,
             "campaign_routing": routing,
+            "winback_eligible": winback_eligible,
         }
 
     # сохранить ПОРЯДОК кампаний из routing, но при этом залочить строки
@@ -591,9 +639,21 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
         for c in CampaignBudget.objects.select_for_update().filter(id__in=ids_in_order)
     }
     locked = [locked_map[i] for i in ids_in_order if i in locked_map]
+    has_any_txn = _user_has_any_transactions(user)
+    if winback_eligible:
+        locked = [c for c in locked if _is_winback_30d_campaign(c)] + [
+            c for c in locked if not _is_winback_30d_campaign(c)
+        ]
 
     # STRICT routing: идём по кампаниям в порядке locked (это routing order)
     for camp in locked:
+        if _is_onboarding_first_order_campaign(camp) and has_any_txn:
+            continue
+        if _is_winback_30d_campaign(camp):
+            if not winback_eligible:
+                continue
+            if not _passes_winback_assignment_cooldown(user, camp, now):
+                continue
         _reset_campaign_week_if_needed(camp, now)
 
         left = Decimal(str(camp.weekly_limit)) - Decimal(str(camp.weekly_spent))
@@ -690,6 +750,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
                         if cat_perf else None
                     ),
                     "campaign_routing": routing,
+                    "winback_eligible": winback_eligible,
                 }
 
         # если в этой кампании нашли оффер — возвращаем СРАЗУ (это и есть “сначала пробуем …”)
@@ -703,6 +764,7 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
         "picked_because": "no eligible offers under constraints across routed campaigns",
         "context_steps": context_steps or None,
         "campaign_routing": routing,
+        "winback_eligible": winback_eligible,
     }
 
 
@@ -714,16 +776,23 @@ def get_or_assign_next_offer(
 ) -> OfferAssignment | None:
     existing = (
         OfferAssignment.objects.filter(user=user, is_redeemed=False)
-        .select_related("offer")
+        .select_related("offer", "offer__campaign")
         .order_by("-assigned_at")
         .first()
     )
 
     if existing:
+        existing_campaign = getattr(existing.offer, "campaign", None)
+        if _is_onboarding_first_order_campaign(existing_campaign) and _user_has_any_transactions(user):
+            existing.is_redeemed = True
+            existing.save(update_fields=["is_redeemed"])
+        if _is_winback_30d_campaign(existing_campaign) and not _is_winback_eligible(user, now):
+            existing.is_redeemed = True
+            existing.save(update_fields=["is_redeemed"])
         if existing.expires_at and existing.expires_at <= now:
             existing.is_redeemed = True
             existing.save(update_fields=["is_redeemed"])
-        else:
+        elif not existing.is_redeemed:
             return existing
 
     # всё, что связано с select_for_update + списанием бюджета — в atomic

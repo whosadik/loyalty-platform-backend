@@ -15,7 +15,7 @@ from users_app.models import CustomerProfile
 from loyalty.models import LoyaltyAccount, Tier
 from loyalty.models import LoyaltyLedgerEntry
 
-from offers.models import CampaignBudget
+from offers.models import CampaignBudget, Offer
 from offers.services import get_or_assign_next_offer
 
 
@@ -149,13 +149,95 @@ class Command(BaseCommand):
         makeup_prefs = ["matte", "dewy", "long_wear", "waterproof"]
         frag_families = ["fresh", "floral", "woody", "oriental", "gourmand"]
 
-        # Ensure tier + budget exist
+        # Ensure tier + demo campaigns/offers exist
         bronze, _ = Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": 1.0})
-        b = CampaignBudget.objects.filter(name="default").first()
-        if b:
-            # чтобы assign-offers не упёрся в бюджет при демо
-            b.weekly_limit = Decimal("100000.0")
-            b.save(update_fields=["weekly_limit"])
+
+        default_campaign, _ = CampaignBudget.objects.get_or_create(
+            name="default",
+            defaults={
+                "weekly_limit": Decimal("100000.0"),
+                "weekly_spent": Decimal("0.0"),
+                "priority": 100,
+                "is_active": True,
+            },
+        )
+        if default_campaign.weekly_limit < Decimal("100000.0"):
+            default_campaign.weekly_limit = Decimal("100000.0")
+            default_campaign.save(update_fields=["weekly_limit"])
+
+        onboarding_campaign, _ = CampaignBudget.objects.get_or_create(
+            name="onboarding_first_order",
+            defaults={
+                "weekly_limit": Decimal("50000.0"),
+                "weekly_spent": Decimal("0.0"),
+                "priority": 10,
+                "is_active": True,
+            },
+        )
+        if onboarding_campaign.weekly_limit < Decimal("50000.0"):
+            onboarding_campaign.weekly_limit = Decimal("50000.0")
+            onboarding_campaign.save(update_fields=["weekly_limit"])
+
+        winback_campaign, _ = CampaignBudget.objects.get_or_create(
+            name="winback_30d",
+            defaults={
+                "weekly_limit": Decimal("50000.0"),
+                "weekly_spent": Decimal("0.0"),
+                "priority": 20,
+                "is_active": True,
+            },
+        )
+        if winback_campaign.weekly_limit < Decimal("50000.0"):
+            winback_campaign.weekly_limit = Decimal("50000.0")
+            winback_campaign.save(update_fields=["weekly_limit"])
+
+        Offer.objects.update_or_create(
+            campaign=default_campaign,
+            name="[DEMO] Default x2 points",
+            defaults={
+                "offer_type": Offer.Type.POINTS_MULTIPLIER,
+                "value": Decimal("2.00"),
+                "estimated_cost": Decimal("3.00"),
+                "is_active": True,
+                "target_scope": "cart",
+                "cooldown_days": 7,
+                "expires_in_days": 7,
+                "allowed_categories": [],
+                "allowed_product_types": [],
+            },
+        )
+
+        Offer.objects.update_or_create(
+            campaign=onboarding_campaign,
+            name="[DEMO] First order -10%",
+            defaults={
+                "offer_type": Offer.Type.DISCOUNT,
+                "value": Decimal("10.00"),
+                "estimated_cost": Decimal("8.00"),
+                "is_active": True,
+                "target_scope": "cart",
+                "cooldown_days": 365,
+                "expires_in_days": 7,
+                "allowed_categories": [],
+                "allowed_product_types": [],
+            },
+        )
+
+        Offer.objects.update_or_create(
+            campaign=winback_campaign,
+            name="[DEMO] Win-back -15%",
+            defaults={
+                "offer_type": Offer.Type.DISCOUNT,
+                "value": Decimal("15.00"),
+                "estimated_cost": Decimal("12.00"),
+                "is_active": True,
+                "target_scope": "cart",
+                "cooldown_days": 30,
+                "expires_in_days": 10,
+                "allowed_categories": [],
+                "allowed_product_types": [],
+            },
+        )
 
         # create users + profiles
         demo_users = []
@@ -327,3 +409,4 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS(f"Assigned next offers for {len(demo_users)} demo users"))
 
         self.stdout.write(self.style.SUCCESS("seed_demo done"))
+
