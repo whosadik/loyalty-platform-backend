@@ -29,3 +29,11 @@ Thumbs.db
 
 # Docker volumes
 pgdata/
+
+data/raw/**
+data/processed/**
+models/**
+reports/**
+*.parquet
+*.jsonl.gz
+data/catalog/**
