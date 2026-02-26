@@ -67,3 +67,11 @@ class RecsAlgoSwitchTests(APITestCase):
         self.assertIn("query", r.data)
         self.assertEqual(r.data["query"]["algo_requested"], "reranker")
         self.assertTrue(str(r.data["query"]["for_you_algo_used"]).startswith("cooc_fallback"))
+
+    @override_settings(RECS_RERANKER_MODEL_PATH="Z:/not_existing/model.pkl")
+    def test_bundle_recommendations_reranker_fallback(self):
+        r = self.client.get(f"/api/me/recommendations/bundle?product_id={self.owned.id}&limit=5&algo=reranker")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("query", r.data)
+        self.assertEqual(r.data["query"]["algo_requested"], "reranker")
+        self.assertTrue(str(r.data["query"]["algo_used"]).startswith("cooc_fallback"))

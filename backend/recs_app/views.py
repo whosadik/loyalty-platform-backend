@@ -25,7 +25,11 @@ from drf_spectacular.types import OpenApiTypes
 
 from ml_logic.recommender import bundle as rec_bundle
 from recs_analytics.models import RecommendationEvent
-from recs_app.reranker import recommend_with_algo
+from recs_app.reranker import (
+    get_reranker_model_version,
+    recommend_with_algo,
+    rerank_bundle_with_algo,
+)
 
 # ВАЖНО: чтобы не переписывать, используем твои уже готовые хелперы.
 # Если эти функции лежат в offers/services.py — импортируй оттуда.
@@ -40,6 +44,7 @@ class RecommendationsQuerySerializer(serializers.Serializer):
 class BundleQuerySerializer(serializers.Serializer):
     product_id = serializers.IntegerField()
     limit = serializers.IntegerField(required=False, min_value=1, max_value=50, default=10)
+    algo = serializers.ChoiceField(choices=["cooc", "reranker"], required=False)
 
 
 def _build_profile(cp: CustomerProfile) -> UserProfile:
@@ -120,7 +125,7 @@ class MeRecommendationsView(APIView):
         products = _load_products()
         co = _cooccurrence_last_90d(now)
 
-        results, algo_used = recommend_with_algo(
+        results, algo_used, model_version = recommend_with_algo(
             prof=prof,
             products=products,
             owned_active_ids=owned_active_ids,
@@ -140,6 +145,7 @@ class MeRecommendationsView(APIView):
                     "limit": limit,
                     "algo_requested": algo_requested,
                     "algo_used": algo_used,
+                    "model_version": model_version,
                 },
                 "context": {"owned_active_count": len(owned_active_ids)},
                 "results": results,
@@ -155,6 +161,7 @@ class MeBundleView(APIView):
         parameters=[
             OpenApiParameter("product_id", OpenApiTypes.INT, required=True, description="Base product id"),
             OpenApiParameter("limit", OpenApiTypes.INT, required=False, description="Max results (default 10)"),
+            OpenApiParameter("algo", OpenApiTypes.STR, required=False, description="cooc or reranker"),
         ],
         responses={200: OpenApiTypes.OBJECT},
         examples=[
@@ -187,6 +194,7 @@ class MeBundleView(APIView):
 
         base_product_id = q.validated_data["product_id"]
         limit = q.validated_data["limit"]
+        algo_requested = q.validated_data.get("algo")
 
         cp, _ = CustomerProfile.objects.get_or_create(user=request.user)
         prof = _build_profile(cp)
@@ -200,18 +208,32 @@ class MeBundleView(APIView):
         products = _load_products()
         co = _cooccurrence_last_90d(now)
 
-        results = bundle(
+        results_raw = bundle(
             products=products,
             base_product_id=base_product_id,
             owned_active_ids=owned_active_ids,
             prof=prof,
             co=co,
+            limit=limit * 3,
+        )
+        results, algo_used, model_version = rerank_bundle_with_algo(
+            base_product_id=base_product_id,
+            bundle_results=results_raw,
+            products=products,
+            co=co,
             limit=limit,
+            algo_requested=algo_requested,
         )
 
         return Response(
             {
-                "query": {"product_id": base_product_id, "limit": limit},
+                "query": {
+                    "product_id": base_product_id,
+                    "limit": limit,
+                    "algo_requested": algo_requested,
+                    "algo_used": algo_used,
+                    "model_version": model_version,
+                },
                 "results": results,
             }
         )
@@ -370,7 +392,7 @@ class HomeRecommendationsView(APIView):
         seen: set[int] = set()
 
         # 1) For you (profile-based)
-        for_you_raw, for_you_algo_used = recommend_with_algo(
+        for_you_raw, for_you_algo_used, for_you_model_version = recommend_with_algo(
             prof=prof,
             products=products,
             owned_active_ids=owned_ids,
@@ -392,6 +414,8 @@ class HomeRecommendationsView(APIView):
 
         # 2) Because you bought (bundle)
         because = []
+        because_algo_used = "cooc"
+        because_model_version = None
         if base_product_ids:
             base_id = int(base_product_ids[0])
             bundle_raw = rec_bundle(
@@ -408,7 +432,15 @@ class HomeRecommendationsView(APIView):
                 if not _apply_filters_to_product_dict(p, category=category, product_type=product_type, price_min=price_min, price_max=price_max):
                     continue
                 filtered.append(r)
-            because = _dedupe_limit(filtered, seen, limit)
+            reranked, because_algo_used, because_model_version = rerank_bundle_with_algo(
+                base_product_id=base_id,
+                bundle_results=filtered,
+                products=products,
+                co=co,
+                limit=limit * 2,
+                algo_requested=algo_requested,
+            )
+            because = _dedupe_limit(reranked, seen, limit)
 
         # 3) Trending
         trending_raw = _trending_30d(
@@ -441,7 +473,7 @@ class HomeRecommendationsView(APIView):
         rid = getattr(request, "request_id", None)
 
         def push_impressions(section_key: str, results: list[dict], page: str = "home"):
-            for r in results:
+            for rank, r in enumerate(results, start=1):
                 p = r.get("product") or {}
                 pid = p.get("id")
                 if not pid:
@@ -459,7 +491,7 @@ class HomeRecommendationsView(APIView):
                     algo_mode=str(comps.get("mode") or comps.get("source") or ""),
                     score=float(r.get("score")) if r.get("score") is not None else None,
                     components=comps,
-                    context={"why": (r.get("why") or [])[:6]},
+                    context={"why": (r.get("why") or [])[:6], "rank": rank},
                 ))
 
         push_impressions("for_you", for_you)
@@ -478,6 +510,10 @@ class HomeRecommendationsView(APIView):
                 "price_max": str(price_max) if price_max is not None else None,
                 "algo_requested": algo_requested,
                 "for_you_algo_used": for_you_algo_used,
+                "for_you_model_version": for_you_model_version,
+                "because_algo_used": because_algo_used,
+                "because_model_version": because_model_version,
+                "reranker_model_available": bool(get_reranker_model_version()),
             },
             "sections": [
                 {"key": "for_you", "title": "For you", "results": for_you},
