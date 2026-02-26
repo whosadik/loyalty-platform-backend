@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
+from django.core.cache import cache
+from django.db.models import Q
+from django.utils import timezone
 
 from ml_logic.recommender import UserProfile, recommend as heuristic_recommend
+from recs_analytics.models import RecommendationEvent
 
 
 def _to_int(v: Any) -> int | None:
@@ -27,11 +33,17 @@ def _to_float(v: Any, default: float = 0.0) -> float:
         return default
 
 
-def _normalize_algo(algo_requested: str | None) -> str:
-    algo_req = (algo_requested or getattr(settings, "RECS_ALGO_DEFAULT", "cooc") or "cooc").strip().lower()
-    if algo_req not in {"cooc", "reranker"}:
-        return "cooc"
-    return algo_req
+def _normalize_algo(algo_requested: str | None) -> str | None:
+    if algo_requested is None:
+        return None
+    s = str(algo_requested).strip().lower()
+    if not s:
+        return None
+    if s == "auto":
+        return None
+    if s in {"cooc", "reranker"}:
+        return s
+    return None
 
 
 def _model_path() -> Path:
@@ -87,6 +99,123 @@ def get_reranker_model_version() -> str | None:
     if err:
         return None
     return version
+
+
+def _ab_bucket(user_id: int | str, salt: str) -> int:
+    raw = f"{salt}:{user_id}".encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()[:8]
+    return int(digest, 16) % 100
+
+
+def _algo_filter(algo_name: str):
+    s = str(algo_name or "").strip().lower()
+    if s == "reranker":
+        return Q(algo_mode__startswith="reranker")
+    if s == "cooc":
+        return (
+            Q(algo_mode__startswith="cooc")
+            | Q(algo_mode__in=["cooccurrence", "fallback", "recommend"])
+        )
+    return Q(algo_mode=s)
+
+
+def _guardrail_state() -> dict[str, Any]:
+    enabled = bool(getattr(settings, "RECS_GUARDRAIL_ENABLED", False))
+    if not enabled:
+        return {"enabled": False, "force_cooc": False}
+
+    window_days = int(getattr(settings, "RECS_GUARDRAIL_WINDOW_DAYS", 7) or 7)
+    min_imp = int(getattr(settings, "RECS_GUARDRAIL_MIN_IMPRESSIONS", 200) or 200)
+    min_delta = float(getattr(settings, "RECS_GUARDRAIL_MIN_DELTA_CR", -0.002) or -0.002)
+    control_algo = str(getattr(settings, "RECS_GUARDRAIL_CONTROL_ALGO", "cooc") or "cooc").strip().lower()
+    test_algo = str(getattr(settings, "RECS_GUARDRAIL_TEST_ALGO", "reranker") or "reranker").strip().lower()
+    ttl = int(getattr(settings, "RECS_GUARDRAIL_CACHE_TTL_SECONDS", 60) or 60)
+
+    cache_key = (
+        f"recs:guardrail:v1:{window_days}:{min_imp}:{min_delta}:{control_algo}:{test_algo}"
+    )
+    if ttl > 0:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    since = timezone.now() - timedelta(days=window_days)
+
+    def stats_for(algo_name: str) -> tuple[int, int, float]:
+        q = _algo_filter(algo_name)
+        base = RecommendationEvent.objects.filter(created_at__gte=since).filter(q)
+        imp = base.filter(action=RecommendationEvent.Action.IMPRESSION).count()
+        pur = base.filter(action=RecommendationEvent.Action.PURCHASE_ATTRIBUTED).count()
+        cr = (pur / imp) if imp else 0.0
+        return int(imp), int(pur), float(cr)
+
+    imp_ctrl, pur_ctrl, cr_ctrl = stats_for(control_algo)
+    imp_test, pur_test, cr_test = stats_for(test_algo)
+
+    force_cooc = False
+    reason = "ok"
+    if imp_ctrl < min_imp or imp_test < min_imp:
+        reason = "insufficient_impressions"
+    else:
+        delta = cr_test - cr_ctrl
+        if delta < min_delta:
+            force_cooc = True
+            reason = "cr_drop_below_threshold"
+        else:
+            reason = "healthy"
+
+    out = {
+        "enabled": True,
+        "force_cooc": force_cooc,
+        "reason": reason,
+        "window_days": window_days,
+        "min_impressions": min_imp,
+        "min_delta_cr": min_delta,
+        "control_algo": control_algo,
+        "test_algo": test_algo,
+        "control": {
+            "impressions": imp_ctrl,
+            "purchases": pur_ctrl,
+            "cr": round(cr_ctrl, 6),
+        },
+        "test": {
+            "impressions": imp_test,
+            "purchases": pur_test,
+            "cr": round(cr_test, 6),
+        },
+    }
+    if ttl > 0:
+        cache.set(cache_key, out, timeout=ttl)
+    return out
+
+
+def _resolve_algo_for_user(user_id: int | str | None, algo_requested: str | None) -> tuple[str, dict[str, Any]]:
+    requested = _normalize_algo(algo_requested)
+    if requested in {"cooc", "reranker"}:
+        return requested, {"source": "explicit", "requested": requested}
+
+    if bool(getattr(settings, "RECS_AB_ENABLED", False)) and user_id is not None:
+        pct = max(0, min(100, int(getattr(settings, "RECS_AB_RERANKER_PERCENT", 50) or 50)))
+        salt = str(getattr(settings, "RECS_AB_SALT", "recs_ab_v1") or "recs_ab_v1")
+        experiment_id = str(
+            getattr(settings, "RECS_AB_EXPERIMENT_ID", "recs_algo_ab_v1") or "recs_algo_ab_v1"
+        ).strip()
+        bucket = _ab_bucket(user_id, salt)
+        variant = "test" if bucket < pct else "control"
+        algo = "reranker" if variant == "test" else "cooc"
+        return algo, {
+            "source": "ab",
+            "requested": algo_requested,
+            "experiment_id": experiment_id,
+            "ab_bucket": bucket,
+            "ab_variant": variant,
+            "ab_reranker_percent": pct,
+        }
+
+    default_algo = str(getattr(settings, "RECS_ALGO_DEFAULT", "cooc") or "cooc").strip().lower()
+    if default_algo not in {"cooc", "reranker"}:
+        default_algo = "cooc"
+    return default_algo, {"source": "default", "requested": algo_requested}
 
 
 def _context_ids(context_product_ids: list[int] | None, max_k: int) -> list[int]:
@@ -172,6 +301,7 @@ def _build_feature_rows(
 
 def recommend_with_algo(
     *,
+    user_id: int | str | None,
     prof: UserProfile,
     products: list[dict[str, Any]],
     owned_active_ids: list[int],
@@ -181,8 +311,18 @@ def recommend_with_algo(
     limit: int,
     co: dict[int, dict[int, int]] | None,
     algo_requested: str | None,
-) -> tuple[list[dict[str, Any]], str, str | None]:
-    algo_req = _normalize_algo(algo_requested)
+) -> tuple[list[dict[str, Any]], str, str | None, dict[str, Any]]:
+    target_algo, route_meta = _resolve_algo_for_user(user_id, algo_requested)
+
+    if target_algo == "reranker":
+        guard = _guardrail_state()
+        route_meta["guardrail"] = guard
+        if guard.get("force_cooc"):
+            target_algo = "cooc"
+            route_meta["guardrail_forced"] = True
+            route_meta["guardrail_reason"] = guard.get("reason")
+        else:
+            route_meta["guardrail_forced"] = False
 
     top_m = max(int(getattr(settings, "RECS_RERANKER_TOP_M", 200) or 200), int(limit))
     pool_limit = max(
@@ -201,17 +341,26 @@ def recommend_with_algo(
         limit=pool_limit,
         co=co,
     )
+    heuristic_rows: list[dict[str, Any]] = []
+    for r in heuristic_results:
+        row = dict(r)
+        comps = dict(row.get("components") or {})
+        comps.setdefault("mode", "cooc")
+        row["components"] = comps
+        heuristic_rows.append(row)
 
-    if algo_req != "reranker":
-        return heuristic_results[:limit], "cooc", None
+    if target_algo != "reranker":
+        return heuristic_rows[:limit], "cooc", None, route_meta
 
     model, model_version, err = _load_reranker_model()
     if model is None:
-        return heuristic_results[:limit], f"cooc_fallback:{err}", None
+        route_meta["fallback_reason"] = err
+        return heuristic_rows[:limit], f"cooc_fallback:{err}", None, route_meta
 
     ctx_ids = _context_ids(context_product_ids, int(getattr(settings, "RECS_RERANKER_CONTEXT_K", 3) or 3))
     if not ctx_ids:
-        return heuristic_results[:limit], "cooc_fallback:no_context", None
+        route_meta["fallback_reason"] = "no_context"
+        return heuristic_rows[:limit], "cooc_fallback:no_context", None, route_meta
 
     by_id: dict[int, dict[str, Any]] = {}
     for p in products:
@@ -222,14 +371,15 @@ def recommend_with_algo(
     ctx_item = ctx_ids[-1]
     ctx = by_id.get(ctx_item)
     if not ctx:
-        return heuristic_results[:limit], "cooc_fallback:no_context_item", None
+        route_meta["fallback_reason"] = "no_context_item"
+        return heuristic_rows[:limit], "cooc_fallback:no_context_item", None, route_meta
 
     transitions = _aggregate_transition_counts(ctx_ids, co or {})
     ranked_trans = sorted(transitions.items(), key=lambda x: (-x[1], x[0]))
     candidate_ids = [int(cid) for cid, _ in ranked_trans[:top_m]]
 
     heuristic_map: dict[int, dict[str, Any]] = {}
-    for r in heuristic_results:
+    for r in heuristic_rows:
         pid = _to_int((r.get("product") or {}).get("id"))
         if pid is None:
             continue
@@ -245,7 +395,8 @@ def recommend_with_algo(
 
     candidate_ids = [pid for pid in candidate_ids if pid in heuristic_map]
     if not candidate_ids:
-        return heuristic_results[:limit], "cooc_fallback:no_candidates", None
+        route_meta["fallback_reason"] = "no_candidates"
+        return heuristic_rows[:limit], "cooc_fallback:no_candidates", None, route_meta
 
     pop_map = _co_popularity(co or {})
     rank_map = {pid: idx + 1 for idx, pid in enumerate(candidate_ids)}
@@ -258,7 +409,8 @@ def recommend_with_algo(
         pop_map=pop_map,
     )
     if not feats:
-        return heuristic_results[:limit], "cooc_fallback:no_features", None
+        route_meta["fallback_reason"] = "no_features"
+        return heuristic_rows[:limit], "cooc_fallback:no_features", None, route_meta
 
     try:
         import numpy as np
@@ -266,7 +418,8 @@ def recommend_with_algo(
         X = np.asarray(feats, dtype=float)
         probs = model.predict_proba(X)[:, 1]
     except Exception:
-        return heuristic_results[:limit], "cooc_fallback:predict_error", None
+        route_meta["fallback_reason"] = "predict_error"
+        return heuristic_rows[:limit], "cooc_fallback:predict_error", None, route_meta
 
     scored = sorted(zip(valid_ids, probs), key=lambda x: (-float(x[1]), x[0]))
 
@@ -291,25 +444,52 @@ def recommend_with_algo(
         if len(out) >= int(limit):
             break
 
-    return out, "reranker", model_version
+    return out, "reranker", model_version, route_meta
 
 
 def rerank_bundle_with_algo(
     *,
+    user_id: int | str | None,
     base_product_id: int,
     bundle_results: list[dict[str, Any]],
     products: list[dict[str, Any]],
     co: dict[int, dict[int, int]] | None,
     limit: int,
     algo_requested: str | None,
-) -> tuple[list[dict[str, Any]], str, str | None]:
-    algo_req = _normalize_algo(algo_requested)
-    if algo_req != "reranker":
-        return bundle_results[:limit], "cooc", None
+) -> tuple[list[dict[str, Any]], str, str | None, dict[str, Any]]:
+    target_algo, route_meta = _resolve_algo_for_user(user_id, algo_requested)
+
+    if target_algo == "reranker":
+        guard = _guardrail_state()
+        route_meta["guardrail"] = guard
+        if guard.get("force_cooc"):
+            target_algo = "cooc"
+            route_meta["guardrail_forced"] = True
+            route_meta["guardrail_reason"] = guard.get("reason")
+        else:
+            route_meta["guardrail_forced"] = False
+
+    if target_algo != "reranker":
+        out = []
+        for r in bundle_results[:limit]:
+            row = dict(r)
+            comps = dict(row.get("components") or {})
+            comps.setdefault("mode", "cooc")
+            row["components"] = comps
+            out.append(row)
+        return out, "cooc", None, route_meta
 
     model, model_version, err = _load_reranker_model()
     if model is None:
-        return bundle_results[:limit], f"cooc_fallback:{err}", None
+        route_meta["fallback_reason"] = err
+        out = []
+        for r in bundle_results[:limit]:
+            row = dict(r)
+            comps = dict(row.get("components") or {})
+            comps.setdefault("mode", "cooc")
+            row["components"] = comps
+            out.append(row)
+        return out, f"cooc_fallback:{err}", None, route_meta
 
     by_id: dict[int, dict[str, Any]] = {}
     for p in products:
@@ -320,14 +500,15 @@ def rerank_bundle_with_algo(
     base_id = int(base_product_id)
     ctx = by_id.get(base_id)
     if not ctx:
-        return bundle_results[:limit], "cooc_fallback:no_context_item", None
+        route_meta["fallback_reason"] = "no_context_item"
+        return bundle_results[:limit], "cooc_fallback:no_context_item", None, route_meta
 
     top_m = max(int(getattr(settings, "RECS_RERANKER_TOP_M", 200) or 200), int(limit))
     candidate_ids: list[int] = []
     transitions: dict[int, float] = {}
     row_map: dict[int, dict[str, Any]] = {}
 
-    for idx, row in enumerate(bundle_results):
+    for row in bundle_results:
         pid = _to_int((row.get("product") or {}).get("id"))
         if pid is None:
             continue
@@ -346,11 +527,11 @@ def rerank_bundle_with_algo(
             break
 
     if not candidate_ids:
-        return bundle_results[:limit], "cooc_fallback:no_candidates", None
+        route_meta["fallback_reason"] = "no_candidates"
+        return bundle_results[:limit], "cooc_fallback:no_candidates", None, route_meta
 
     pop_map = _co_popularity(co or {})
     rank_map = {pid: idx + 1 for idx, pid in enumerate(candidate_ids)}
-
     valid_ids, feats = _build_feature_rows(
         context_product=ctx,
         candidate_ids=candidate_ids,
@@ -360,7 +541,8 @@ def rerank_bundle_with_algo(
         pop_map=pop_map,
     )
     if not feats:
-        return bundle_results[:limit], "cooc_fallback:no_features", None
+        route_meta["fallback_reason"] = "no_features"
+        return bundle_results[:limit], "cooc_fallback:no_features", None, route_meta
 
     try:
         import numpy as np
@@ -368,7 +550,8 @@ def rerank_bundle_with_algo(
         X = np.asarray(feats, dtype=float)
         probs = model.predict_proba(X)[:, 1]
     except Exception:
-        return bundle_results[:limit], "cooc_fallback:predict_error", None
+        route_meta["fallback_reason"] = "predict_error"
+        return bundle_results[:limit], "cooc_fallback:predict_error", None, route_meta
 
     scored = sorted(zip(valid_ids, probs), key=lambda x: (-float(x[1]), x[0]))
 
@@ -394,4 +577,4 @@ def rerank_bundle_with_algo(
         if len(out) >= int(limit):
             break
 
-    return out, "reranker", model_version
+    return out, "reranker", model_version, route_meta

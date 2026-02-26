@@ -7,9 +7,11 @@ from django.db import connection
 from django.db.models import Count, Sum
 from django.utils import timezone
 
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
+from rest_framework import serializers
 from rest_framework.views import APIView
 
 from audit.models import AuditEvent
@@ -17,7 +19,7 @@ from backend.permissions import HasStaffPermission
 from loyalty.models import LoyaltyLedgerEntry
 from offers.admin_metrics import offers_events_kpis, offers_promo_efficiency_30d
 from offers.models import OfferAssignment, OfferEvent
-from recs_analytics.admin_metrics import recs_metrics_30d
+from recs_analytics.admin_metrics import recs_experiments_metrics, recs_metrics_30d
 from recs_analytics.models import RecommendationEvent
 from transactions.models import Transaction
 
@@ -157,6 +159,12 @@ def _recs_block(since):
     }
 
 
+class AdminRecsExperimentsQuerySerializer(serializers.Serializer):
+    days = serializers.IntegerField(required=False, min_value=1, max_value=365, default=30)
+    experiment_id = serializers.CharField(required=False, allow_blank=True)
+    variant = serializers.CharField(required=False, allow_blank=True)
+
+
 class AdminOverviewView(APIView):
     permission_classes = [HasStaffPermission.with_perm("view_metrics")]
 
@@ -176,6 +184,7 @@ class AdminOverviewView(APIView):
         now = timezone.now()
         since7 = now - timedelta(days=7)
         since30 = now - timedelta(days=30)
+        recs_details = recs_metrics_30d()
 
         payload = {
             "ok": True,
@@ -198,9 +207,45 @@ class AdminOverviewView(APIView):
             "recs": {
                 "7d": _recs_block(since7),
                 "30d": _recs_block(since30),
-                "details_30d": recs_metrics_30d(),
+                "details_30d": recs_details,
+                "experiments_30d": recs_details.get("by_experiment", {}),
             },
         }
+        if ttl > 0:
+            cache.set(cache_key, payload, timeout=ttl)
+        return Response(payload)
+
+
+class AdminRecsExperimentsView(APIView):
+    permission_classes = [HasStaffPermission.with_perm("view_metrics")]
+
+    @extend_schema(
+        tags=["Admin"],
+        description="Detailed recommendation experiment KPIs with optional filters.",
+        parameters=[
+            OpenApiParameter("days", OpenApiTypes.INT, required=False),
+            OpenApiParameter("experiment_id", OpenApiTypes.STR, required=False),
+            OpenApiParameter("variant", OpenApiTypes.STR, required=False),
+        ],
+    )
+    def get(self, request):
+        q = AdminRecsExperimentsQuerySerializer(data=request.query_params)
+        q.is_valid(raise_exception=True)
+        days = int(q.validated_data.get("days") or 30)
+        experiment_id = (q.validated_data.get("experiment_id") or "").strip() or None
+        variant = (q.validated_data.get("variant") or "").strip() or None
+
+        ttl = int(getattr(settings, "ADMIN_METRICS_CACHE_TTL_SECONDS", 60))
+        db_name = connection.settings_dict.get("NAME", "default")
+        cache_key = (
+            f"admin:recs:experiments:v1:{db_name}:{os.getpid()}:{days}:{experiment_id or 'all'}:{variant or 'all'}"
+        )
+        if ttl > 0:
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return Response(cached)
+
+        payload = {"ok": True, **recs_experiments_metrics(days=days, experiment_id=experiment_id, variant=variant)}
         if ttl > 0:
             cache.set(cache_key, payload, timeout=ttl)
         return Response(payload)

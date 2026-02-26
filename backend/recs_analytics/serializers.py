@@ -10,3 +10,4 @@ class RecEventCreateSerializer(serializers.Serializer):
     product_id = serializers.IntegerField()
     page = serializers.CharField(required=False, default="home")
     section_key = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    context = serializers.JSONField(required=False)

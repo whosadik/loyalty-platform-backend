@@ -90,3 +90,4 @@ class AdminOverviewTests(APITestCase):
         self.assertIn("7d", r.data["offers"])
         self.assertIn("30d", r.data["offers"])
         self.assertIn("promo_efficiency_30d", r.data["offers"])
+        self.assertIn("experiments_30d", r.data["recs"])

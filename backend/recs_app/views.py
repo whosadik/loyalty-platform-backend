@@ -24,6 +24,7 @@ from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParamete
 from drf_spectacular.types import OpenApiTypes
 
 from ml_logic.recommender import bundle as rec_bundle
+from recs_analytics.experiment import build_event_experiment_context
 from recs_analytics.models import RecommendationEvent
 from recs_app.reranker import (
     get_reranker_model_version,
@@ -38,13 +39,13 @@ class RecommendationsQuerySerializer(serializers.Serializer):
     category = serializers.ChoiceField(choices=["skincare", "haircare", "makeup", "fragrance"])
     product_type = serializers.CharField(required=False, allow_blank=True)
     limit = serializers.IntegerField(required=False, min_value=1, max_value=50, default=10)
-    algo = serializers.ChoiceField(choices=["cooc", "reranker"], required=False)
+    algo = serializers.ChoiceField(choices=["cooc", "reranker", "auto"], required=False)
 
 
 class BundleQuerySerializer(serializers.Serializer):
     product_id = serializers.IntegerField()
     limit = serializers.IntegerField(required=False, min_value=1, max_value=50, default=10)
-    algo = serializers.ChoiceField(choices=["cooc", "reranker"], required=False)
+    algo = serializers.ChoiceField(choices=["cooc", "reranker", "auto"], required=False)
 
 
 def _build_profile(cp: CustomerProfile) -> UserProfile:
@@ -125,7 +126,8 @@ class MeRecommendationsView(APIView):
         products = _load_products()
         co = _cooccurrence_last_90d(now)
 
-        results, algo_used, model_version = recommend_with_algo(
+        results, algo_used, model_version, algo_routing = recommend_with_algo(
+            user_id=request.user.id,
             prof=prof,
             products=products,
             owned_active_ids=owned_active_ids,
@@ -146,6 +148,7 @@ class MeRecommendationsView(APIView):
                     "algo_requested": algo_requested,
                     "algo_used": algo_used,
                     "model_version": model_version,
+                    "algo_routing": algo_routing,
                 },
                 "context": {"owned_active_count": len(owned_active_ids)},
                 "results": results,
@@ -161,7 +164,7 @@ class MeBundleView(APIView):
         parameters=[
             OpenApiParameter("product_id", OpenApiTypes.INT, required=True, description="Base product id"),
             OpenApiParameter("limit", OpenApiTypes.INT, required=False, description="Max results (default 10)"),
-            OpenApiParameter("algo", OpenApiTypes.STR, required=False, description="cooc or reranker"),
+            OpenApiParameter("algo", OpenApiTypes.STR, required=False, description="cooc, reranker or auto"),
         ],
         responses={200: OpenApiTypes.OBJECT},
         examples=[
@@ -216,7 +219,8 @@ class MeBundleView(APIView):
             co=co,
             limit=limit * 3,
         )
-        results, algo_used, model_version = rerank_bundle_with_algo(
+        results, algo_used, model_version, algo_routing = rerank_bundle_with_algo(
+            user_id=request.user.id,
             base_product_id=base_product_id,
             bundle_results=results_raw,
             products=products,
@@ -233,6 +237,7 @@ class MeBundleView(APIView):
                     "algo_requested": algo_requested,
                     "algo_used": algo_used,
                     "model_version": model_version,
+                    "algo_routing": algo_routing,
                 },
                 "results": results,
             }
@@ -298,6 +303,24 @@ def _dedupe_limit(results: list[dict[str, Any]], seen: set[int], limit: int) -> 
         out.append(r)
         if len(out) >= limit:
             break
+    return out
+
+
+def _recs_event_context(
+    *,
+    algo_requested: str | None,
+    algo_used: str | None,
+    model_version: str | None,
+    routing: dict[str, Any] | None,
+    section_key: str,
+) -> dict[str, Any]:
+    out = build_event_experiment_context(
+        algo_requested=algo_requested,
+        algo_used=algo_used,
+        model_version=model_version,
+        routing=routing,
+    )
+    out["section"] = section_key
     return out
 
 
@@ -392,7 +415,8 @@ class HomeRecommendationsView(APIView):
         seen: set[int] = set()
 
         # 1) For you (profile-based)
-        for_you_raw, for_you_algo_used, for_you_model_version = recommend_with_algo(
+        for_you_raw, for_you_algo_used, for_you_model_version, for_you_routing = recommend_with_algo(
+            user_id=request.user.id,
             prof=prof,
             products=products,
             owned_active_ids=owned_ids,
@@ -432,7 +456,8 @@ class HomeRecommendationsView(APIView):
                 if not _apply_filters_to_product_dict(p, category=category, product_type=product_type, price_min=price_min, price_max=price_max):
                     continue
                 filtered.append(r)
-            reranked, because_algo_used, because_model_version = rerank_bundle_with_algo(
+            reranked, because_algo_used, because_model_version, because_routing = rerank_bundle_with_algo(
+                user_id=request.user.id,
                 base_product_id=base_id,
                 bundle_results=filtered,
                 products=products,
@@ -441,6 +466,8 @@ class HomeRecommendationsView(APIView):
                 algo_requested=algo_requested,
             )
             because = _dedupe_limit(reranked, seen, limit)
+        else:
+            because_routing = {"source": "none"}
 
         # 3) Trending
         trending_raw = _trending_30d(
@@ -472,7 +499,13 @@ class HomeRecommendationsView(APIView):
         events = []
         rid = getattr(request, "request_id", None)
 
-        def push_impressions(section_key: str, results: list[dict], page: str = "home"):
+        def push_impressions(
+            section_key: str,
+            results: list[dict],
+            page: str = "home",
+            algo_mode_override: str | None = None,
+            static_context: dict[str, Any] | None = None,
+        ):
             for rank, r in enumerate(results, start=1):
                 p = r.get("product") or {}
                 pid = p.get("id")
@@ -481,6 +514,9 @@ class HomeRecommendationsView(APIView):
                 if int(pid) not in existing_event_ids:
                     continue
                 comps = r.get("components") or {}
+                ctx = {"why": (r.get("why") or [])[:6], "rank": rank}
+                if static_context:
+                    ctx.update(static_context)
                 events.append(RecommendationEvent(
                     user=request.user,
                     action=RecommendationEvent.Action.IMPRESSION,
@@ -488,15 +524,41 @@ class HomeRecommendationsView(APIView):
                     section_key=section_key,
                     request_id=rid,
                     product_id=int(pid),
-                    algo_mode=str(comps.get("mode") or comps.get("source") or ""),
+                    algo_mode=str(algo_mode_override or comps.get("mode") or comps.get("source") or ""),
                     score=float(r.get("score")) if r.get("score") is not None else None,
                     components=comps,
-                    context={"why": (r.get("why") or [])[:6], "rank": rank},
+                    context=ctx,
                 ))
 
-        push_impressions("for_you", for_you)
-        push_impressions("because_you_bought", because)
-        push_impressions("trending", trending)
+        for_you_algo_mode = "reranker" if str(for_you_algo_used).startswith("reranker") else "cooc"
+        because_algo_mode = "reranker" if str(because_algo_used).startswith("reranker") else "cooc"
+        for_you_ctx = _recs_event_context(
+            algo_requested=algo_requested,
+            algo_used=for_you_algo_used,
+            model_version=for_you_model_version,
+            routing=for_you_routing,
+            section_key="for_you",
+        )
+        because_ctx = _recs_event_context(
+            algo_requested=algo_requested,
+            algo_used=because_algo_used,
+            model_version=because_model_version,
+            routing=because_routing,
+            section_key="because_you_bought",
+        )
+        if base_product_ids:
+            because_ctx["base_product_id"] = int(base_product_ids[0])
+
+        trending_ctx = {
+            "algo_requested": algo_requested,
+            "algo_used": "trending",
+            "algo_source": "trending",
+            "section": "trending",
+        }
+
+        push_impressions("for_you", for_you, algo_mode_override=for_you_algo_mode, static_context=for_you_ctx)
+        push_impressions("because_you_bought", because, algo_mode_override=because_algo_mode, static_context=because_ctx)
+        push_impressions("trending", trending, static_context=trending_ctx)
 
         RecommendationEvent.objects.bulk_create(events, batch_size=500)
 
@@ -511,8 +573,10 @@ class HomeRecommendationsView(APIView):
                 "algo_requested": algo_requested,
                 "for_you_algo_used": for_you_algo_used,
                 "for_you_model_version": for_you_model_version,
+                "for_you_routing": for_you_routing,
                 "because_algo_used": because_algo_used,
                 "because_model_version": because_model_version,
+                "because_routing": because_routing,
                 "reranker_model_available": bool(get_reranker_model_version()),
             },
             "sections": [
