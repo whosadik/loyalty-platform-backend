@@ -37,3 +37,4 @@ reports/**
 *.parquet
 *.jsonl.gz
 data/catalog/**
+*.xlsx

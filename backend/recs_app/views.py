@@ -18,14 +18,14 @@ from catalog.models import Product
 from transactions.models import OwnedProduct, TransactionItem, Transaction
 from users_app.models import CustomerProfile
 
-from ml_logic.recommender import UserProfile, build_cooccurrence, recommend, bundle
+from ml_logic.recommender import UserProfile, build_cooccurrence, bundle
 
 from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
-from ml_logic.recommender import recommend as rec_recommend
 from ml_logic.recommender import bundle as rec_bundle
 from recs_analytics.models import RecommendationEvent
+from recs_app.reranker import recommend_with_algo
 
 # ВАЖНО: чтобы не переписывать, используем твои уже готовые хелперы.
 # Если эти функции лежат в offers/services.py — импортируй оттуда.
@@ -34,6 +34,7 @@ class RecommendationsQuerySerializer(serializers.Serializer):
     category = serializers.ChoiceField(choices=["skincare", "haircare", "makeup", "fragrance"])
     product_type = serializers.CharField(required=False, allow_blank=True)
     limit = serializers.IntegerField(required=False, min_value=1, max_value=50, default=10)
+    algo = serializers.ChoiceField(choices=["cooc", "reranker"], required=False)
 
 
 class BundleQuerySerializer(serializers.Serializer):
@@ -101,9 +102,10 @@ class MeRecommendationsView(APIView):
         category = q.validated_data["category"]
         product_type = (q.validated_data.get("product_type") or "").strip() or None
         limit = q.validated_data["limit"]
+        algo_requested = q.validated_data.get("algo")
 
         cp, _ = CustomerProfile.objects.get_or_create(user=request.user)
-        prof = _build_profile(cp)
+        prof = _build_rec_profile(cp)
 
         now = datetime.now(dt_timezone.utc)
 
@@ -118,7 +120,7 @@ class MeRecommendationsView(APIView):
         products = _load_products()
         co = _cooccurrence_last_90d(now)
 
-        results = recommend(
+        results, algo_used = recommend_with_algo(
             prof=prof,
             products=products,
             owned_active_ids=owned_active_ids,
@@ -127,11 +129,18 @@ class MeRecommendationsView(APIView):
             product_type=product_type,
             limit=limit,
             co=co,
+            algo_requested=algo_requested,
         )
 
         return Response(
             {
-                "query": {"category": category, "product_type": product_type, "limit": limit},
+                "query": {
+                    "category": category,
+                    "product_type": product_type,
+                    "limit": limit,
+                    "algo_requested": algo_requested,
+                    "algo_used": algo_used,
+                },
                 "context": {"owned_active_count": len(owned_active_ids)},
                 "results": results,
             }
@@ -336,6 +345,7 @@ class HomeRecommendationsView(APIView):
         product_type = qp.get("product_type") or None
         price_min = _to_decimal(qp.get("price_min"))
         price_max = _to_decimal(qp.get("price_max"))
+        algo_requested = (qp.get("algo") or "").strip().lower() or None
 
         now = dj_timezone.now()
 
@@ -360,7 +370,7 @@ class HomeRecommendationsView(APIView):
         seen: set[int] = set()
 
         # 1) For you (profile-based)
-        for_you_raw = rec_recommend(
+        for_you_raw, for_you_algo_used = recommend_with_algo(
             prof=prof,
             products=products,
             owned_active_ids=owned_ids,
@@ -369,6 +379,7 @@ class HomeRecommendationsView(APIView):
             product_type=product_type,
             limit=limit * 2,
             co=co,
+            algo_requested=algo_requested,
         )
 
         for_you = []
@@ -465,6 +476,8 @@ class HomeRecommendationsView(APIView):
                 "product_type": product_type,
                 "price_min": str(price_min) if price_min is not None else None,
                 "price_max": str(price_max) if price_max is not None else None,
+                "algo_requested": algo_requested,
+                "for_you_algo_used": for_you_algo_used,
             },
             "sections": [
                 {"key": "for_you", "title": "For you", "results": for_you},

@@ -177,8 +177,7 @@ def main():
     y = df["y"].astype(int).values
 
     model = LogisticRegression(
-        max_iter=400,
-        n_jobs=1,
+        max_iter=1000,
         class_weight="balanced",
         solver="lbfgs",
     )

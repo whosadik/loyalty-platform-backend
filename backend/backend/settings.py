@@ -232,3 +232,12 @@ RECS_GLOBAL_MAX_PENALTY = float(os.getenv("RECS_GLOBAL_MAX_PENALTY", "0.35"))
 # если хочется жёстко не брать “мертвое”
 RECS_GLOBAL_HARD_SKIP = os.getenv("RECS_GLOBAL_HARD_SKIP", "0").strip().lower() in {"1","true","yes","on"}
 RECS_GLOBAL_HARD_SKIP_CR = float(os.getenv("RECS_GLOBAL_HARD_SKIP_CR", "0.002"))  # 0.2%
+
+RECS_ALGO_DEFAULT = os.getenv("RECS_ALGO_DEFAULT", "cooc").strip().lower()
+RECS_RERANKER_MODEL_PATH = os.getenv(
+    "RECS_RERANKER_MODEL_PATH",
+    str((BASE_DIR.parent / "models" / "recs_reranker_goldapple_deep_v2" / "model.pkl").resolve()),
+)
+RECS_RERANKER_TOP_M = int(os.getenv("RECS_RERANKER_TOP_M", "200"))
+RECS_RERANKER_CONTEXT_K = int(os.getenv("RECS_RERANKER_CONTEXT_K", "3"))
+RECS_RERANKER_HEURISTIC_POOL = int(os.getenv("RECS_RERANKER_HEURISTIC_POOL", "500"))
