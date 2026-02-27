@@ -90,6 +90,79 @@ def build_next_item_map(purchases: pd.DataFrame, top_m: int = 50) -> dict[int, l
     return top
 
 
+def merge_top_maps(
+    primary: dict[int, list[tuple[int, int]]],
+    secondary: dict[int, list[tuple[int, int]]],
+    *,
+    secondary_weight: float = 0.3,
+    top_m: int = 200,
+) -> dict[int, list[tuple[int, int]]]:
+    if not primary and not secondary:
+        return {}
+    if not secondary or secondary_weight <= 0:
+        return {k: list(v[:top_m]) for k, v in primary.items()}
+
+    agg: dict[int, dict[int, float]] = defaultdict(lambda: defaultdict(float))
+    for src, pairs in (primary or {}).items():
+        for dst, cnt in pairs:
+            agg[int(src)][int(dst)] += float(cnt or 0.0)
+    w = float(secondary_weight)
+    for src, pairs in (secondary or {}).items():
+        for dst, cnt in pairs:
+            agg[int(src)][int(dst)] += float(cnt or 0.0) * w
+
+    out: dict[int, list[tuple[int, int]]] = {}
+    for src, rel in agg.items():
+        ranked = sorted(rel.items(), key=lambda x: (-x[1], x[0]))[: int(top_m)]
+        # keep int counts interface (downstream expects ints)
+        out[int(src)] = [(int(dst), int(round(float(score)))) for dst, score in ranked]
+    return out
+
+
+def build_behavior_next_item_map(
+    interactions: pd.DataFrame,
+    *,
+    event_types: list[str] | set[str],
+    top_m: int = 200,
+) -> dict[int, list[tuple[int, int]]]:
+    if interactions.empty:
+        return {}
+
+    ev_set = {str(x).strip().lower() for x in (event_types or []) if str(x).strip()}
+    if not ev_set:
+        return {}
+
+    work = interactions[["user_id", "item_id", "ts", "event_type"]].copy()
+    work["user_id"] = work["user_id"].map(normalize_user_id)
+    work["item_id"] = work["item_id"].map(to_item_id)
+    work["event_type"] = work["event_type"].astype(str).str.strip().str.lower()
+    work = work[
+        (work["user_id"] != "")
+        & work["item_id"].notna()
+        & work["event_type"].isin(ev_set)
+    ].copy()
+    if work.empty:
+        return {}
+
+    work["item_id"] = work["item_id"].astype(int)
+    work = work.sort_values(["user_id", "ts"])
+
+    nxt = defaultdict(lambda: defaultdict(int))
+    for _, grp in work.groupby("user_id", sort=False):
+        seq = [int(x) for x in grp["item_id"].tolist()]
+        if len(seq) < 2:
+            continue
+        for a, b in zip(seq[:-1], seq[1:]):
+            if a == b:
+                continue
+            nxt[a][b] += 1
+
+    top: dict[int, list[tuple[int, int]]] = {}
+    for a, m in nxt.items():
+        top[int(a)] = sorted(m.items(), key=lambda x: (-x[1], x[0]))[: int(top_m)]
+    return top
+
+
 def parse_context_items(raw: Any, fallback_last_item: Any = None, max_k: int = 3) -> list[int]:
     vals: list[int] = []
 
@@ -129,11 +202,24 @@ def build_context_candidates(
     top_map: dict[int, list[tuple[int, int]]],
     top_m: int = 200,
     fallback_items: list[int] | None = None,
+    product_type_fallback_items: list[int] | None = None,
+    category_fallback_items: list[int] | None = None,
+    brand_fallback_items: list[int] | None = None,
 ) -> tuple[list[int], dict[int, float], dict[int, int]]:
     if not context_items:
         base: list[int] = []
+        if category_fallback_items:
+            base = [int(x) for x in category_fallback_items[:top_m]]
         if fallback_items:
-            base = [int(x) for x in fallback_items[:top_m]]
+            seen = set(base)
+            for fi in fallback_items:
+                f = int(fi)
+                if f in seen:
+                    continue
+                base.append(f)
+                seen.add(f)
+                if len(base) >= top_m:
+                    break
         scores = {int(i): 0.0 for i in base}
         ranks = {int(i): int(pos + 1) for pos, i in enumerate(base)}
         return base, scores, ranks
@@ -149,6 +235,39 @@ def build_context_candidates(
     ranked_pairs = sorted(agg.items(), key=lambda x: (-x[1], x[0]))[:top_m]
     cands = [int(i) for i, _ in ranked_pairs]
     scores = {int(i): float(s) for i, s in ranked_pairs}
+    if product_type_fallback_items and len(cands) < top_m:
+        seen = set(cands)
+        for ti in product_type_fallback_items:
+            t = int(ti)
+            if t in seen:
+                continue
+            cands.append(t)
+            scores[t] = 0.0
+            seen.add(t)
+            if len(cands) >= top_m:
+                break
+    if category_fallback_items and len(cands) < top_m:
+        seen = set(cands)
+        for ci in category_fallback_items:
+            c = int(ci)
+            if c in seen:
+                continue
+            cands.append(c)
+            scores[c] = 0.0
+            seen.add(c)
+            if len(cands) >= top_m:
+                break
+    if brand_fallback_items and len(cands) < top_m:
+        seen = set(cands)
+        for bi in brand_fallback_items:
+            b = int(bi)
+            if b in seen:
+                continue
+            cands.append(b)
+            scores[b] = 0.0
+            seen.add(b)
+            if len(cands) >= top_m:
+                break
     if fallback_items and len(cands) < top_m:
         seen = set(cands)
         for fi in fallback_items:
@@ -166,6 +285,234 @@ def build_context_candidates(
         if int(i) not in ranks:
             ranks[int(i)] = int(pos + 1)
     return cands, scores, ranks
+
+
+def build_category_popularity_map(
+    purchases: pd.DataFrame,
+    items_lookup: pd.DataFrame,
+    *,
+    top_n: int = 300,
+) -> dict[str, list[int]]:
+    k = max(0, int(top_n or 0))
+    if k == 0 or purchases.empty or items_lookup.empty:
+        return {}
+
+    cat_map = items_lookup["category"].to_dict() if "category" in items_lookup.columns else {}
+    work = purchases[["item_id"]].copy()
+    work["item_id"] = work["item_id"].map(to_item_id)
+    work = work[work["item_id"].notna()].copy()
+    if work.empty:
+        return {}
+    work["item_id"] = work["item_id"].astype(int)
+    work["category"] = work["item_id"].map(cat_map)
+    work = work[work["category"].notna()].copy()
+    if work.empty:
+        return {}
+
+    agg = (
+        work.groupby(["category", "item_id"], as_index=False)
+        .size()
+        .rename(columns={"size": "cnt"})
+        .sort_values(["category", "cnt", "item_id"], ascending=[True, False, True])
+    )
+    out: dict[str, list[int]] = {}
+    for cat, grp in agg.groupby("category", sort=False):
+        out[str(cat)] = [int(x) for x in grp["item_id"].tolist()[:k]]
+    return out
+
+
+def build_product_type_popularity_map(
+    purchases: pd.DataFrame,
+    items_lookup: pd.DataFrame,
+    *,
+    top_n: int = 300,
+) -> dict[str, list[int]]:
+    k = max(0, int(top_n or 0))
+    if k == 0 or purchases.empty or items_lookup.empty:
+        return {}
+
+    type_map = (
+        items_lookup["product_type"].to_dict()
+        if "product_type" in items_lookup.columns
+        else {}
+    )
+    work = purchases[["item_id"]].copy()
+    work["item_id"] = work["item_id"].map(to_item_id)
+    work = work[work["item_id"].notna()].copy()
+    if work.empty:
+        return {}
+    work["item_id"] = work["item_id"].astype(int)
+    work["product_type"] = work["item_id"].map(type_map)
+    work = work[work["product_type"].notna()].copy()
+    work["product_type"] = work["product_type"].astype(str).str.strip().str.lower()
+    work = work[(work["product_type"] != "") & (work["product_type"] != "nan")].copy()
+    if work.empty:
+        return {}
+
+    agg = (
+        work.groupby(["product_type", "item_id"], as_index=False)
+        .size()
+        .rename(columns={"size": "cnt"})
+        .sort_values(["product_type", "cnt", "item_id"], ascending=[True, False, True])
+    )
+    out: dict[str, list[int]] = {}
+    for ptype, grp in agg.groupby("product_type", sort=False):
+        out[str(ptype)] = [int(x) for x in grp["item_id"].tolist()[:k]]
+    return out
+
+
+def category_fallback_for_context(
+    context_items: list[int],
+    items_lookup: pd.DataFrame,
+    category_popularity: dict[str, list[int]],
+    *,
+    max_items: int = 300,
+) -> list[int]:
+    lim = max(0, int(max_items or 0))
+    if lim == 0 or not context_items or items_lookup.empty or not category_popularity:
+        return []
+
+    cat_map = items_lookup["category"].to_dict() if "category" in items_lookup.columns else {}
+    ordered_cats: list[str] = []
+    seen_cats: set[str] = set()
+    for ctx in reversed(context_items):
+        c = cat_map.get(int(ctx))
+        if c is None:
+            continue
+        cs = str(c)
+        if cs in seen_cats:
+            continue
+        seen_cats.add(cs)
+        ordered_cats.append(cs)
+
+    out: list[int] = []
+    seen_items: set[int] = set()
+    for cat in ordered_cats:
+        for item_id in category_popularity.get(cat, []):
+            iid = int(item_id)
+            if iid in seen_items:
+                continue
+            out.append(iid)
+            seen_items.add(iid)
+            if len(out) >= lim:
+                return out
+    return out
+
+
+def product_type_fallback_for_context(
+    context_items: list[int],
+    items_lookup: pd.DataFrame,
+    product_type_popularity: dict[str, list[int]],
+    *,
+    max_items: int = 300,
+) -> list[int]:
+    lim = max(0, int(max_items or 0))
+    if lim == 0 or not context_items or items_lookup.empty or not product_type_popularity:
+        return []
+
+    type_map = (
+        items_lookup["product_type"].to_dict()
+        if "product_type" in items_lookup.columns
+        else {}
+    )
+    ordered_types: list[str] = []
+    seen_types: set[str] = set()
+    for ctx in reversed(context_items):
+        ptype = type_map.get(int(ctx))
+        if ptype is None:
+            continue
+        ps = str(ptype).strip().lower()
+        if not ps or ps == "nan" or ps in seen_types:
+            continue
+        seen_types.add(ps)
+        ordered_types.append(ps)
+
+    out: list[int] = []
+    seen_items: set[int] = set()
+    for ptype in ordered_types:
+        for item_id in product_type_popularity.get(ptype, []):
+            iid = int(item_id)
+            if iid in seen_items:
+                continue
+            out.append(iid)
+            seen_items.add(iid)
+            if len(out) >= lim:
+                return out
+    return out
+
+
+def build_brand_popularity_map(
+    purchases: pd.DataFrame,
+    items_lookup: pd.DataFrame,
+    *,
+    top_n: int = 150,
+) -> dict[str, list[int]]:
+    k = max(0, int(top_n or 0))
+    if k == 0 or purchases.empty or items_lookup.empty:
+        return {}
+
+    brand_map = items_lookup["brand"].to_dict() if "brand" in items_lookup.columns else {}
+    work = purchases[["item_id"]].copy()
+    work["item_id"] = work["item_id"].map(to_item_id)
+    work = work[work["item_id"].notna()].copy()
+    if work.empty:
+        return {}
+    work["item_id"] = work["item_id"].astype(int)
+    work["brand"] = work["item_id"].map(brand_map)
+    work = work[work["brand"].notna()].copy()
+    work["brand"] = work["brand"].astype(str).str.strip().str.lower()
+    work = work[(work["brand"] != "") & (work["brand"] != "nan")].copy()
+    if work.empty:
+        return {}
+
+    agg = (
+        work.groupby(["brand", "item_id"], as_index=False)
+        .size()
+        .rename(columns={"size": "cnt"})
+        .sort_values(["brand", "cnt", "item_id"], ascending=[True, False, True])
+    )
+    out: dict[str, list[int]] = {}
+    for brand, grp in agg.groupby("brand", sort=False):
+        out[str(brand)] = [int(x) for x in grp["item_id"].tolist()[:k]]
+    return out
+
+
+def brand_fallback_for_context(
+    context_items: list[int],
+    items_lookup: pd.DataFrame,
+    brand_popularity: dict[str, list[int]],
+    *,
+    max_items: int = 150,
+) -> list[int]:
+    lim = max(0, int(max_items or 0))
+    if lim == 0 or not context_items or items_lookup.empty or not brand_popularity:
+        return []
+
+    brand_map = items_lookup["brand"].to_dict() if "brand" in items_lookup.columns else {}
+    ordered_brands: list[str] = []
+    seen_brands: set[str] = set()
+    for ctx in reversed(context_items):
+        b = brand_map.get(int(ctx))
+        if b is None:
+            continue
+        bs = str(b).strip().lower()
+        if not bs or bs == "nan" or bs in seen_brands:
+            continue
+        seen_brands.add(bs)
+        ordered_brands.append(bs)
+
+    out: list[int] = []
+    seen_items: set[int] = set()
+    for brand in ordered_brands:
+        for item_id in brand_popularity.get(brand, []):
+            iid = int(item_id)
+            if iid in seen_items:
+                continue
+            out.append(iid)
+            seen_items.add(iid)
+            if len(out) >= lim:
+                return out
+    return out
 
 
 def recall_at_k(ds: pd.DataFrame, ranked_map: dict[int, list[int]], k: int) -> tuple[float, int, int]:

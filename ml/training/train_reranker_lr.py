@@ -7,28 +7,45 @@ import os
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss, roc_auc_score
 from sklearn.model_selection import train_test_split
 
 try:
     from ml.training.recs_common import (
+        build_category_popularity_map,
+        build_behavior_next_item_map,
+        build_brand_popularity_map,
+        build_product_type_popularity_map,
         build_feature_matrix_for_candidates,
         build_context_candidates,
         build_next_item_map,
+        brand_fallback_for_context,
+        category_fallback_for_context,
+        merge_top_maps,
         normalize_user_id,
         parse_context_items,
+        product_type_fallback_for_context,
         prepare_items_lookup,
         to_item_id,
         write_user_ids,
     )
 except ModuleNotFoundError:
     from recs_common import (  # type: ignore
+        build_category_popularity_map,
+        build_behavior_next_item_map,
+        build_brand_popularity_map,
+        build_product_type_popularity_map,
         build_feature_matrix_for_candidates,
         build_context_candidates,
         build_next_item_map,
+        brand_fallback_for_context,
+        category_fallback_for_context,
+        merge_top_maps,
         normalize_user_id,
         parse_context_items,
+        product_type_fallback_for_context,
         prepare_items_lookup,
         to_item_id,
         write_user_ids,
@@ -56,9 +73,20 @@ def main():
     ap.add_argument("--items", required=True)
     ap.add_argument("--ds", required=True)
     ap.add_argument("--out_dir", required=True)
-    ap.add_argument("--top_m", type=int, default=50)
+    ap.add_argument("--top_m", type=int, default=1500)
     ap.add_argument("--neg_per_pos", type=int, default=20)
-    ap.add_argument("--context_k", type=int, default=3)
+    ap.add_argument("--context_k", type=int, default=10)
+    ap.add_argument("--product_type_fallback_topn", type=int, default=400)
+    ap.add_argument("--category_fallback_topn", type=int, default=400)
+    ap.add_argument("--brand_fallback_topn", type=int, default=400)
+    ap.add_argument(
+        "--behavior_event_types",
+        default="add_to_cart,click,purchase_attributed",
+        help="Comma-separated event types for additional behavior transitions",
+    )
+    ap.add_argument("--behavior_weight", type=float, default=0.25)
+    ap.add_argument("--estimator", choices=["lr", "hgb"], default="hgb")
+    ap.add_argument("--model_version", default="recs_reranker_v3")
     ap.add_argument("--test_size", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
@@ -66,6 +94,8 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     inter = pd.read_parquet(args.interactions)
+    inter["user_id"] = inter["user_id"].map(normalize_user_id)
+    inter = inter[inter["user_id"] != ""].copy()
     items_lookup = prepare_items_lookup(pd.read_parquet(args.items))
     ds = pd.read_parquet(args.ds).copy()
     if ds.empty:
@@ -100,9 +130,41 @@ def main():
     if pur_train.empty:
         raise SystemExit("No training purchases after user split; check dataset overlap")
 
-    top_map = build_next_item_map(pur_train, top_m=args.top_m)
+    top_map_purchase = build_next_item_map(pur_train, top_m=args.top_m)
+    behavior_event_types = [
+        x.strip().lower()
+        for x in str(args.behavior_event_types or "").split(",")
+        if x.strip()
+    ]
+    inter_train = inter[inter["user_id"].isin(train_users)].copy()
+    top_map_behavior = build_behavior_next_item_map(
+        inter_train,
+        event_types=behavior_event_types,
+        top_m=args.top_m,
+    )
+    top_map = merge_top_maps(
+        top_map_purchase,
+        top_map_behavior,
+        secondary_weight=max(0.0, float(args.behavior_weight)),
+        top_m=args.top_m,
+    )
     pop = pur_train["item_id"].value_counts().to_dict()
     fallback_items = [int(x) for x in pur_train["item_id"].value_counts().index.tolist()]
+    category_pop_map = build_category_popularity_map(
+        pur_train,
+        items_lookup,
+        top_n=max(0, int(args.category_fallback_topn or 0)),
+    )
+    product_type_pop_map = build_product_type_popularity_map(
+        pur_train,
+        items_lookup,
+        top_n=max(0, int(args.product_type_fallback_topn or 0)),
+    )
+    brand_pop_map = build_brand_popularity_map(
+        pur_train,
+        items_lookup,
+        top_n=max(0, int(args.brand_fallback_topn or 0)),
+    )
 
     ds_train = ds[ds["user_id"].isin(train_users)].copy()
     rng = np.random.default_rng(args.seed)
@@ -120,11 +182,32 @@ def main():
             fallback_last_item=ctx,
             max_k=args.context_k,
         )
+        product_type_fallback = product_type_fallback_for_context(
+            ctx_items,
+            items_lookup,
+            product_type_pop_map,
+            max_items=max(0, int(args.product_type_fallback_topn or 0)),
+        )
+        category_fallback = category_fallback_for_context(
+            ctx_items,
+            items_lookup,
+            category_pop_map,
+            max_items=max(0, int(args.category_fallback_topn or 0)),
+        )
+        brand_fallback = brand_fallback_for_context(
+            ctx_items,
+            items_lookup,
+            brand_pop_map,
+            max_items=max(0, int(args.brand_fallback_topn or 0)),
+        )
         cands, scores, ranks = build_context_candidates(
             ctx_items,
             top_map,
             top_m=args.top_m,
             fallback_items=fallback_items,
+            product_type_fallback_items=product_type_fallback,
+            category_fallback_items=category_fallback,
+            brand_fallback_items=brand_fallback,
         )
         if label not in cands:
             continue
@@ -176,12 +259,27 @@ def main():
     X = np.asarray(feat_rows, dtype=float)
     y = df["y"].astype(int).values
 
-    model = LogisticRegression(
-        max_iter=1000,
-        class_weight="balanced",
-        solver="lbfgs",
-    )
-    model.fit(X, y)
+    if args.estimator == "lr":
+        model = LogisticRegression(
+            max_iter=1000,
+            class_weight="balanced",
+            solver="lbfgs",
+        )
+        model.fit(X, y)
+    else:
+        # Balance positives for tree model via sample weights.
+        pos_rate = float(np.mean(y))
+        pos_w = ((1.0 - pos_rate) / max(pos_rate, 1e-6)) if pos_rate > 0 else 1.0
+        sample_weight = np.where(y == 1, pos_w, 1.0)
+        model = HistGradientBoostingClassifier(
+            learning_rate=0.05,
+            max_iter=350,
+            max_depth=6,
+            min_samples_leaf=25,
+            l2_regularization=0.05,
+            random_state=args.seed,
+        )
+        model.fit(X, y, sample_weight=sample_weight)
 
     p_train = model.predict_proba(X)[:, 1]
     auc = roc_auc_score(y, p_train) if len(np.unique(y)) > 1 else 0.0
@@ -191,10 +289,16 @@ def main():
     joblib.dump(model, model_path)
 
     meta = {
-        "model_version": "recs_reranker_lr_v2",
+        "model_version": str(args.model_version),
+        "estimator": str(args.estimator),
         "seed": int(args.seed),
         "top_m": int(args.top_m),
         "neg_per_pos": int(args.neg_per_pos),
+        "product_type_fallback_topn": int(args.product_type_fallback_topn),
+        "category_fallback_topn": int(args.category_fallback_topn),
+        "brand_fallback_topn": int(args.brand_fallback_topn),
+        "behavior_event_types": behavior_event_types,
+        "behavior_weight": float(args.behavior_weight),
         "test_size_users": float(args.test_size),
         "features": [
             "transition_count",

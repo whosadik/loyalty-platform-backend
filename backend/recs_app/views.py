@@ -48,6 +48,72 @@ class BundleQuerySerializer(serializers.Serializer):
     algo = serializers.ChoiceField(choices=["cooc", "reranker", "auto"], required=False)
 
 
+def _dedupe_recent_product_ids(raw_ids: list[int], *, k: int) -> list[int]:
+    """
+    Input order: newest -> oldest.
+    Output order: oldest -> newest (expected by recency-weighted retrieval).
+    """
+    out: list[int] = []
+    seen: set[int] = set()
+    lim = max(1, int(k or 1))
+    for raw in raw_ids:
+        try:
+            pid = int(raw)
+        except Exception:
+            continue
+        if pid in seen:
+            continue
+        seen.add(pid)
+        out.append(pid)
+        if len(out) >= lim:
+            break
+    out.reverse()
+    return out
+
+
+def get_user_context_product_ids(user, k: int = 50) -> tuple[list[int], dict[str, Any]]:
+    fetch_n = max(int(k) * 20, 200)
+
+    purchase_raw = list(
+        TransactionItem.objects.filter(transaction__user=user)
+        .order_by("-transaction__created_at", "-id")
+        .values_list("product_id", flat=True)[:fetch_n]
+    )
+    purchase_ctx = _dedupe_recent_product_ids(purchase_raw, k=k)
+    if purchase_ctx:
+        return purchase_ctx, {
+            "context_source": "purchases",
+            "context_len": len(purchase_ctx),
+            "context_k_used": int(k),
+        }
+
+    behavior_raw = list(
+        RecommendationEvent.objects.filter(
+            user=user,
+            action__in=[
+                RecommendationEvent.Action.ADD_TO_CART,
+                RecommendationEvent.Action.CLICK,
+                RecommendationEvent.Action.PURCHASE_ATTRIBUTED,
+            ],
+        )
+        .order_by("-created_at", "-id")
+        .values_list("product_id", flat=True)[:fetch_n]
+    )
+    behavior_ctx = _dedupe_recent_product_ids(behavior_raw, k=k)
+    if behavior_ctx:
+        return behavior_ctx, {
+            "context_source": "behavior",
+            "context_len": len(behavior_ctx),
+            "context_k_used": int(k),
+        }
+
+    return [], {
+        "context_source": "none",
+        "context_len": 0,
+        "context_k_used": int(k),
+    }
+
+
 def _build_profile(cp: CustomerProfile) -> UserProfile:
     return UserProfile(
         skin_type=cp.skin_type,
@@ -121,7 +187,7 @@ class MeRecommendationsView(APIView):
         )
 
         # контекст = owned товары (можно потом расширить)
-        context_ids = owned_active_ids[:50]
+        context_ids, context_meta = get_user_context_product_ids(request.user, k=50)
 
         products = _load_products()
         co = _cooccurrence_last_90d(now)
@@ -138,6 +204,8 @@ class MeRecommendationsView(APIView):
             co=co,
             algo_requested=algo_requested,
         )
+        algo_routing = dict(algo_routing or {})
+        algo_routing.update(context_meta)
 
         return Response(
             {
@@ -150,7 +218,10 @@ class MeRecommendationsView(APIView):
                     "model_version": model_version,
                     "algo_routing": algo_routing,
                 },
-                "context": {"owned_active_count": len(owned_active_ids)},
+                "context": {
+                    "owned_active_count": len(owned_active_ids),
+                    **context_meta,
+                },
                 "results": results,
             }
         )
@@ -403,6 +474,7 @@ class HomeRecommendationsView(APIView):
         owned_ids = list(
             OwnedProduct.objects.filter(user=request.user, is_active=True).values_list("product_id", flat=True)
         )
+        context_ids, context_meta = get_user_context_product_ids(request.user, k=50)
 
         # last purchase context
         last_txn = Transaction.objects.filter(user=request.user).order_by("-created_at").first()
@@ -420,13 +492,15 @@ class HomeRecommendationsView(APIView):
             prof=prof,
             products=products,
             owned_active_ids=owned_ids,
-            context_product_ids=(base_product_ids or owned_ids)[:50],
+            context_product_ids=context_ids,
             category=category,
             product_type=product_type,
             limit=limit * 2,
             co=co,
             algo_requested=algo_requested,
         )
+        for_you_routing = dict(for_you_routing or {})
+        for_you_routing.update(context_meta)
 
         for_you = []
         for r in for_you_raw:
@@ -574,6 +648,7 @@ class HomeRecommendationsView(APIView):
                 "for_you_algo_used": for_you_algo_used,
                 "for_you_model_version": for_you_model_version,
                 "for_you_routing": for_you_routing,
+                "for_you_context": context_meta,
                 "because_algo_used": because_algo_used,
                 "because_model_version": because_model_version,
                 "because_routing": because_routing,

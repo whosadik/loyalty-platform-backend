@@ -106,6 +106,7 @@ class OfferEvent(models.Model):
 
     campaign_name = models.CharField(max_length=128, db_index=True)
     event_type = models.CharField(max_length=32, choices=Type.choices, db_index=True)
+    event_key = models.CharField(max_length=128, blank=True, null=True, db_index=True)
     event_version = models.PositiveSmallIntegerField(default=1)
 
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -114,7 +115,11 @@ class OfferEvent(models.Model):
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(fields=["assignment", "event_type"], name="uq_offer_event_assignment_type"),
+            models.UniqueConstraint(
+                fields=["event_key"],
+                condition=models.Q(event_key__isnull=False),
+                name="uq_offer_event_key_not_null",
+            ),
         ]
         indexes = [
             models.Index(fields=["campaign_name", "created_at"]),

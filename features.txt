@@ -1,7 +1,31 @@
-Стартовая скидка на первый заказ 
+После текущего импорта следующий правильный порядок такой:
 
-Неактивность 30 дней
+1. `Data QA` (обязательно)
+- Сверить контрольные метрики в `/api/admin/overview`, `/api/admin/metrics`, `/api/admin/recs/experiments`.
+- Сделать отчёт расхождений Excel vs DB (что 1:1, что агрегировано).
 
-Любимая категория 
+2. Починить модель `OfferEvent` под реальную аналитику
+- Сейчас из-за `UniqueConstraint(assignment,event_type)` повторные `exposed/clicked` схлопываются.
+- Для production лучше хранить каждое событие отдельно + идемпотентность через `request_id/event_key`.
 
-Бонус за заполнение профиля
+3. Довести связь `redeemed -> transaction`
+- Сейчас `redeemed_transaction_id` заполнен не у всех redeem.
+- Нужен более точный mapping (по времени + user + eligible items/amount).
+
+4. Перейти на обучение из БД
+- Собирать train-датасеты не из Excel напрямую, а из таблиц (`transactions`, `rec_events`, `offer_events`).
+- Это делает pipeline воспроизводимым и ближе к реальному продакшену.
+
+5. ML vNext
+- Обучить reranker v3/v4 на импортированных данных.
+- Сравнить с cooc baseline по `Recall@K`, coverage, и бизнес-метрикам.
+
+6. Онлайн-интеграция ML
+- Подключить новую модель в API с `model_version`, fallback на cooc, guardrails.
+- Запустить AB и смотреть `by_experiment` метрики.
+
+7. Стабилизация релиза
+- Интеграционные тесты на полный флоу (offer -> click -> checkout -> attributed purchase).
+- Документация команд и runbook.
+
+Если ок, следующим шагом я бы сразу сделал п.2 (разблокировать полноценный `OfferEvent` lifecycle), это сейчас главный технический ограничитель аналитики.

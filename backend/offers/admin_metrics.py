@@ -180,6 +180,7 @@ def offers_events_kpis():
 def offers_promo_efficiency_30d():
     now = timezone.now()
     since = now - timedelta(days=30)
+    synthetic_channel = "import_synthetic"
 
     redeemed_assignment_ids_qs = OfferEvent.objects.filter(
         created_at__gte=since,
@@ -200,17 +201,26 @@ def offers_promo_efficiency_30d():
             "estimated_cost_total": 0.0,
             "redeemed_revenue_total": 0.0,
             "promo_efficiency": 0.0,
+            "redeemed_with_transaction_count": 0,
+            "redeemed_without_transaction_count": 0,
+            "redeemed_with_real_transaction_count": 0,
+            "redeemed_with_synthetic_transaction_count": 0,
             "by_campaign_30d": [],
         }
 
     txn_ids = [a.redeemed_transaction_id for a in assignments if a.redeemed_transaction_id]
-    txn_map = dict(Transaction.objects.filter(id__in=txn_ids).values_list("id", "total_amount"))
-    txn_sum = sum((Decimal(str(v)) for v in txn_map.values()), Decimal("0"))
-
-    est_total = sum((Decimal(str(a.offer.estimated_cost or 0)) for a in assignments), Decimal("0"))
-    efficiency = (txn_sum / est_total) if est_total > 0 else Decimal("0")
+    txn_map = {
+        int(tx_id): {"amount": Decimal(str(amount or 0)), "channel": str(channel or "")}
+        for tx_id, amount, channel in Transaction.objects.filter(id__in=txn_ids).values_list("id", "total_amount", "channel")
+    }
 
     by_campaign = {}
+    est_total = Decimal("0")
+    revenue_total = Decimal("0")
+    with_txn_total = 0
+    without_txn_total = 0
+    with_real_txn_total = 0
+    with_synthetic_txn_total = 0
     for a in assignments:
         campaign_name = getattr(getattr(a.offer, "campaign", None), "name", None) or "none"
         bucket = by_campaign.setdefault(
@@ -220,12 +230,36 @@ def offers_promo_efficiency_30d():
                 "redeemed_count": 0,
                 "estimated_cost_total": Decimal("0"),
                 "redeemed_revenue_total": Decimal("0"),
+                "redeemed_with_transaction_count": 0,
+                "redeemed_without_transaction_count": 0,
+                "redeemed_with_real_transaction_count": 0,
+                "redeemed_with_synthetic_transaction_count": 0,
             },
         )
+
+        cost = Decimal(str(a.offer.estimated_cost or 0))
         bucket["redeemed_count"] += 1
-        bucket["estimated_cost_total"] += Decimal(str(a.offer.estimated_cost or 0))
-        if a.redeemed_transaction_id:
-            bucket["redeemed_revenue_total"] += Decimal(str(txn_map.get(a.redeemed_transaction_id) or 0))
+        bucket["estimated_cost_total"] += cost
+        est_total += cost
+
+        tx_meta = txn_map.get(int(a.redeemed_transaction_id or 0))
+        if tx_meta is None:
+            bucket["redeemed_without_transaction_count"] += 1
+            without_txn_total += 1
+            continue
+
+        amount = tx_meta["amount"]
+        bucket["redeemed_revenue_total"] += amount
+        revenue_total += amount
+        bucket["redeemed_with_transaction_count"] += 1
+        with_txn_total += 1
+
+        if tx_meta["channel"] == synthetic_channel:
+            bucket["redeemed_with_synthetic_transaction_count"] += 1
+            with_synthetic_txn_total += 1
+        else:
+            bucket["redeemed_with_real_transaction_count"] += 1
+            with_real_txn_total += 1
 
     by_campaign_30d = []
     for item in by_campaign.values():
@@ -237,16 +271,25 @@ def offers_promo_efficiency_30d():
                 "redeemed_count": int(item["redeemed_count"]),
                 "estimated_cost_total": float(cost),
                 "redeemed_revenue_total": float(revenue),
+                "redeemed_with_transaction_count": int(item["redeemed_with_transaction_count"]),
+                "redeemed_without_transaction_count": int(item["redeemed_without_transaction_count"]),
+                "redeemed_with_real_transaction_count": int(item["redeemed_with_real_transaction_count"]),
+                "redeemed_with_synthetic_transaction_count": int(item["redeemed_with_synthetic_transaction_count"]),
                 "promo_efficiency": round(float(revenue / cost), 4) if cost > 0 else 0.0,
             }
         )
     by_campaign_30d.sort(key=lambda x: (-x["redeemed_count"], x["campaign_name"]))
+    efficiency = (revenue_total / est_total) if est_total > 0 else Decimal("0")
 
     return {
         "window_days": 30,
         "redeemed_count": int(len(assignments)),
         "estimated_cost_total": float(est_total),
-        "redeemed_revenue_total": float(txn_sum),
+        "redeemed_revenue_total": float(revenue_total),
         "promo_efficiency": round(float(efficiency), 4) if est_total > 0 else 0.0,
+        "redeemed_with_transaction_count": int(with_txn_total),
+        "redeemed_without_transaction_count": int(without_txn_total),
+        "redeemed_with_real_transaction_count": int(with_real_txn_total),
+        "redeemed_with_synthetic_transaction_count": int(with_synthetic_txn_total),
         "by_campaign_30d": by_campaign_30d,
     }

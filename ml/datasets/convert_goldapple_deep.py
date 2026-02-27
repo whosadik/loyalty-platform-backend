@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,37 @@ def _to_int_item(v: Any) -> int | None:
         return int(float(s))
     except Exception:
         return None
+
+
+def _norm_brand(value: Any) -> str:
+    if pd.isna(value):
+        return ""
+    raw = str(value).strip()
+    if not raw:
+        return ""
+    parts = [x.strip() for x in re.split(r"[\r\n;|]+", raw) if str(x).strip()]
+    if not parts:
+        return ""
+    junk = [
+        "страна происхождения",
+        "изготовитель",
+        "производитель",
+        "адрес",
+        "импортер",
+        "importer",
+        "manufacturer",
+        "country of origin",
+    ]
+    candidate = parts[0]
+    if any(m in candidate.lower() for m in junk):
+        for alt in parts[1:]:
+            if not any(m in alt.lower() for m in junk):
+                candidate = alt
+                break
+    candidate = re.sub(r"\s+", " ", candidate).strip(" -,")
+    if any(m in candidate.lower() for m in junk):
+        return ""
+    return candidate
 
 
 def _read_xlsx(path: Path) -> pd.DataFrame:
@@ -114,6 +146,7 @@ def main() -> None:
     events["ts"] = pd.to_datetime(events["event_time"], errors="coerce", utc=True)
     events["item_id"] = events["source_product_id"].map(_to_int_item)
     events["user_id"] = events["user_id"].astype(str)
+    events["brand"] = events["brand"].map(_norm_brand)
     events["weight"] = events["event_type"].map(lambda x: float(EVENT_WEIGHT.get(x, 1.0)))
     events["dataset"] = "goldapple_deep"
     events = events[(events["ts"].notna()) & (events["item_id"].notna())].copy()
@@ -132,7 +165,7 @@ def main() -> None:
         cat = cat[cat["item_id"].notna()].copy()
         cat["item_id"] = cat["item_id"].astype("int64")
         cat["price"] = pd.to_numeric(cat["price"], errors="coerce")
-        cat["brand"] = cat["brand"].astype(str)
+        cat["brand"] = cat["brand"].map(_norm_brand)
         cat["category"] = cat["category"].astype(str).str.lower()
         cat["product_type"] = cat["product_type"].astype(str).str.lower()
         cat["in_stock"] = cat["in_stock"].fillna(1).astype(int).astype(bool)

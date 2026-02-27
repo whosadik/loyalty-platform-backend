@@ -499,7 +499,7 @@ class OfferClickView(APIView):
 
     @extend_schema(
         tags=["Offers"],
-        description="Record user click on active offer assignment (idempotent per assignment).",
+        description="Record user click on active offer assignment (idempotent by request key).",
         request=OfferClickRequestSerializer,
         responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
     )
@@ -519,24 +519,21 @@ class OfferClickView(APIView):
         if assignment.expires_at and assignment.expires_at <= now:
             return Response({"ok": False, "message": "Offer expired"}, status=400)
 
-        existed = OfferEvent.objects.filter(
-            assignment=assignment,
-            event_type=OfferEvent.Type.CLICKED,
-        ).exists()
         request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
         base_ctx = {"endpoint": "POST /api/offers/click", "variant": "v1"}
         extra_ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
         base_ctx.update(extra_ctx)
-        record_offer_event(
+        _, created = record_offer_event(
             assignment,
             OfferEvent.Type.CLICKED,
             request_id=request_id,
             context=base_ctx,
+            return_created=True,
         )
         return Response(
             {
                 "ok": True,
                 "assignment_id": assignment.id,
-                "clicked_recorded": not existed,
+                "clicked_recorded": bool(created),
             }
         )

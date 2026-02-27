@@ -55,7 +55,7 @@ class OfferEventsFlowTests(APITestCase):
             campaign=self.default_campaign,
         )
 
-    def test_next_offer_writes_exposed_idempotent(self):
+    def test_next_offer_writes_exposed_per_request(self):
         r1 = self.client.get("/api/me/next-offer")
         r2 = self.client.get("/api/me/next-offer")
 
@@ -67,6 +67,19 @@ class OfferEventsFlowTests(APITestCase):
             OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.ASSIGNED).count(),
             1,
         )
+        self.assertEqual(
+            OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.EXPOSED).count(),
+            2,
+        )
+
+    def test_next_offer_exposed_idempotent_with_same_request_id(self):
+        rid = "same-request-id-1"
+        r1 = self.client.get("/api/me/next-offer", HTTP_X_REQUEST_ID=rid)
+        r2 = self.client.get("/api/me/next-offer", HTTP_X_REQUEST_ID=rid)
+
+        self.assertEqual(r1.status_code, 200)
+        self.assertEqual(r2.status_code, 200)
+        aid = r1.data["assignment_id"]
         self.assertEqual(
             OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.EXPOSED).count(),
             1,
@@ -90,7 +103,7 @@ class OfferEventsFlowTests(APITestCase):
             1,
         )
 
-    def test_offer_click_writes_clicked_idempotent(self):
+    def test_offer_click_writes_clicked_per_request(self):
         r = self.client.get("/api/me/next-offer")
         self.assertEqual(r.status_code, 200)
         aid = r.data["assignment_id"]
@@ -100,16 +113,33 @@ class OfferEventsFlowTests(APITestCase):
         self.assertEqual(c1.status_code, 200)
         self.assertEqual(c2.status_code, 200)
         self.assertTrue(c1.data["clicked_recorded"])
-        self.assertFalse(c2.data["clicked_recorded"])
+        self.assertTrue(c2.data["clicked_recorded"])
 
         self.assertEqual(
             OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.CLICKED).count(),
-            1,
+            2,
         )
 
         kpis = offers_events_kpis()
         self.assertGreaterEqual(kpis["clicked_7d"], 1)
         self.assertGreaterEqual(kpis["ctr_clicks_exposed_7d"], 0.0)
+
+    def test_offer_click_idempotent_with_same_request_id(self):
+        r = self.client.get("/api/me/next-offer")
+        self.assertEqual(r.status_code, 200)
+        aid = r.data["assignment_id"]
+
+        rid = "same-click-request-id"
+        c1 = self.client.post("/api/offers/click", {"assignment_id": aid}, format="json", HTTP_X_REQUEST_ID=rid)
+        c2 = self.client.post("/api/offers/click", {"assignment_id": aid}, format="json", HTTP_X_REQUEST_ID=rid)
+        self.assertEqual(c1.status_code, 200)
+        self.assertEqual(c2.status_code, 200)
+        self.assertTrue(c1.data["clicked_recorded"])
+        self.assertFalse(c2.data["clicked_recorded"])
+        self.assertEqual(
+            OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.CLICKED).count(),
+            1,
+        )
 
     def test_cleanup_offers_writes_expired_event(self):
         r = self.client.get("/api/me/next-offer")

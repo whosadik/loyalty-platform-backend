@@ -136,6 +136,42 @@ def _norm_product_type(value: Any) -> str:
     return s or "unknown"
 
 
+def _norm_brand(value: Any) -> str:
+    raw = _str(value)
+    if not raw:
+        return ""
+
+    parts = [x.strip() for x in re.split(r"[\r\n;|]+", raw) if _str(x)]
+    if not parts:
+        return ""
+
+    junk_markers = [
+        "страна происхождения",
+        "изготовитель",
+        "производитель",
+        "адрес",
+        "импортер",
+        "importer",
+        "manufacturer",
+        "country of origin",
+    ]
+
+    candidate = parts[0]
+    if any(marker in candidate.lower() for marker in junk_markers):
+        for alt in parts[1:]:
+            if not any(marker in alt.lower() for marker in junk_markers):
+                candidate = alt
+                break
+
+    if ":" in candidate and len(candidate) > 20:
+        candidate = candidate.split(":", 1)[0].strip() or candidate.split(":", 1)[1].strip()
+
+    candidate = re.sub(r"\s+", " ", candidate).strip(" -,")
+    if not candidate or any(marker in candidate.lower() for marker in junk_markers):
+        return ""
+    return candidate
+
+
 def _norm_strength(value: Any) -> str:
     s = _str(value).lower()
     if s in ALLOWED_STRENGTH:
@@ -300,7 +336,7 @@ class Command(BaseCommand):
 
                     payload = {
                         "name": _clip(name, 200),
-                        "brand": _clip(_str(row[col["brand"]]), 120),
+                        "brand": _clip(_norm_brand(row[col["brand"]]), 120),
                         "price": _to_decimal(row[col["price"]]),
                         "source_product_id": _clip(source_product_id, 64),
                         "currency": _clip(_str(row[col["currency"]]) if "currency" in col else "", 8),

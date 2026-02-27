@@ -133,6 +133,7 @@ def _normalize_offer_events(df: "pd.DataFrame") -> "pd.DataFrame":
         raise CommandError(f"offer_events_deep.xlsx missing columns: {sorted(missing)}")
 
     out = df.copy()
+    out["row_no"] = range(1, len(out) + 1)
     out["assignment_id"] = out["assignment_id"].map(_clean_str)
     out["event_type"] = out["event_type"].map(_clean_str).str.lower()
     out["created_dt"] = pd.to_datetime(out["created_at"], errors="coerce", utc=True)
@@ -212,6 +213,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Delete previously imported users by prefix before import (recommended for full reload).",
         )
+        parser.add_argument(
+            "--disable_synthetic_redeem_txn",
+            action="store_true",
+            help="Do not create synthetic transactions for redeemed assignments without any user orders.",
+        )
 
     def handle(self, *args, **options):
         if pd is None:
@@ -227,6 +233,7 @@ class Command(BaseCommand):
         if not user_prefix:
             raise CommandError("user_prefix cannot be empty")
         batch_size = max(100, int(options["batch_size"] or 2000))
+        enable_synthetic_redeem_txn = not bool(options.get("disable_synthetic_redeem_txn"))
 
         p_orders = input_dir / "orders_items_deep.xlsx"
         p_offer_assign = input_dir / "offer_assignments_deep.xlsx"
@@ -316,6 +323,8 @@ class Command(BaseCommand):
             assignment_assigned_at_map=assignment_assigned_at_map,
             redeemed_ts_map=redeemed_ts_map,
             user_tx_timeline=user_tx_timeline,
+            source=source,
+            enable_synthetic_redeem_txn=enable_synthetic_redeem_txn,
             batch_size=batch_size,
         )
 
@@ -719,6 +728,8 @@ class Command(BaseCommand):
         assignment_assigned_at_map: dict[str, Any],
         redeemed_ts_map: dict[str, Any],
         user_tx_timeline: dict[int, list[tuple[Any, int]]],
+        source: str,
+        enable_synthetic_redeem_txn: bool,
         batch_size: int,
     ) -> None:
         self.stdout.write("Linking redeemed assignments to transactions...")
@@ -749,6 +760,7 @@ class Command(BaseCommand):
             return int(best_id) if best_id is not None else None
 
         updates = []
+        synthetic_candidates: list[dict[str, Any]] = []
         for r in assignments_df.itertuples(index=False):
             if int(r.label_redeemed) != 1:
                 continue
@@ -762,6 +774,15 @@ class Command(BaseCommand):
             target_dt = redeemed_ts_map.get(ext_id) or assigned_at
             max_days = max(3, _to_int(r.expires_in_days, default=7) + 2)
             tx_id = nearest_txn(int(r.django_user_id), target_dt, max_days=max_days)
+            if tx_id is None and enable_synthetic_redeem_txn:
+                synthetic_candidates.append(
+                    {
+                        "assignment_id": int(assignment_id),
+                        "user_id": int(r.django_user_id),
+                        "created_at": target_dt,
+                    }
+                )
+                continue
             updates.append(
                 OfferAssignment(
                     id=int(assignment_id),
@@ -769,9 +790,85 @@ class Command(BaseCommand):
                     redeemed_transaction_id=tx_id,
                 )
             )
+
+        synthetic_created = 0
+        if synthetic_candidates:
+            idem_keys = [
+                f"import:{source}:redeem_assignment:{row['assignment_id']}" for row in synthetic_candidates
+            ]
+            users = [int(row["user_id"]) for row in synthetic_candidates]
+
+            existing = {
+                (int(r["user_id"]), str(r["idempotency_key"])): int(r["id"])
+                for r in Transaction.objects.filter(user_id__in=users, idempotency_key__in=idem_keys).values(
+                    "id", "user_id", "idempotency_key"
+                )
+            }
+
+            create_objs = []
+            for row in synthetic_candidates:
+                key = f"import:{source}:redeem_assignment:{row['assignment_id']}"
+                pair = (int(row["user_id"]), key)
+                if pair in existing:
+                    continue
+                create_objs.append(
+                    Transaction(
+                        user_id=int(row["user_id"]),
+                        idempotency_key=key,
+                        channel="import_synthetic",
+                        total_amount=Decimal("0.00"),
+                    )
+                )
+            if create_objs:
+                Transaction.objects.bulk_create(create_objs, batch_size=batch_size)
+                synthetic_created = len(create_objs)
+                created_map = {
+                    (int(r["user_id"]), str(r["idempotency_key"])): int(r["id"])
+                    for r in Transaction.objects.filter(
+                        user_id__in=users,
+                        idempotency_key__in=idem_keys,
+                    ).values("id", "user_id", "idempotency_key")
+                }
+                created_updates = []
+                for row in synthetic_candidates:
+                    key = f"import:{source}:redeem_assignment:{row['assignment_id']}"
+                    tx_id = created_map.get((int(row["user_id"]), key))
+                    if not tx_id:
+                        continue
+                    created_updates.append(
+                        Transaction(
+                            id=int(tx_id),
+                            created_at=row["created_at"],
+                        )
+                    )
+                    updates.append(
+                        OfferAssignment(
+                            id=int(row["assignment_id"]),
+                            is_redeemed=True,
+                            redeemed_transaction_id=int(tx_id),
+                        )
+                    )
+                if created_updates:
+                    Transaction.objects.bulk_update(created_updates, ["created_at"], batch_size=batch_size)
+            else:
+                for row in synthetic_candidates:
+                    key = f"import:{source}:redeem_assignment:{row['assignment_id']}"
+                    tx_id = existing.get((int(row["user_id"]), key))
+                    if not tx_id:
+                        continue
+                    updates.append(
+                        OfferAssignment(
+                            id=int(row["assignment_id"]),
+                            is_redeemed=True,
+                            redeemed_transaction_id=int(tx_id),
+                        )
+                    )
+
         if updates:
             OfferAssignment.objects.bulk_update(updates, ["is_redeemed", "redeemed_transaction_id"], batch_size=batch_size)
-        self.stdout.write(f"Redeemed links updated: {len(updates)}")
+        self.stdout.write(
+            f"Redeemed links updated: {len(updates)} (synthetic_tx_created={synthetic_created}, synthetic_candidates={len(synthetic_candidates)})"
+        )
 
     def _import_offer_events(
         self,
@@ -799,76 +896,57 @@ class Command(BaseCommand):
         }
         ext_to_assignment_id = {ext: int(aid) for ext, aid in assignment_id_map.items()}
 
-        grouped = (
-            offer_events_df.groupby(["assignment_id", "event_type"], as_index=False)
-            .agg(
-                first_dt=("created_dt", "min"),
-                last_dt=("created_dt", "max"),
-                rows_count=("event_type", "size"),
-            )
-            .copy()
-        )
-        grouped["assignment_db_id"] = grouped["assignment_id"].map(ext_to_assignment_id)
-        grouped = grouped[grouped["assignment_db_id"].notna()].copy()
-        grouped["assignment_db_id"] = grouped["assignment_db_id"].astype(int)
+        rows = offer_events_df.copy()
+        rows["assignment_db_id"] = rows["assignment_id"].map(ext_to_assignment_id)
+        rows = rows[rows["assignment_db_id"].notna()].copy()
+        rows["assignment_db_id"] = rows["assignment_db_id"].astype(int)
+        if rows.empty:
+            self.stdout.write("Offer events imported: 0")
+            return
 
-        existing = {
-            (int(r["assignment_id"]), str(r["event_type"])): int(r["id"])
-            for r in OfferEvent.objects.filter(
-                assignment_id__in=grouped["assignment_db_id"].tolist()
-            ).values("id", "assignment_id", "event_type")
-        }
+        assignment_ids = rows["assignment_db_id"].drop_duplicates().tolist()
+        OfferEvent.objects.filter(assignment_id__in=assignment_ids, context__source=source).delete()
 
-        create_objs = []
-        update_objs = []
-        for r in grouped.itertuples(index=False):
-            assignment_id = int(r.assignment_db_id)
-            et = str(r.event_type)
-            info = assignment_info.get(assignment_id)
-            if not info:
-                continue
-            ctx = {
-                "source": source,
-                "import_rows_count": int(r.rows_count),
-                "first_event_at": r.first_dt.to_pydatetime().isoformat(),
-                "last_event_at": r.last_dt.to_pydatetime().isoformat(),
-            }
-            key = (assignment_id, et)
-            if key in existing:
-                update_objs.append(
-                    OfferEvent(
-                        id=int(existing[key]),
-                        assignment_id=assignment_id,
-                        user_id=int(info["user_id"]),
-                        offer_id=int(info["offer_id"]),
-                        campaign_name=str(info["campaign_name"]),
-                        event_type=et,
-                        created_at=r.first_dt.to_pydatetime(),
-                        context=ctx,
-                    )
-                )
-            else:
+        total_rows = len(rows)
+        created = 0
+        for start in range(0, total_rows, batch_size):
+            chunk = rows.iloc[start : start + batch_size]
+            create_objs = []
+            created_ats = []
+            for r in chunk.itertuples(index=False):
+                assignment_id = int(r.assignment_db_id)
+                info = assignment_info.get(assignment_id)
+                if not info:
+                    continue
+                row_no = int(r.row_no)
+                event_key = f"import:{source}:offer_event:{row_no}"
+                ctx = {
+                    "source": source,
+                    "source_row_no": row_no,
+                    "external_assignment_id": str(r.assignment_id),
+                    "source_created_at": r.created_dt.to_pydatetime().isoformat(),
+                }
                 create_objs.append(
                     OfferEvent(
                         assignment_id=assignment_id,
                         user_id=int(info["user_id"]),
                         offer_id=int(info["offer_id"]),
                         campaign_name=str(info["campaign_name"]),
-                        event_type=et,
+                        event_type=str(r.event_type),
+                        event_key=event_key,
                         context=ctx,
-                        created_at=r.first_dt.to_pydatetime(),
                     )
                 )
-        if create_objs:
+                created_ats.append(r.created_dt.to_pydatetime())
+            if not create_objs:
+                continue
             OfferEvent.objects.bulk_create(create_objs, batch_size=batch_size)
-            OfferEvent.objects.bulk_update(create_objs, ["created_at", "context"], batch_size=batch_size)
-        if update_objs:
-            OfferEvent.objects.bulk_update(
-                update_objs,
-                ["user", "offer", "campaign_name", "created_at", "context"],
-                batch_size=batch_size,
-            )
-        self.stdout.write(f"Offer events imported: {len(create_objs) + len(update_objs)}")
+            for i, obj in enumerate(create_objs):
+                obj.created_at = created_ats[i]
+            OfferEvent.objects.bulk_update(create_objs, ["created_at"], batch_size=batch_size)
+            created += len(create_objs)
+
+        self.stdout.write(f"Offer events imported: {created}")
 
     def _import_recommendation_events(
         self,

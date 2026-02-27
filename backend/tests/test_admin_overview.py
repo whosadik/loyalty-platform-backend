@@ -90,4 +90,7 @@ class AdminOverviewTests(APITestCase):
         self.assertIn("7d", r.data["offers"])
         self.assertIn("30d", r.data["offers"])
         self.assertIn("promo_efficiency_30d", r.data["offers"])
+        self.assertIn("redeemed_with_transaction_count", r.data["offers"]["promo_efficiency_30d"])
+        self.assertIn("redeemed_with_real_transaction_count", r.data["offers"]["promo_efficiency_30d"])
+        self.assertIn("redeemed_with_synthetic_transaction_count", r.data["offers"]["promo_efficiency_30d"])
         self.assertIn("experiments_30d", r.data["recs"])

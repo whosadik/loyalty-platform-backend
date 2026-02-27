@@ -7,6 +7,7 @@ from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+from collections import defaultdict
 
 from django.conf import settings
 from django.core.cache import cache
@@ -249,7 +250,7 @@ def _aggregate_transition_counts(context_ids: list[int], co: dict[int, dict[int,
 
 
 def _co_popularity(co: dict[int, dict[int, int]]) -> dict[int, float]:
-    pop: dict[int, float] = {}
+    pop: dict[int, float] = defaultdict(float)
     for src, related in (co or {}).items():
         sid = _to_int(src)
         if sid is None:
@@ -257,8 +258,145 @@ def _co_popularity(co: dict[int, dict[int, int]]) -> dict[int, float]:
         total = 0.0
         for _, cnt in (related or {}).items():
             total += float(cnt or 0.0)
-        pop[sid] = total
-    return pop
+        pop[sid] += total
+        for dst, cnt in (related or {}).items():
+            did = _to_int(dst)
+            if did is None:
+                continue
+            pop[did] += float(cnt or 0.0)
+    return dict(pop)
+
+
+def _retrieval_top_m(limit: int) -> int:
+    configured = int(getattr(settings, "RECS_RETRIEVAL_TOP_M", 0) or 0)
+    if configured <= 0:
+        configured = int(getattr(settings, "RECS_RERANKER_TOP_M", 500) or 500)
+    return max(configured, int(limit))
+
+
+def _retrieval_context_k() -> int:
+    configured = int(getattr(settings, "RECS_RETRIEVAL_CONTEXT_K", 0) or 0)
+    if configured <= 0:
+        configured = int(getattr(settings, "RECS_RERANKER_CONTEXT_K", 5) or 5)
+    return max(1, configured)
+
+
+def _retrieval_category_fallback_topn() -> int:
+    return max(0, int(getattr(settings, "RECS_RETRIEVAL_CATEGORY_FALLBACK_TOPN", 100) or 100))
+
+
+def _retrieval_product_type_fallback_topn() -> int:
+    return max(0, int(getattr(settings, "RECS_RETRIEVAL_PRODUCT_TYPE_FALLBACK_TOPN", 100) or 100))
+
+
+def _retrieval_global_fallback_topn() -> int:
+    return max(0, int(getattr(settings, "RECS_RETRIEVAL_GLOBAL_FALLBACK_TOPN", 100) or 100))
+
+
+def _retrieval_brand_fallback_topn() -> int:
+    return max(0, int(getattr(settings, "RECS_RETRIEVAL_BRAND_FALLBACK_TOPN", 100) or 100))
+
+
+def _popularity_indexes(
+    by_id: dict[int, dict[str, Any]],
+    pop_map: dict[int, float],
+) -> tuple[list[int], dict[str, list[int]], dict[str, list[int]], dict[str, list[int]]]:
+    known_ids = [pid for pid in pop_map.keys() if pid in by_id]
+    global_rank = sorted(known_ids, key=lambda x: (-float(pop_map.get(x, 0.0)), x))
+    by_cat_raw: dict[str, list[int]] = defaultdict(list)
+    by_type_raw: dict[str, list[int]] = defaultdict(list)
+    by_brand_raw: dict[str, list[int]] = defaultdict(list)
+    for pid in global_rank:
+        cat = str((by_id.get(pid) or {}).get("category") or "")
+        ptype = str((by_id.get(pid) or {}).get("product_type") or "").strip().lower()
+        if not cat:
+            cat = ""
+        brand = str((by_id.get(pid) or {}).get("brand") or "").strip().lower()
+        if cat:
+            by_cat_raw[cat].append(int(pid))
+        if ptype:
+            by_type_raw[ptype].append(int(pid))
+        if brand:
+            by_brand_raw[brand].append(int(pid))
+    return global_rank, dict(by_cat_raw), dict(by_type_raw), dict(by_brand_raw)
+
+
+def _category_fallback_ids(
+    context_ids: list[int],
+    *,
+    by_id: dict[int, dict[str, Any]],
+    by_cat_pop: dict[str, list[int]],
+    per_cat_topn: int,
+) -> list[int]:
+    if per_cat_topn <= 0 or not context_ids:
+        return []
+    out: list[int] = []
+    seen: set[int] = set()
+    seen_cat: set[str] = set()
+    for ctx in reversed(context_ids):
+        cat = str((by_id.get(int(ctx)) or {}).get("category") or "")
+        if not cat or cat in seen_cat:
+            continue
+        seen_cat.add(cat)
+        for pid in by_cat_pop.get(cat, [])[:per_cat_topn]:
+            ipid = int(pid)
+            if ipid in seen:
+                continue
+            seen.add(ipid)
+            out.append(ipid)
+    return out
+
+
+def _product_type_fallback_ids(
+    context_ids: list[int],
+    *,
+    by_id: dict[int, dict[str, Any]],
+    by_type_pop: dict[str, list[int]],
+    per_type_topn: int,
+) -> list[int]:
+    if per_type_topn <= 0 or not context_ids:
+        return []
+    out: list[int] = []
+    seen: set[int] = set()
+    seen_types: set[str] = set()
+    for ctx in reversed(context_ids):
+        ptype = str((by_id.get(int(ctx)) or {}).get("product_type") or "").strip().lower()
+        if not ptype or ptype in seen_types:
+            continue
+        seen_types.add(ptype)
+        for pid in by_type_pop.get(ptype, [])[:per_type_topn]:
+            ipid = int(pid)
+            if ipid in seen:
+                continue
+            seen.add(ipid)
+            out.append(ipid)
+    return out
+
+
+def _brand_fallback_ids(
+    context_ids: list[int],
+    *,
+    by_id: dict[int, dict[str, Any]],
+    by_brand_pop: dict[str, list[int]],
+    per_brand_topn: int,
+) -> list[int]:
+    if per_brand_topn <= 0 or not context_ids:
+        return []
+    out: list[int] = []
+    seen: set[int] = set()
+    seen_brand: set[str] = set()
+    for ctx in reversed(context_ids):
+        brand = str((by_id.get(int(ctx)) or {}).get("brand") or "").strip().lower()
+        if not brand or brand in seen_brand:
+            continue
+        seen_brand.add(brand)
+        for pid in by_brand_pop.get(brand, [])[:per_brand_topn]:
+            ipid = int(pid)
+            if ipid in seen:
+                continue
+            seen.add(ipid)
+            out.append(ipid)
+    return out
 
 
 def _build_feature_rows(
@@ -299,6 +437,74 @@ def _build_feature_rows(
     return valid_ids, feats
 
 
+def _cold_start_rows(
+    *,
+    products: list[dict[str, Any]],
+    owned_active_ids: list[int],
+    category: str | None,
+    product_type: str | None,
+    pop_map: dict[int, float],
+    limit: int,
+) -> list[dict[str, Any]]:
+    lim = max(1, int(limit or 1))
+    owned_set = {int(x) for x in owned_active_ids if _to_int(x) is not None}
+    cat_filter = str(category or "").strip().lower() or None
+    ptype_filter = str(product_type or "").strip().lower() or None
+
+    seen: set[int] = set()
+    out: list[dict[str, Any]] = []
+
+    def append_scope(*, scope_label: str, cat: str | None, ptype: str | None) -> None:
+        candidates: list[tuple[int, float, dict[str, Any]]] = []
+        for p in products:
+            pid = _to_int(p.get("id"))
+            if pid is None or pid in owned_set:
+                continue
+            if p.get("in_stock") is False:
+                continue
+            p_cat = str(p.get("category") or "").strip().lower()
+            p_type = str(p.get("product_type") or "").strip().lower()
+            if cat and p_cat != cat:
+                continue
+            if ptype and p_type != ptype:
+                continue
+            pop = float(pop_map.get(pid, 0.0))
+            candidates.append((int(pid), pop, p))
+
+        candidates.sort(key=lambda x: (-x[1], x[0]))
+        for pid, pop, product_row in candidates:
+            if pid in seen:
+                continue
+            seen.add(pid)
+            out.append(
+                {
+                    "product": product_row,
+                    "score": round(float(pop), 6),
+                    "components": {
+                        "mode": "cold_start",
+                        "source": "trending_popularity",
+                        "popularity": round(float(pop), 6),
+                    },
+                    "why": [f"cold start: top-selling {scope_label}"],
+                }
+            )
+            if len(out) >= lim:
+                return
+
+    if ptype_filter:
+        append_scope(
+            scope_label=f"for product_type={ptype_filter}",
+            cat=cat_filter,
+            ptype=ptype_filter,
+        )
+    if len(out) < lim and cat_filter:
+        append_scope(scope_label=f"in category={cat_filter}", cat=cat_filter, ptype=None)
+    if len(out) < lim:
+        append_scope(scope_label="globally", cat=None, ptype=None)
+
+    return out[:lim]
+
+
 def recommend_with_algo(
     *,
     user_id: int | str | None,
@@ -324,9 +530,14 @@ def recommend_with_algo(
         else:
             route_meta["guardrail_forced"] = False
 
-    top_m = max(int(getattr(settings, "RECS_RERANKER_TOP_M", 200) or 200), int(limit))
+    top_m = _retrieval_top_m(limit)
+    ctx_k = _retrieval_context_k()
+    category_fb_topn = _retrieval_category_fallback_topn()
+    product_type_fb_topn = _retrieval_product_type_fallback_topn()
+    brand_fb_topn = _retrieval_brand_fallback_topn()
+    global_fb_topn = _retrieval_global_fallback_topn()
     pool_limit = max(
-        int(getattr(settings, "RECS_RERANKER_HEURISTIC_POOL", 500) or 500),
+        int(getattr(settings, "RECS_RERANKER_HEURISTIC_POOL", 1000) or 1000),
         top_m,
         int(limit),
     )
@@ -357,26 +568,59 @@ def recommend_with_algo(
         route_meta["fallback_reason"] = err
         return heuristic_rows[:limit], f"cooc_fallback:{err}", None, route_meta
 
-    ctx_ids = _context_ids(context_product_ids, int(getattr(settings, "RECS_RERANKER_CONTEXT_K", 3) or 3))
-    if not ctx_ids:
-        route_meta["fallback_reason"] = "no_context"
-        return heuristic_rows[:limit], "cooc_fallback:no_context", None, route_meta
-
     by_id: dict[int, dict[str, Any]] = {}
     for p in products:
         pid = _to_int(p.get("id"))
         if pid is not None:
             by_id[pid] = p
+    pop_map = _co_popularity(co or {})
+
+    ctx_ids = _context_ids(context_product_ids, ctx_k)
+    if not ctx_ids:
+        route_meta["fallback_reason"] = "no_context"
+        cold_rows = _cold_start_rows(
+            products=products,
+            owned_active_ids=owned_active_ids,
+            category=category,
+            product_type=product_type,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            route_meta["retrieval"] = {
+                "top_m": int(top_m),
+                "context_k": int(ctx_k),
+                "sources": ["cold_start_trending"],
+                "final_candidates": int(len(cold_rows)),
+            }
+            return cold_rows, "cold_start:trending", None, route_meta
+        return heuristic_rows[:limit], "cooc_fallback:no_context", None, route_meta
 
     ctx_item = ctx_ids[-1]
     ctx = by_id.get(ctx_item)
     if not ctx:
         route_meta["fallback_reason"] = "no_context_item"
+        cold_rows = _cold_start_rows(
+            products=products,
+            owned_active_ids=owned_active_ids,
+            category=category,
+            product_type=product_type,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            route_meta["retrieval"] = {
+                "top_m": int(top_m),
+                "context_k": int(ctx_k),
+                "sources": ["cold_start_trending"],
+                "final_candidates": int(len(cold_rows)),
+            }
+            return cold_rows, "cold_start:trending", None, route_meta
         return heuristic_rows[:limit], "cooc_fallback:no_context_item", None, route_meta
 
     transitions = _aggregate_transition_counts(ctx_ids, co or {})
     ranked_trans = sorted(transitions.items(), key=lambda x: (-x[1], x[0]))
-    candidate_ids = [int(cid) for cid, _ in ranked_trans[:top_m]]
+    cooc_ids = [int(cid) for cid, _ in ranked_trans[:top_m]]
 
     heuristic_map: dict[int, dict[str, Any]] = {}
     for r in heuristic_rows:
@@ -385,20 +629,83 @@ def recommend_with_algo(
             continue
         heuristic_map[pid] = r
 
-    if len(candidate_ids) < top_m:
-        for pid in heuristic_map.keys():
-            if pid in candidate_ids:
+    global_pop_ids, by_cat_pop, by_type_pop, by_brand_pop = _popularity_indexes(by_id, pop_map)
+    product_type_fb_ids = _product_type_fallback_ids(
+        ctx_ids,
+        by_id=by_id,
+        by_type_pop=by_type_pop,
+        per_type_topn=product_type_fb_topn,
+    )
+    category_fb_ids = _category_fallback_ids(
+        ctx_ids,
+        by_id=by_id,
+        by_cat_pop=by_cat_pop,
+        per_cat_topn=category_fb_topn,
+    )
+    brand_fb_ids = _brand_fallback_ids(
+        ctx_ids,
+        by_id=by_id,
+        by_brand_pop=by_brand_pop,
+        per_brand_topn=brand_fb_topn,
+    )
+    global_fb_ids = [int(pid) for pid in global_pop_ids[:global_fb_topn]]
+    profile_ids = [int(pid) for pid in heuristic_map.keys()]
+
+    candidate_ids: list[int] = []
+    seen: set[int] = set()
+    for source_ids in (
+        cooc_ids,
+        product_type_fb_ids,
+        category_fb_ids,
+        brand_fb_ids,
+        global_fb_ids,
+        profile_ids,
+    ):
+        for pid in source_ids:
+            ipid = int(pid)
+            if ipid in seen:
                 continue
-            candidate_ids.append(pid)
+            seen.add(ipid)
+            candidate_ids.append(ipid)
+            if len(candidate_ids) >= top_m:
+                break
+        if len(candidate_ids) >= top_m:
+            break
+    if len(candidate_ids) < top_m:
+        for pid in global_pop_ids:
+            ipid = int(pid)
+            if ipid in seen:
+                continue
+            seen.add(ipid)
+            candidate_ids.append(ipid)
             if len(candidate_ids) >= top_m:
                 break
 
-    candidate_ids = [pid for pid in candidate_ids if pid in heuristic_map]
+    # Keep only products that passed heuristic filters (in_stock, owned, category/product_type constraints).
+    candidate_ids = [pid for pid in candidate_ids if pid in heuristic_map][:top_m]
     if not candidate_ids:
         route_meta["fallback_reason"] = "no_candidates"
         return heuristic_rows[:limit], "cooc_fallback:no_candidates", None, route_meta
+    route_meta["retrieval"] = {
+        "top_m": int(top_m),
+        "context_k": int(ctx_k),
+        "sources": [
+            "cooc_purchase",
+            "product_type_fallback",
+            "category_fallback",
+            "brand_fallback",
+            "global_fallback",
+            "profile_content",
+        ],
+        "cooc_candidates": int(len(cooc_ids)),
+        "product_type_fallback_candidates": int(len(product_type_fb_ids)),
+        "category_fallback_candidates": int(len(category_fb_ids)),
+        "brand_fallback_candidates": int(len(brand_fb_ids)),
+        "global_fallback_candidates": int(len(global_fb_ids)),
+        "profile_candidates": int(len(profile_ids)),
+        "final_candidates": int(len(candidate_ids)),
+    }
 
-    pop_map = _co_popularity(co or {})
     rank_map = {pid: idx + 1 for idx, pid in enumerate(candidate_ids)}
     valid_ids, feats = _build_feature_rows(
         context_product=ctx,

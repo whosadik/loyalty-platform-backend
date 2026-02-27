@@ -88,4 +88,14 @@ class AdminMetricsOffersTests(APITestCase):
         self.assertIn("promo_efficiency_30d", offers)
         self.assertGreaterEqual(offers["events_kpis"]["clicked_7d"], 1)
         self.assertGreaterEqual(offers["events_kpis"]["ctr_clicks_exposed_7d"], 0.0)
-        self.assertGreaterEqual(offers["promo_efficiency_30d"]["redeemed_count"], 1)
+        promo = offers["promo_efficiency_30d"]
+        self.assertGreaterEqual(promo["redeemed_count"], 1)
+        self.assertIn("redeemed_with_transaction_count", promo)
+        self.assertIn("redeemed_without_transaction_count", promo)
+        self.assertIn("redeemed_with_real_transaction_count", promo)
+        self.assertIn("redeemed_with_synthetic_transaction_count", promo)
+        self.assertEqual(
+            promo["redeemed_with_transaction_count"] + promo["redeemed_without_transaction_count"],
+            promo["redeemed_count"],
+        )
+        self.assertGreaterEqual(promo["redeemed_with_real_transaction_count"], 1)
