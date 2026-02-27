@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone as dt_timezone
-from collections import defaultdict
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -18,7 +17,7 @@ from catalog.models import Product
 from transactions.models import OwnedProduct, TransactionItem, Transaction
 from users_app.models import CustomerProfile
 
-from ml_logic.recommender import UserProfile, build_cooccurrence, bundle
+from ml_logic.recommender import UserProfile, bundle
 
 from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
@@ -28,15 +27,21 @@ from recs_analytics.experiment import build_event_experiment_context
 from recs_analytics.models import RecommendationEvent
 from recs_app.reranker import (
     get_reranker_model_version,
+    get_runtime_co_map,
     recommend_with_algo,
     rerank_bundle_with_algo,
 )
 
-# ВАЖНО: чтобы не переписывать, используем твои уже готовые хелперы.
-# Если эти функции лежат в offers/services.py — импортируй оттуда.
-from offers.services import _build_rec_profile, _load_products_for_recs, _cooccurrence_90d
+# Use existing offer helpers for profile/products loading.
+from offers.services import _build_rec_profile, _load_products_for_recs
+
+
 class RecommendationsQuerySerializer(serializers.Serializer):
-    category = serializers.ChoiceField(choices=["skincare", "haircare", "makeup", "fragrance"])
+    category = serializers.ChoiceField(
+        choices=["skincare", "haircare", "makeup", "fragrance"],
+        required=False,
+        allow_null=True,
+    )
     product_type = serializers.CharField(required=False, allow_blank=True)
     limit = serializers.IntegerField(required=False, min_value=1, max_value=50, default=10)
     algo = serializers.ChoiceField(choices=["cooc", "reranker", "auto"], required=False)
@@ -146,23 +151,6 @@ def _load_products():
     )
 
 
-def _cooccurrence_last_90d(now: datetime):
-    # строим co-occurrence по всем транзакциям за 90 дней (MVP)
-    since = now - timedelta(days=90)
-
-    items = (
-        TransactionItem.objects
-        .filter(transaction__created_at__gte=since)
-        .values("transaction_id", "product_id")
-    )
-
-    txn_map = defaultdict(list)
-    for row in items:
-        txn_map[row["transaction_id"]].append(row["product_id"])
-
-    txn_lists = list(txn_map.values())
-    return build_cooccurrence(txn_lists)
-
 
 class MeRecommendationsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -171,7 +159,7 @@ class MeRecommendationsView(APIView):
         q = RecommendationsQuerySerializer(data=request.query_params)
         q.is_valid(raise_exception=True)
 
-        category = q.validated_data["category"]
+        category = q.validated_data.get("category")
         product_type = (q.validated_data.get("product_type") or "").strip() or None
         limit = q.validated_data["limit"]
         algo_requested = q.validated_data.get("algo")
@@ -179,18 +167,16 @@ class MeRecommendationsView(APIView):
         cp, _ = CustomerProfile.objects.get_or_create(user=request.user)
         prof = _build_rec_profile(cp)
 
-        now = datetime.now(dt_timezone.utc)
-
         owned_active_ids = list(
             OwnedProduct.objects.filter(user=request.user, is_active=True)
             .values_list("product_id", flat=True)
         )
 
-        # контекст = owned товары (можно потом расширить)
+        # Runtime context is built from user purchases/events.
         context_ids, context_meta = get_user_context_product_ids(request.user, k=50)
 
         products = _load_products()
-        co = _cooccurrence_last_90d(now)
+        co, co_source = get_runtime_co_map()
 
         results, algo_used, model_version, algo_routing = recommend_with_algo(
             user_id=request.user.id,
@@ -203,6 +189,7 @@ class MeRecommendationsView(APIView):
             limit=limit,
             co=co,
             algo_requested=algo_requested,
+            co_source=co_source,
         )
         algo_routing = dict(algo_routing or {})
         algo_routing.update(context_meta)
@@ -229,7 +216,7 @@ class MeRecommendationsView(APIView):
 
 class MeBundleView(APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [RecsRateThrottle]  
+    throttle_classes = [RecsRateThrottle]
     @extend_schema(
         tags=["Recommendations"],
         parameters=[
@@ -273,14 +260,13 @@ class MeBundleView(APIView):
         cp, _ = CustomerProfile.objects.get_or_create(user=request.user)
         prof = _build_profile(cp)
 
-        now = datetime.now(dt_timezone.utc)
         owned_active_ids = list(
             OwnedProduct.objects.filter(user=request.user, is_active=True)
             .values_list("product_id", flat=True)
         )
 
         products = _load_products()
-        co = _cooccurrence_last_90d(now)
+        co, co_source = get_runtime_co_map()
 
         results_raw = bundle(
             products=products,
@@ -298,6 +284,8 @@ class MeBundleView(APIView):
             co=co,
             limit=limit,
             algo_requested=algo_requested,
+            owned_active_ids=owned_active_ids,
+            co_source=co_source,
         )
 
         return Response(
@@ -469,7 +457,7 @@ class HomeRecommendationsView(APIView):
         prof = _build_rec_profile(cp)
 
         products = _load_products_for_recs()
-        co = _cooccurrence_90d(now)
+        co, co_source = get_runtime_co_map()
 
         owned_ids = list(
             OwnedProduct.objects.filter(user=request.user, is_active=True).values_list("product_id", flat=True)
@@ -498,6 +486,7 @@ class HomeRecommendationsView(APIView):
             limit=limit * 2,
             co=co,
             algo_requested=algo_requested,
+            co_source=co_source,
         )
         for_you_routing = dict(for_you_routing or {})
         for_you_routing.update(context_meta)
@@ -538,6 +527,8 @@ class HomeRecommendationsView(APIView):
                 co=co,
                 limit=limit * 2,
                 algo_requested=algo_requested,
+                owned_active_ids=owned_ids,
+                co_source=co_source,
             )
             because = _dedupe_limit(reranked, seen, limit)
         else:
@@ -660,3 +651,4 @@ class HomeRecommendationsView(APIView):
                 {"key": "trending", "title": "Trending", "results": trending},
             ],
         })
+

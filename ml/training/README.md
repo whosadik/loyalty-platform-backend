@@ -39,6 +39,7 @@ python ml/training/run_recs_pipeline.py \
 Outputs:
 
 - `models/recs_reranker_v2/model.pkl`
+- `models/recs_reranker_v2/co_map.pkl` (runtime retrieval map for API)
 - `models/recs_reranker_v2/train_users.txt`
 - `models/recs_reranker_v2/test_users.txt`
 - `reports/cooc_baseline_test.txt`

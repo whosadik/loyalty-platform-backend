@@ -288,6 +288,14 @@ def main():
     model_path = os.path.join(args.out_dir, "model.pkl")
     joblib.dump(model, model_path)
 
+    co_map_artifact = {
+        int(src): {int(dst): int(cnt) for dst, cnt in (pairs or [])}
+        for src, pairs in (top_map or {}).items()
+        if pairs
+    }
+    co_path = os.path.join(args.out_dir, "co_map.pkl")
+    joblib.dump(co_map_artifact, co_path)
+
     meta = {
         "model_version": str(args.model_version),
         "estimator": str(args.estimator),
@@ -324,6 +332,7 @@ def main():
 
     print("OK")
     print("saved:", model_path)
+    print("saved:", co_path)
     print("meta:", meta)
 
 

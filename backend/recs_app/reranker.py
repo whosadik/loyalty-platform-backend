@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import pickle
 from datetime import timedelta
 from functools import lru_cache
 from pathlib import Path
@@ -11,11 +12,13 @@ from collections import defaultdict
 
 from django.conf import settings
 from django.core.cache import cache
-from django.db.models import Q
+from django.db import connection
+from django.db.models import Q, Sum
 from django.utils import timezone
 
 from ml_logic.recommender import UserProfile, recommend as heuristic_recommend
 from recs_analytics.models import RecommendationEvent
+from transactions.models import TransactionItem
 
 
 def _to_int(v: Any) -> int | None:
@@ -100,6 +103,266 @@ def get_reranker_model_version() -> str | None:
     if err:
         return None
     return version
+
+
+def _co_path_candidates() -> list[Path]:
+    configured = str(getattr(settings, "RECS_CO_MAP_PATH", "") or "").strip()
+    out: list[Path] = []
+    if configured:
+        out.append(Path(configured).expanduser())
+    model_dir = _model_path().expanduser().parent
+    out.extend(
+        [
+            model_dir / "co_map.pkl",
+            model_dir / "co_map.json",
+            model_dir / "cooc.pkl",
+            model_dir / "cooc.json",
+        ]
+    )
+    uniq: list[Path] = []
+    seen: set[str] = set()
+    for p in out:
+        k = str(p)
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(p)
+    return uniq
+
+
+def _normalize_co_map(raw: Any) -> dict[int, dict[int, int]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[int, dict[int, int]] = {}
+    for src, rel in raw.items():
+        s = _to_int(src)
+        if s is None or not isinstance(rel, dict):
+            continue
+        inner: dict[int, int] = {}
+        for dst, cnt in rel.items():
+            d = _to_int(dst)
+            if d is None:
+                continue
+            try:
+                c = int(cnt)
+            except Exception:
+                continue
+            if c <= 0:
+                continue
+            inner[d] = c
+        if inner:
+            out[s] = inner
+    return out
+
+
+def _has_nonempty_co_map(co: dict[int, dict[int, int]] | None) -> bool:
+    if not isinstance(co, dict) or not co:
+        return False
+    for rel in co.values():
+        if isinstance(rel, dict) and rel:
+            return True
+    return False
+
+
+@lru_cache(maxsize=8)
+def _load_co_cached(path_str: str, mtime_ns: int) -> dict[int, dict[int, int]]:
+    del mtime_ns
+    p = Path(path_str)
+    if not p.exists() or not p.is_file():
+        return {}
+    try:
+        if p.suffix.lower() == ".json":
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        else:
+            try:
+                import joblib
+
+                raw = joblib.load(str(p))
+            except Exception:
+                with p.open("rb") as f:
+                    raw = pickle.load(f)
+    except Exception:
+        return {}
+    return _normalize_co_map(raw)
+
+
+def _load_runtime_co_from_artifact() -> tuple[dict[int, dict[int, int]], str]:
+    empty_source: str | None = None
+    for p in _co_path_candidates():
+        if not p.exists() or not p.is_file():
+            continue
+        try:
+            co = _load_co_cached(str(p.resolve()), int(p.stat().st_mtime_ns))
+        except Exception:
+            continue
+        if _has_nonempty_co_map(co):
+            return co, f"artifact:{p.name}"
+        if empty_source is None:
+            empty_source = f"artifact:{p.name}_empty"
+    if empty_source is not None:
+        return {}, empty_source
+    return {}, "artifact:none"
+
+
+def _events_co_map(days: int) -> dict[int, dict[int, int]]:
+    ttl = max(
+        0,
+        int(getattr(settings, "RECS_RUNTIME_CO_EVENTS_CACHE_TTL_SECONDS", 600) or 600),
+    )
+    db_name = str(connection.settings_dict.get("NAME", "default"))
+    key = f"recs:runtime:co_map:events:v1:{db_name}:days:{int(days)}"
+    if ttl > 0:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
+    qs = RecommendationEvent.objects.filter(
+        action__in=[
+            RecommendationEvent.Action.CLICK,
+            RecommendationEvent.Action.ADD_TO_CART,
+            RecommendationEvent.Action.PURCHASE_ATTRIBUTED,
+        ],
+        product_id__isnull=False,
+    ).values("user_id", "product_id", "created_at", "id")
+    if int(days) > 0:
+        since = timezone.now() - timedelta(days=int(days))
+        qs = qs.filter(created_at__gte=since)
+    qs = qs.order_by("user_id", "created_at", "id")
+
+    co: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    prev_by_user: dict[int, int] = {}
+
+    for row in qs.iterator():
+        uid = _to_int(row.get("user_id"))
+        pid = _to_int(row.get("product_id"))
+        if uid is None or pid is None:
+            continue
+        prev = prev_by_user.get(uid)
+        if prev is not None and prev != pid:
+            co[int(prev)][int(pid)] += 1
+        prev_by_user[uid] = int(pid)
+
+    out = {
+        int(src): {int(dst): int(cnt) for dst, cnt in dict(rel).items() if int(cnt) > 0}
+        for src, rel in dict(co).items()
+        if rel
+    }
+    if ttl > 0:
+        cache.set(key, out, timeout=ttl)
+    return out
+
+
+def _normalize_co_source(source: str | None, co_dict: dict[int, dict[int, int]]) -> str:
+    s = str(source or "").strip() or "none"
+    if _has_nonempty_co_map(co_dict):
+        return s
+    if s in {"none", "none:empty"}:
+        return "none:empty"
+    if s.endswith("_empty"):
+        return s
+    return f"{s}_empty"
+
+
+def _cooc_source_label(co_source: str) -> str:
+    s = str(co_source or "").strip().lower()
+    if s.startswith("events_") or "event" in s:
+        return "cooc_events"
+    return "cooc_purchase"
+
+
+def _db_co_map(days: int) -> dict[int, dict[int, int]]:
+    ttl = max(0, int(getattr(settings, "RECS_RUNTIME_CO_CACHE_TTL_SECONDS", 600) or 600))
+    db_name = str(connection.settings_dict.get("NAME", "default"))
+    key = f"recs:runtime:co_map:v1:{db_name}:days:{int(days)}"
+    if ttl > 0:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+
+    qs = TransactionItem.objects.all().values("transaction_id", "product_id")
+    if int(days) > 0:
+        since = timezone.now() - timedelta(days=int(days))
+        qs = qs.filter(transaction__created_at__gte=since)
+
+    txn_map: dict[int, list[int]] = {}
+    for row in qs.iterator():
+        tx_id = _to_int(row.get("transaction_id"))
+        pid = _to_int(row.get("product_id"))
+        if tx_id is None or pid is None:
+            continue
+        txn_map.setdefault(tx_id, []).append(pid)
+
+    co: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    for items in txn_map.values():
+        uniq = list(dict.fromkeys(int(x) for x in items if _to_int(x) is not None))
+        n = len(uniq)
+        if n < 2:
+            continue
+        for i in range(n):
+            a = int(uniq[i])
+            for j in range(i + 1, n):
+                b = int(uniq[j])
+                co[a][b] += 1
+                co[b][a] += 1
+
+    out = {int(k): {int(kk): int(vv) for kk, vv in dict(v).items()} for k, v in dict(co).items()}
+    if ttl > 0:
+        cache.set(key, out, timeout=ttl)
+    return out
+
+
+def get_runtime_co_map() -> tuple[dict[int, dict[int, int]], str]:
+    co_artifact, source_artifact = _load_runtime_co_from_artifact()
+    if _has_nonempty_co_map(co_artifact):
+        return co_artifact, source_artifact
+
+    events_days = max(0, int(getattr(settings, "RECS_RUNTIME_CO_EVENTS_DAYS", 60) or 60))
+    co_events = _events_co_map(events_days)
+    if _has_nonempty_co_map(co_events):
+        return co_events, f"events_{events_days}d"
+
+    db_days = max(0, int(getattr(settings, "RECS_RUNTIME_CO_DB_DAYS", 90) or 90))
+    co_db = _db_co_map(db_days)
+    if _has_nonempty_co_map(co_db):
+        return co_db, f"db_{db_days}d"
+
+    co_all = _db_co_map(0)
+    if _has_nonempty_co_map(co_all):
+        return co_all, "db_all_time"
+
+    if source_artifact != "artifact:none":
+        return {}, source_artifact
+    return {}, "db_all_time_empty"
+
+
+def get_db_popularity_map(days: int = 30) -> tuple[dict[int, float], str]:
+    ttl = max(0, int(getattr(settings, "RECS_RUNTIME_POPULARITY_CACHE_TTL_SECONDS", 600) or 600))
+    db_name = str(connection.settings_dict.get("NAME", "default"))
+    d = max(0, int(days or 0))
+    key = f"recs:runtime:popularity:v1:{db_name}:days:{d}"
+    if ttl > 0:
+        cached = cache.get(key)
+        if cached is not None:
+            return cached, f"db_{d}d"
+
+    qs = TransactionItem.objects.all()
+    if d > 0:
+        since = timezone.now() - timedelta(days=d)
+        qs = qs.filter(transaction__created_at__gte=since)
+
+    agg = (
+        qs.values("product_id")
+        .annotate(pop=Sum("quantity"))
+        .order_by("-pop")
+    )
+    pop = {
+        int(row["product_id"]): float(row["pop"] or 0.0)
+        for row in agg
+        if _to_int(row.get("product_id")) is not None and float(row.get("pop") or 0.0) > 0.0
+    }
+    if ttl > 0:
+        cache.set(key, pop, timeout=ttl)
+    return pop, f"db_{d}d"
 
 
 def _ab_bucket(user_id: int | str, salt: str) -> int:
@@ -437,6 +700,31 @@ def _build_feature_rows(
     return valid_ids, feats
 
 
+def _passes_runtime_candidate_filters(
+    product: dict[str, Any] | None,
+    *,
+    owned_set: set[int],
+    category: str | None,
+    product_type: str | None,
+) -> bool:
+    if not product:
+        return False
+    pid = _to_int(product.get("id"))
+    if pid is None:
+        return False
+    if pid in owned_set:
+        return False
+    if product.get("in_stock") is False:
+        return False
+    if category:
+        if str(product.get("category") or "").strip().lower() != str(category).strip().lower():
+            return False
+    if product_type:
+        if str(product.get("product_type") or "").strip().lower() != str(product_type).strip().lower():
+            return False
+    return True
+
+
 def _cold_start_rows(
     *,
     products: list[dict[str, Any]],
@@ -505,6 +793,45 @@ def _cold_start_rows(
     return out[:lim]
 
 
+def _cold_start_rows_with_relaxation(
+    *,
+    products: list[dict[str, Any]],
+    owned_active_ids: list[int],
+    category: str | None,
+    product_type: str | None,
+    pop_map: dict[int, float],
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = _cold_start_rows(
+        products=products,
+        owned_active_ids=owned_active_ids,
+        category=category,
+        product_type=product_type,
+        pop_map=pop_map,
+        limit=limit,
+    )
+    if rows:
+        return rows
+
+    if category or product_type:
+        relaxed = _cold_start_rows(
+            products=products,
+            owned_active_ids=owned_active_ids,
+            category=None,
+            product_type=None,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if relaxed:
+            for row in relaxed:
+                why = list(row.get("why") or [])
+                why.append("fallback: relaxed category/product_type filters due to sparse candidates")
+                row["why"] = why
+            return relaxed
+
+    return rows
+
+
 def recommend_with_algo(
     *,
     user_id: int | str | None,
@@ -517,6 +844,7 @@ def recommend_with_algo(
     limit: int,
     co: dict[int, dict[int, int]] | None,
     algo_requested: str | None,
+    co_source: str | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None, dict[str, Any]]:
     target_algo, route_meta = _resolve_algo_for_user(user_id, algo_requested)
 
@@ -536,6 +864,33 @@ def recommend_with_algo(
     product_type_fb_topn = _retrieval_product_type_fallback_topn()
     brand_fb_topn = _retrieval_brand_fallback_topn()
     global_fb_topn = _retrieval_global_fallback_topn()
+
+    co_dict = co or {}
+    co_source_resolved = _normalize_co_source(co_source or ("provided" if co_dict else "none"), co_dict)
+    co_present = _has_nonempty_co_map(co_dict)
+    pop_days = max(0, int(getattr(settings, "RECS_RUNTIME_POPULARITY_DAYS", 30) or 30))
+    db_pop_map, db_pop_source = get_db_popularity_map(pop_days)
+    if db_pop_map:
+        pop_map = db_pop_map
+        pop_source = db_pop_source
+    else:
+        pop_map = _co_popularity(co_dict)
+        pop_source = "co_map" if pop_map else "none"
+
+    retrieval_diag: dict[str, Any] = {
+        "top_m": int(top_m),
+        "context_k": int(ctx_k),
+        "products_count": int(len(products)),
+        "heuristic_pool_size": 0,
+        "co_present": bool(co_present),
+        "co_keys": int(len(co_dict)),
+        "co_source": co_source_resolved,
+        "pop_source": pop_source,
+        "pop_nonzero_topn": 0,
+        "ctx_ids_len": 0,
+        "transitions_len": 0,
+    }
+
     pool_limit = max(
         int(getattr(settings, "RECS_RERANKER_HEURISTIC_POOL", 1000) or 1000),
         top_m,
@@ -550,7 +905,7 @@ def recommend_with_algo(
         category=category,
         product_type=product_type,
         limit=pool_limit,
-        co=co,
+        co=co_dict,
     )
     heuristic_rows: list[dict[str, Any]] = []
     for r in heuristic_results:
@@ -559,13 +914,16 @@ def recommend_with_algo(
         comps.setdefault("mode", "cooc")
         row["components"] = comps
         heuristic_rows.append(row)
+    retrieval_diag["heuristic_pool_size"] = int(len(heuristic_rows))
 
     if target_algo != "reranker":
+        route_meta["retrieval"] = retrieval_diag
         return heuristic_rows[:limit], "cooc", None, route_meta
 
     model, model_version, err = _load_reranker_model()
     if model is None:
         route_meta["fallback_reason"] = err
+        route_meta["retrieval"] = retrieval_diag
         return heuristic_rows[:limit], f"cooc_fallback:{err}", None, route_meta
 
     by_id: dict[int, dict[str, Any]] = {}
@@ -573,12 +931,12 @@ def recommend_with_algo(
         pid = _to_int(p.get("id"))
         if pid is not None:
             by_id[pid] = p
-    pop_map = _co_popularity(co or {})
 
     ctx_ids = _context_ids(context_product_ids, ctx_k)
+    retrieval_diag["ctx_ids_len"] = int(len(ctx_ids))
     if not ctx_ids:
         route_meta["fallback_reason"] = "no_context"
-        cold_rows = _cold_start_rows(
+        cold_rows = _cold_start_rows_with_relaxation(
             products=products,
             owned_active_ids=owned_active_ids,
             category=category,
@@ -587,20 +945,23 @@ def recommend_with_algo(
             limit=limit,
         )
         if cold_rows:
-            route_meta["retrieval"] = {
-                "top_m": int(top_m),
-                "context_k": int(ctx_k),
-                "sources": ["cold_start_trending"],
-                "final_candidates": int(len(cold_rows)),
-            }
+            retrieval_diag.update(
+                {
+                    "sources": ["cold_start_trending"],
+                    "final_candidates": int(len(cold_rows)),
+                    "pop_nonzero_topn": int(sum(1 for v in pop_map.values() if float(v) > 0.0)),
+                }
+            )
+            route_meta["retrieval"] = retrieval_diag
             return cold_rows, "cold_start:trending", None, route_meta
+        route_meta["retrieval"] = retrieval_diag
         return heuristic_rows[:limit], "cooc_fallback:no_context", None, route_meta
 
     ctx_item = ctx_ids[-1]
     ctx = by_id.get(ctx_item)
     if not ctx:
         route_meta["fallback_reason"] = "no_context_item"
-        cold_rows = _cold_start_rows(
+        cold_rows = _cold_start_rows_with_relaxation(
             products=products,
             owned_active_ids=owned_active_ids,
             category=category,
@@ -609,16 +970,20 @@ def recommend_with_algo(
             limit=limit,
         )
         if cold_rows:
-            route_meta["retrieval"] = {
-                "top_m": int(top_m),
-                "context_k": int(ctx_k),
-                "sources": ["cold_start_trending"],
-                "final_candidates": int(len(cold_rows)),
-            }
+            retrieval_diag.update(
+                {
+                    "sources": ["cold_start_trending"],
+                    "final_candidates": int(len(cold_rows)),
+                    "pop_nonzero_topn": int(sum(1 for v in pop_map.values() if float(v) > 0.0)),
+                }
+            )
+            route_meta["retrieval"] = retrieval_diag
             return cold_rows, "cold_start:trending", None, route_meta
+        route_meta["retrieval"] = retrieval_diag
         return heuristic_rows[:limit], "cooc_fallback:no_context_item", None, route_meta
 
-    transitions = _aggregate_transition_counts(ctx_ids, co or {})
+    transitions = _aggregate_transition_counts(ctx_ids, co_dict)
+    retrieval_diag["transitions_len"] = int(len(transitions))
     ranked_trans = sorted(transitions.items(), key=lambda x: (-x[1], x[0]))
     cooc_ids = [int(cid) for cid, _ in ranked_trans[:top_m]]
 
@@ -630,6 +995,7 @@ def recommend_with_algo(
         heuristic_map[pid] = r
 
     global_pop_ids, by_cat_pop, by_type_pop, by_brand_pop = _popularity_indexes(by_id, pop_map)
+    retrieval_diag["pop_nonzero_topn"] = int(sum(1 for pid in global_pop_ids[:top_m] if float(pop_map.get(pid, 0.0)) > 0.0))
     product_type_fb_ids = _product_type_fallback_ids(
         ctx_ids,
         by_id=by_id,
@@ -681,30 +1047,71 @@ def recommend_with_algo(
             if len(candidate_ids) >= top_m:
                 break
 
-    # Keep only products that passed heuristic filters (in_stock, owned, category/product_type constraints).
-    candidate_ids = [pid for pid in candidate_ids if pid in heuristic_map][:top_m]
+    owned_set = {int(x) for x in owned_active_ids if _to_int(x) is not None}
+    candidate_ids = [
+        pid
+        for pid in candidate_ids
+        if _passes_runtime_candidate_filters(
+            by_id.get(pid),
+            owned_set=owned_set,
+            category=category,
+            product_type=product_type,
+        )
+    ][:top_m]
     if not candidate_ids:
         route_meta["fallback_reason"] = "no_candidates"
+        cold_rows = _cold_start_rows_with_relaxation(
+            products=products,
+            owned_active_ids=owned_active_ids,
+            category=category,
+            product_type=product_type,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        retrieval_diag.update(
+            {
+                "sources": ["cold_start_trending"],
+                "cooc_candidates": int(len(cooc_ids)),
+                "product_type_fallback_candidates": int(len(product_type_fb_ids)),
+                "category_fallback_candidates": int(len(category_fb_ids)),
+                "brand_fallback_candidates": int(len(brand_fb_ids)),
+                "global_fallback_candidates": int(len(global_fb_ids)),
+                "profile_candidates": int(len(profile_ids)),
+                "final_candidates": int(len(cold_rows)),
+            }
+        )
+        route_meta["retrieval"] = retrieval_diag
+        if cold_rows:
+            return cold_rows, "cold_start:trending", None, route_meta
         return heuristic_rows[:limit], "cooc_fallback:no_candidates", None, route_meta
-    route_meta["retrieval"] = {
-        "top_m": int(top_m),
-        "context_k": int(ctx_k),
-        "sources": [
-            "cooc_purchase",
-            "product_type_fallback",
-            "category_fallback",
-            "brand_fallback",
-            "global_fallback",
-            "profile_content",
-        ],
-        "cooc_candidates": int(len(cooc_ids)),
-        "product_type_fallback_candidates": int(len(product_type_fb_ids)),
-        "category_fallback_candidates": int(len(category_fb_ids)),
-        "brand_fallback_candidates": int(len(brand_fb_ids)),
-        "global_fallback_candidates": int(len(global_fb_ids)),
-        "profile_candidates": int(len(profile_ids)),
-        "final_candidates": int(len(candidate_ids)),
-    }
+
+    sources: list[str] = []
+    if len(cooc_ids) > 0:
+        sources.append(_cooc_source_label(co_source_resolved))
+    if len(product_type_fb_ids) > 0:
+        sources.append("product_type_fallback")
+    if len(category_fb_ids) > 0:
+        sources.append("category_fallback")
+    if len(brand_fb_ids) > 0:
+        sources.append("brand_fallback")
+    if len(global_fb_ids) > 0:
+        sources.append("global_fallback")
+    if len(profile_ids) > 0:
+        sources.append("profile_content")
+
+    retrieval_diag.update(
+        {
+            "sources": sources,
+            "cooc_candidates": int(len(cooc_ids)),
+            "product_type_fallback_candidates": int(len(product_type_fb_ids)),
+            "category_fallback_candidates": int(len(category_fb_ids)),
+            "brand_fallback_candidates": int(len(brand_fb_ids)),
+            "global_fallback_candidates": int(len(global_fb_ids)),
+            "profile_candidates": int(len(profile_ids)),
+            "final_candidates": int(len(candidate_ids)),
+        }
+    )
+    route_meta["retrieval"] = retrieval_diag
 
     rank_map = {pid: idx + 1 for idx, pid in enumerate(candidate_ids)}
     valid_ids, feats = _build_feature_rows(
@@ -717,6 +1124,16 @@ def recommend_with_algo(
     )
     if not feats:
         route_meta["fallback_reason"] = "no_features"
+        cold_rows = _cold_start_rows_with_relaxation(
+            products=products,
+            owned_active_ids=owned_active_ids,
+            category=category,
+            product_type=product_type,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            return cold_rows, "cold_start:trending", None, route_meta
         return heuristic_rows[:limit], "cooc_fallback:no_features", None, route_meta
 
     try:
@@ -726,6 +1143,16 @@ def recommend_with_algo(
         probs = model.predict_proba(X)[:, 1]
     except Exception:
         route_meta["fallback_reason"] = "predict_error"
+        cold_rows = _cold_start_rows_with_relaxation(
+            products=products,
+            owned_active_ids=owned_active_ids,
+            category=category,
+            product_type=product_type,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            return cold_rows, "cold_start:trending", None, route_meta
         return heuristic_rows[:limit], "cooc_fallback:predict_error", None, route_meta
 
     scored = sorted(zip(valid_ids, probs), key=lambda x: (-float(x[1]), x[0]))
@@ -733,23 +1160,55 @@ def recommend_with_algo(
     out: list[dict[str, Any]] = []
     for pid, prob in scored:
         base = heuristic_map.get(pid)
-        if not base:
-            continue
-        row = dict(base)
-        comps = dict(row.get("components") or {})
+        if base:
+            row = dict(base)
+            comps = dict(row.get("components") or {})
+            heuristic_score = round(float(base.get("score") or 0.0), 6)
+        else:
+            product_row = by_id.get(pid)
+            if not product_row:
+                continue
+            pop = float(pop_map.get(pid, 0.0))
+            trans = float(transitions.get(pid, 0.0))
+            heuristic_score = round(float(trans + math.log1p(pop)), 6)
+            row = {
+                "product": product_row,
+                "score": heuristic_score,
+                "components": {
+                    "mode": "retrieval_fallback",
+                    "transition_count": round(float(trans), 6),
+                    "popularity": round(float(pop), 6),
+                },
+                "why": ["candidate from runtime retrieval fallback"],
+            }
+            comps = dict(row.get("components") or {})
         row["score"] = round(float(prob), 6)
         row["components"] = {
             **comps,
             "mode": "reranker",
             "model_version": model_version,
             "reranker_prob": round(float(prob), 6),
-            "heuristic_score": round(float(base.get("score") or 0.0), 6),
+            "heuristic_score": heuristic_score,
             "transition_count": round(float(transitions.get(pid, 0.0)), 6),
             "candidate_rank": int(rank_map.get(pid, 9999)),
         }
         out.append(row)
         if len(out) >= int(limit):
             break
+
+    if not out:
+        route_meta["fallback_reason"] = "reranker_empty_after_score"
+        cold_rows = _cold_start_rows_with_relaxation(
+            products=products,
+            owned_active_ids=owned_active_ids,
+            category=category,
+            product_type=product_type,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            return cold_rows, "cold_start:trending", None, route_meta
+        return heuristic_rows[:limit], "cooc_fallback:reranker_empty_after_score", None, route_meta
 
     return out, "reranker", model_version, route_meta
 
@@ -763,6 +1222,8 @@ def rerank_bundle_with_algo(
     co: dict[int, dict[int, int]] | None,
     limit: int,
     algo_requested: str | None,
+    owned_active_ids: list[int] | None = None,
+    co_source: str | None = None,
 ) -> tuple[list[dict[str, Any]], str, str | None, dict[str, Any]]:
     target_algo, route_meta = _resolve_algo_for_user(user_id, algo_requested)
 
@@ -776,6 +1237,14 @@ def rerank_bundle_with_algo(
         else:
             route_meta["guardrail_forced"] = False
 
+    co_dict = co or {}
+    co_source_resolved = _normalize_co_source(co_source or ("provided" if co_dict else "none"), co_dict)
+    co_present = _has_nonempty_co_map(co_dict)
+    pop_days = max(0, int(getattr(settings, "RECS_RUNTIME_POPULARITY_DAYS", 30) or 30))
+    db_pop_map, db_pop_source = get_db_popularity_map(pop_days)
+    pop_map = db_pop_map or _co_popularity(co_dict)
+    pop_source = db_pop_source if db_pop_map else ("co_map" if pop_map else "none")
+
     if target_algo != "reranker":
         out = []
         for r in bundle_results[:limit]:
@@ -784,6 +1253,18 @@ def rerank_bundle_with_algo(
             comps.setdefault("mode", "cooc")
             row["components"] = comps
             out.append(row)
+        route_meta["retrieval"] = {
+            "products_count": int(len(products)),
+            "co_present": bool(co_present),
+            "co_keys": int(len(co_dict)),
+            "co_source": co_source_resolved,
+            "pop_source": pop_source,
+            "pop_nonzero_topn": int(sum(1 for v in pop_map.values() if float(v) > 0.0)),
+            "sources": [
+                _cooc_source_label(co_source_resolved),
+            ] if co_present else [],
+            "final_candidates": int(len(out)),
+        }
         return out, "cooc", None, route_meta
 
     model, model_version, err = _load_reranker_model()
@@ -808,6 +1289,16 @@ def rerank_bundle_with_algo(
     ctx = by_id.get(base_id)
     if not ctx:
         route_meta["fallback_reason"] = "no_context_item"
+        cold_rows = _cold_start_rows_with_relaxation(
+            products=products,
+            owned_active_ids=list(owned_active_ids or []),
+            category=None,
+            product_type=None,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            return cold_rows, "cold_start:trending", None, route_meta
         return bundle_results[:limit], "cooc_fallback:no_context_item", None, route_meta
 
     top_m = max(int(getattr(settings, "RECS_RERANKER_TOP_M", 200) or 200), int(limit))
@@ -827,7 +1318,7 @@ def rerank_bundle_with_algo(
         comps = row.get("components") or {}
         trans = _to_float(comps.get("cooccurrence"), None)
         if trans is None:
-            trans = _to_float(((co or {}).get(base_id, {}) or {}).get(pid), 0.0)
+            trans = _to_float((co_dict.get(base_id, {}) or {}).get(pid), 0.0)
         transitions[pid] = float(trans)
 
         if len(candidate_ids) >= top_m:
@@ -835,9 +1326,18 @@ def rerank_bundle_with_algo(
 
     if not candidate_ids:
         route_meta["fallback_reason"] = "no_candidates"
+        cold_rows = _cold_start_rows_with_relaxation(
+            products=products,
+            owned_active_ids=list(owned_active_ids or []),
+            category=str(ctx.get("category") or "") or None,
+            product_type=str(ctx.get("product_type") or "") or None,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            return cold_rows, "cold_start:trending", None, route_meta
         return bundle_results[:limit], "cooc_fallback:no_candidates", None, route_meta
 
-    pop_map = _co_popularity(co or {})
     rank_map = {pid: idx + 1 for idx, pid in enumerate(candidate_ids)}
     valid_ids, feats = _build_feature_rows(
         context_product=ctx,
@@ -849,6 +1349,16 @@ def rerank_bundle_with_algo(
     )
     if not feats:
         route_meta["fallback_reason"] = "no_features"
+        cold_rows = _cold_start_rows_with_relaxation(
+            products=products,
+            owned_active_ids=list(owned_active_ids or []),
+            category=str(ctx.get("category") or "") or None,
+            product_type=str(ctx.get("product_type") or "") or None,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            return cold_rows, "cold_start:trending", None, route_meta
         return bundle_results[:limit], "cooc_fallback:no_features", None, route_meta
 
     try:
@@ -858,6 +1368,16 @@ def rerank_bundle_with_algo(
         probs = model.predict_proba(X)[:, 1]
     except Exception:
         route_meta["fallback_reason"] = "predict_error"
+        cold_rows = _cold_start_rows_with_relaxation(
+            products=products,
+            owned_active_ids=list(owned_active_ids or []),
+            category=str(ctx.get("category") or "") or None,
+            product_type=str(ctx.get("product_type") or "") or None,
+            pop_map=pop_map,
+            limit=limit,
+        )
+        if cold_rows:
+            return cold_rows, "cold_start:trending", None, route_meta
         return bundle_results[:limit], "cooc_fallback:predict_error", None, route_meta
 
     scored = sorted(zip(valid_ids, probs), key=lambda x: (-float(x[1]), x[0]))
@@ -884,4 +1404,17 @@ def rerank_bundle_with_algo(
         if len(out) >= int(limit):
             break
 
+    route_meta["retrieval"] = {
+        "products_count": int(len(products)),
+        "co_present": bool(co_present),
+        "co_keys": int(len(co_dict)),
+        "co_source": co_source_resolved,
+        "pop_source": pop_source,
+        "pop_nonzero_topn": int(sum(1 for v in pop_map.values() if float(v) > 0.0)),
+        "transitions_len": int(len(transitions)),
+        "sources": [
+            _cooc_source_label(co_source_resolved),
+        ] if len(transitions) > 0 else [],
+        "final_candidates": int(len(candidate_ids)),
+    }
     return out, "reranker", model_version, route_meta
