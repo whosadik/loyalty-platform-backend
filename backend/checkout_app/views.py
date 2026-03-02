@@ -20,7 +20,9 @@ from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from catalog.models import Product
 from offers.services import get_or_assign_next_offer
 from offers.events import record_offer_event
-from roadmap_app.services import update_roadmap_from_purchase
+from roadmap_app.events import build_step_event_context, record_roadmap_event
+from roadmap_app.models import RoadmapEvent
+from roadmap_app.services import match_completed_steps_for_purchase, update_roadmap_from_purchase
 
 from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializer
 from drf_spectacular.types import OpenApiTypes
@@ -286,12 +288,42 @@ class CheckoutView(APIView):
                 "product_types": purchased_types,
                 "product_ids": purchased_ids,
             }
+            completed_matches = []
+            try:
+                completed_matches = match_completed_steps_for_purchase(request.user, post_ctx)
+            except Exception:
+                completed_matches = []
             roadmap_ctx = None
             try:
                 roadmap_result = update_roadmap_from_purchase(request.user, post_ctx)
                 roadmap_ctx = (roadmap_result or {}).get("roadmap_ctx")
             except Exception:
                 roadmap_ctx = None
+
+            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+            for match in completed_matches:
+                step = match.get("step")
+                plan = match.get("plan")
+                category = str(match.get("category") or "")
+                if not step:
+                    continue
+                try:
+                    record_roadmap_event(
+                        user=request.user,
+                        event_type=RoadmapEvent.Type.STEP_COMPLETED,
+                        plan=plan,
+                        step=step,
+                        request_id=request_id,
+                        context=build_step_event_context(
+                            category=category,
+                            step=step,
+                            offer_assignment_id=applied_assignment_id,
+                            transaction_id=txn.id,
+                            extra={"matched_by": match.get("matched_by")},
+                        ),
+                    )
+                except Exception:
+                    pass
 
             # Auto-assign next offer after successful checkout
             next_assignment = get_or_assign_next_offer(

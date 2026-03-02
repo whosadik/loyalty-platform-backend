@@ -2,12 +2,16 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db.models import Count
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from catalog.models import Product
 from loyalty.models import LoyaltyAccount, Tier
 from offers.models import CampaignBudget, Offer, OfferAssignment, OfferEvent
-from roadmap_app.models import RoadmapStep
+from offers.services import _pick_target_for_offer
+from roadmap_app.fragrance_slots import slot_of_fragrance
+from roadmap_app.models import RoadmapPlan, RoadmapStep
+from transactions.models import OwnedProduct
 from users_app.models import CustomerProfile
 
 
@@ -165,6 +169,54 @@ class RoadmapOfferFlowTests(APITestCase):
         )
         self.assertTrue(rows)
         self.assertEqual(sum(int(r["c"]) for r in rows), len(rows))
+        self.assertEqual(
+            RoadmapPlan.objects.filter(user=self.user, category="haircare", is_active=True).count(),
+            1,
+        )
+
+    def test_recommended_products_are_unique_and_in_stock(self):
+        checkout = self._checkout_shampoo()
+        self.assertEqual(checkout.status_code, 201)
+
+        roadmap = self.client.get("/api/me/roadmap?category=haircare")
+        self.assertEqual(roadmap.status_code, 200)
+        steps = roadmap.data.get("steps") or []
+
+        rec_ids = []
+        for step in steps:
+            rp = step.get("recommended_product")
+            if not rp:
+                continue
+            rec_ids.append(int(rp["id"]))
+            self.assertTrue(bool(rp.get("in_stock")))
+        self.assertEqual(len(rec_ids), len(set(rec_ids)))
+
+    def test_not_owned_products_are_not_recommended_or_suggested(self):
+        OwnedProduct.objects.create(user=self.user, product=self.p_conditioner, quantity_total=1, is_active=True)
+
+        refresh = self.client.post("/api/me/roadmap/refresh", {"category": "haircare"}, format="json")
+        self.assertEqual(refresh.status_code, 200)
+        steps = refresh.data.get("steps") or []
+
+        for step in steps:
+            rp = step.get("recommended_product")
+            if rp:
+                self.assertNotEqual(int(rp["id"]), self.p_conditioner.id)
+            suggestions = [int(x) for x in (step.get("suggestions") or [])]
+            self.assertNotIn(self.p_conditioner.id, suggestions)
+
+    def test_instock_fallback_does_not_break_when_slot_empty(self):
+        Product.objects.filter(category="haircare").exclude(id=self.p_shampoo.id).update(in_stock=False)
+
+        checkout = self._checkout_shampoo()
+        self.assertEqual(checkout.status_code, 201)
+        roadmap = self.client.get("/api/me/roadmap?category=haircare")
+        self.assertEqual(roadmap.status_code, 200)
+
+        for step in roadmap.data.get("steps") or []:
+            rp = step.get("recommended_product")
+            if rp:
+                self.assertTrue(bool(rp.get("in_stock")))
 
 
 class RoadmapSupersedeTests(APITestCase):
@@ -364,3 +416,102 @@ class RoadmapSupersedeTests(APITestCase):
                 event_type=OfferEvent.Type.SUPERSEDED,
             ).exists()
         )
+
+
+class RoadmapFragranceTargetRegressionTests(APITestCase):
+    def setUp(self):
+        User = get_user_model()
+        self.user = User.objects.create_user(username="roadmap_frag_slot_u1", password="pass12345")
+        self.client.force_authenticate(self.user)
+
+        CustomerProfile.objects.get_or_create(user=self.user)
+        bronze, _ = Tier.objects.get_or_create(
+            name="Bronze",
+            defaults={"threshold_spend_90d": 0, "points_rate": 1.0},
+        )
+        LoyaltyAccount.objects.get_or_create(
+            user=self.user,
+            defaults={"tier": bronze, "points_balance": 0},
+        )
+
+        self.default_campaign, _ = CampaignBudget.objects.get_or_create(
+            name="default",
+            defaults={
+                "weekly_limit": Decimal("1000.00"),
+                "weekly_spent": Decimal("0.00"),
+                "priority": 100,
+                "is_active": True,
+            },
+        )
+        self.offer = Offer.objects.create(
+            name="Fragrance Slot Product Offer",
+            offer_type=Offer.Type.DISCOUNT,
+            value=Decimal("10.00"),
+            estimated_cost=Decimal("2.00"),
+            is_active=True,
+            target_scope="product_id",
+            cooldown_days=0,
+            expires_in_days=7,
+            allowed_categories=["fragrance"],
+            allowed_product_types=["edp"],
+            campaign=self.default_campaign,
+        )
+
+        self.p_warm_day = Product.objects.create(
+            name="Citrus Day EDP",
+            brand="F",
+            price=Decimal("40.00"),
+            category="fragrance",
+            product_type="edp",
+            concerns=[],
+            attrs={"scent_family": "citrus", "notes": ["bergamot"], "intensity": "soft"},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="medium",
+            in_stock=True,
+        )
+        self.p_warm_evening = Product.objects.create(
+            name="Citrus Night EDP",
+            brand="F",
+            price=Decimal("45.00"),
+            category="fragrance",
+            product_type="edp",
+            concerns=[],
+            attrs={"scent_family": "citrus", "notes": ["neroli"], "intensity": "strong"},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="high",
+            in_stock=True,
+        )
+
+    def test_fragrance_slot_roadmap_ctx_product_id_target_scope(self):
+        target = _pick_target_for_offer(
+            self.user,
+            self.offer,
+            timezone.now(),
+            context_steps=None,
+            post_ctx={
+                "categories": ["fragrance"],
+                "product_types": ["edp"],
+                "product_ids": [self.p_warm_day.id],
+            },
+            campaign=self.default_campaign,
+            roadmap_ctx={
+                "category": "fragrance",
+                "next_product_type": "warm_evening",
+            },
+        )
+
+        self.assertIsInstance(target, dict)
+        self.assertEqual(target.get("scope"), "product_id")
+        self.assertEqual(target.get("category"), "fragrance")
+        pid = int(target["value"])
+        self.assertTrue(pid > 0)
+
+        prod = Product.objects.get(id=pid)
+        slot = slot_of_fragrance(prod.attrs or {}, raw_meta=prod.raw_meta or {})
+        self.assertEqual(slot, "warm_evening")
+        self.assertEqual(target.get("product_type"), "warm_evening")
+        self.assertEqual(target.get("actual_product_type"), prod.product_type)

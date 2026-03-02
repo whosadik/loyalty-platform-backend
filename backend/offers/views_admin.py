@@ -12,7 +12,12 @@ class AdminCacheInvalidateView(APIView):
 
     def post(self, request):
         db_name = connection.settings_dict.get("NAME", "default")
-        keys = [f"recs:products:v1:{db_name}", f"recs:cooc90d:v1:{db_name}"]
+        keys = [
+            f"recs:products:v1:{db_name}",
+            f"recs:cooc90d:v1:{db_name}",
+            f"recs:products:v2:{db_name}",
+            f"recs:cooc90d:v2:{db_name}",
+        ]
         deleted = 0
         for k in keys:
             if cache.delete(k):

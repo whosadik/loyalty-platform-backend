@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from django.db import models
 from django.http import Http404
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -9,6 +11,9 @@ from rest_framework.views import APIView
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
 
+from offers.models import OfferAssignment
+from roadmap_app.events import build_step_event_context, record_roadmap_event
+from roadmap_app.models import RoadmapEvent
 from roadmap_app.models import RoadmapStep
 from roadmap_app.serializers import (
     RoadmapPlanReadSerializer,
@@ -18,6 +23,38 @@ from roadmap_app.serializers import (
     RoadmapStepReadSerializer,
 )
 from roadmap_app.services import get_active_plan, patch_step_status, refresh_roadmap
+
+
+def _active_offer_assignment_for_step(user, step: RoadmapStep | None) -> OfferAssignment | None:
+    if not step:
+        return None
+    now = timezone.now()
+    qs = (
+        OfferAssignment.objects.filter(user=user, is_active=True, is_redeemed=False)
+        .filter(
+            models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=now)
+        )
+        .order_by("-assigned_at")
+    )
+    for assignment in qs[:10]:
+        target = assignment.target or {}
+        scope = str(target.get("scope") or "").strip()
+        value = target.get("value")
+        category_ok = (not target.get("category")) or (str(target.get("category")) == str(step.plan.category))
+
+        if scope == "product_id" and step.recommended_product_id:
+            try:
+                if int(value) == int(step.recommended_product_id):
+                    return assignment
+            except Exception:
+                pass
+        if scope == "product_type":
+            if str(value) == str(step.product_type) and category_ok:
+                return assignment
+        if scope == "product_id" and target.get("product_type"):
+            if str(target.get("product_type")) == str(step.product_type) and category_ok:
+                return assignment
+    return None
 
 
 class MeRoadmapView(APIView):
@@ -87,6 +124,27 @@ class MeRoadmapView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             plan = refresh_roadmap(request.user, category=category, post_ctx=None)
+
+        next_step = (
+            plan.steps.filter(status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED])
+            .order_by("step_index")
+            .first()
+        )
+        if next_step:
+            offer_assignment = _active_offer_assignment_for_step(request.user, next_step)
+            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+            record_roadmap_event(
+                user=request.user,
+                event_type=RoadmapEvent.Type.STEP_EXPOSED,
+                plan=plan,
+                step=next_step,
+                request_id=request_id,
+                context=build_step_event_context(
+                    category=plan.category,
+                    step=next_step,
+                    offer_assignment_id=offer_assignment.id if offer_assignment else None,
+                ),
+            )
         return Response(RoadmapPlanReadSerializer(plan).data)
 
 
@@ -160,4 +218,60 @@ class MeRoadmapStepPatchView(APIView):
             raise Http404
         except ValueError:
             return Response({"ok": False, "message": "Unsupported status"}, status=status.HTTP_400_BAD_REQUEST)
+        if next_status == RoadmapStep.Status.SKIPPED:
+            offer_assignment = _active_offer_assignment_for_step(request.user, step)
+            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+            record_roadmap_event(
+                user=request.user,
+                event_type=RoadmapEvent.Type.STEP_SKIPPED,
+                plan=step.plan,
+                step=step,
+                request_id=request_id,
+                context=build_step_event_context(
+                    category=step.plan.category,
+                    step=step,
+                    offer_assignment_id=offer_assignment.id if offer_assignment else None,
+                ),
+            )
         return Response({"ok": True, "step": RoadmapStepReadSerializer(step).data})
+
+
+class MeRoadmapStepClickView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Roadmap"],
+        responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+        examples=[
+            OpenApiExample(
+                "Click response",
+                response_only=True,
+                value={"ok": True, "step_id": 42},
+            )
+        ],
+    )
+    def post(self, request, step_id: int):
+        try:
+            step = RoadmapStep.objects.select_related("plan").get(
+                id=int(step_id),
+                plan__user=request.user,
+                plan__is_active=True,
+            )
+        except RoadmapStep.DoesNotExist:
+            raise Http404
+
+        offer_assignment = _active_offer_assignment_for_step(request.user, step)
+        request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+        record_roadmap_event(
+            user=request.user,
+            event_type=RoadmapEvent.Type.STEP_CLICKED,
+            plan=step.plan,
+            step=step,
+            request_id=request_id,
+            context=build_step_event_context(
+                category=step.plan.category,
+                step=step,
+                offer_assignment_id=offer_assignment.id if offer_assignment else None,
+            ),
+        )
+        return Response({"ok": True, "step_id": step.id})

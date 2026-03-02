@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timezone as dt_timezone
 from typing import Any
+
+from django.utils import timezone
 
 from offers.models import OfferAssignment, OfferEvent
 
@@ -49,6 +52,9 @@ def record_offer_event(
     campaign_name = getattr(getattr(assignment.offer, "campaign", None), "name", None) or ""
 
     key = (idempotency_key or "").strip() or None
+    if not key and event_type == OfferEvent.Type.EXPOSED:
+        day = timezone.now().astimezone(dt_timezone.utc).strftime("%Y%m%d")
+        key = f"exposed:{assignment.id}:{day}"
     if not key and request_id:
         key = f"a:{assignment.id}:t:{event_type}:r:{request_id}"
     if not key and event_type in _ONE_SHOT_EVENT_TYPES:

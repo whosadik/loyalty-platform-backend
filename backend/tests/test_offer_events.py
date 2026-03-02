@@ -55,7 +55,7 @@ class OfferEventsFlowTests(APITestCase):
             campaign=self.default_campaign,
         )
 
-    def test_next_offer_writes_exposed_per_request(self):
+    def test_next_offer_exposed_is_daily_deduped(self):
         r1 = self.client.get("/api/me/next-offer")
         r2 = self.client.get("/api/me/next-offer")
 
@@ -69,7 +69,15 @@ class OfferEventsFlowTests(APITestCase):
         )
         self.assertEqual(
             OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.EXPOSED).count(),
-            2,
+            1,
+        )
+
+        # Also dedup across another endpoint that emits EXPOSED for the same assignment.
+        r3 = self.client.get("/api/me/offers")
+        self.assertEqual(r3.status_code, 200)
+        self.assertEqual(
+            OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.EXPOSED).count(),
+            1,
         )
 
     def test_next_offer_exposed_idempotent_with_same_request_id(self):

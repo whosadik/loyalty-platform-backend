@@ -11,6 +11,7 @@ from django.utils import timezone
 from catalog.models import Product
 from ml_logic.recommender import recommend as rec_recommend
 from offers.services import _build_rec_profile, _cooccurrence_90d, _load_products_for_recs
+from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
 from roadmap_app.ml_next_step import predict_next_product_types
 from roadmap_app.models import RoadmapPlan, RoadmapStep
 from transactions.models import OwnedProduct, TransactionItem
@@ -58,6 +59,8 @@ CADENCE_BY_TYPE: dict[str, str] = {
     "hair_oil": RoadmapStep.Cadence.OPTIONAL,
     "scalp_serum": RoadmapStep.Cadence.OPTIONAL,
 }
+
+FRAGRANCE_DEFAULT_CHAIN = ["warm_day", "warm_evening", "cold_day", "cold_evening"]
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -156,6 +159,39 @@ def _distinct_catalog_types(category: str, *, exclude: set[str] | None = None, l
     return _unique([str(x) for x in rows])
 
 
+def _fragrance_slots_from_products_qs(rows: list[dict[str, Any]]) -> list[str]:
+    slots: list[str] = []
+    for row in rows:
+        slot = slot_of_fragrance(
+            row.get("attrs") or {},
+            raw_meta=row.get("raw_meta") if isinstance(row.get("raw_meta"), dict) else None,
+        )
+        if slot in FRAGRANCE_SLOTS and slot not in slots:
+            slots.append(slot)
+    return slots
+
+
+def _owned_fragrance_slots(user) -> list[str]:
+    rows = list(
+        OwnedProduct.objects.filter(user=user, is_active=True, product__category="fragrance")
+        .select_related("product")
+        .values("product__attrs", "product__raw_meta")
+    )
+    normalized = [{"attrs": r.get("product__attrs") or {}, "raw_meta": r.get("product__raw_meta") or {}} for r in rows]
+    return _fragrance_slots_from_products_qs(normalized)
+
+
+def _purchased_fragrance_slots(post_ctx: dict[str, Any] | None) -> list[str]:
+    product_ids = [int(x) for x in (post_ctx or {}).get("product_ids", []) if str(x).strip()]
+    if not product_ids:
+        return []
+    rows = list(
+        Product.objects.filter(id__in=product_ids, category="fragrance")
+        .values("attrs", "raw_meta")
+    )
+    return _fragrance_slots_from_products_qs(rows)
+
+
 def _category_owned(user, category: str) -> tuple[list[OwnedProduct], set[int], list[str], set[str]]:
     owned_rows = list(
         OwnedProduct.objects.filter(user=user, is_active=True, product__category=category)
@@ -177,6 +213,16 @@ def _build_chain(
     context_product_ids: list[int],
 ) -> tuple[list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
     rules = CATEGORY_RULES[category]
+    if category == "fragrance":
+        purchased_slots = [x for x in purchased_types if x in FRAGRANCE_SLOTS]
+        owned_slots = [x for x in owned_types_ordered if x in FRAGRANCE_SLOTS]
+        chain = _unique(purchased_slots + FRAGRANCE_DEFAULT_CHAIN + owned_slots)
+        min_steps = int(rules["min_steps"])
+        max_steps = int(rules["max_steps"])
+        chain = chain[: max(min_steps, min(max_steps, len(chain)))]
+        source_by_type = {slot: {"source": "rules", "score": None} for slot in chain}
+        return chain, source_by_type, []
+
     chain = _unique(purchased_types + rules["base"] + rules["optional"] + owned_types_ordered)
 
     recent_types = list(
@@ -252,16 +298,37 @@ def _recommend_candidates_for_type(
     co_map: dict[int, dict[int, int]],
 ) -> list[dict[str, Any]]:
     max_suggestions = max(5, int(getattr(settings, "ROADMAP_SUGGESTIONS_LIMIT", 10)))
-    recs = rec_recommend(
-        prof=prof,
-        products=products_for_recs,
-        owned_active_ids=sorted(list(owned_product_ids)),
-        context_product_ids=context_product_ids[:50],
-        category=category,
-        product_type=product_type,
-        limit=max(20, max_suggestions * 2),
-        co=co_map,
-    )
+    if category == "fragrance" and product_type in FRAGRANCE_SLOTS:
+        # Soft slot layer: try slot-filtered candidates first, then fallback to regular fragrance picks.
+        recs = rec_recommend(
+            prof=prof,
+            products=products_for_recs,
+            owned_active_ids=sorted(list(owned_product_ids)),
+            context_product_ids=context_product_ids[:50],
+            category=category,
+            product_type=None,
+            limit=max(40, max_suggestions * 4),
+            co=co_map,
+        )
+        slot_filtered: list[dict[str, Any]] = []
+        for row in recs:
+            product = row.get("product") or {}
+            slot = slot_of_fragrance(product.get("attrs") or {}, raw_meta=product.get("raw_meta") or {})
+            if slot == product_type:
+                slot_filtered.append(row)
+        if slot_filtered:
+            recs = slot_filtered
+    else:
+        recs = rec_recommend(
+            prof=prof,
+            products=products_for_recs,
+            owned_active_ids=sorted(list(owned_product_ids)),
+            context_product_ids=context_product_ids[:50],
+            category=category,
+            product_type=product_type,
+            limit=max(20, max_suggestions * 2),
+            co=co_map,
+        )
 
     filtered: list[dict[str, Any]] = []
     blocked = set(owned_product_ids) | set(used_recommended_ids)
@@ -283,14 +350,16 @@ def _recommend_candidates_for_type(
     if filtered:
         return filtered
 
-    fallback_rows = list(
-        Product.objects.filter(category=category, product_type=product_type, in_stock=True)
-        .exclude(id__in=list(blocked))
-        .values("id", "category", "product_type", "brand", "attrs")
-        .order_by("id")[:max_suggestions]
-    )
+    db_qs = Product.objects.filter(category=category, in_stock=True).exclude(id__in=list(blocked))
+    if not (category == "fragrance" and product_type in FRAGRANCE_SLOTS):
+        db_qs = db_qs.filter(product_type=product_type)
+    fallback_rows = list(db_qs.values("id", "category", "product_type", "brand", "attrs", "raw_meta").order_by("id")[: max_suggestions * 2])
     out: list[dict[str, Any]] = []
     for row in fallback_rows:
+        if category == "fragrance" and product_type in FRAGRANCE_SLOTS:
+            slot = slot_of_fragrance(row.get("attrs") or {}, raw_meta=row.get("raw_meta") or {})
+            if slot != product_type:
+                continue
         out.append(
             {
                 "product": row,
@@ -299,6 +368,31 @@ def _recommend_candidates_for_type(
                 "why": ["fallback catalog match"],
             }
         )
+        if len(out) >= max_suggestions:
+            break
+
+    if out:
+        return out
+
+    # Ultimate fallback for slot mode: do not enforce slot filter to avoid empty roadmap recommendations.
+    if category == "fragrance" and product_type in FRAGRANCE_SLOTS:
+        fallback_rows = list(
+            Product.objects.filter(category=category, in_stock=True)
+            .exclude(id__in=list(blocked))
+            .values("id", "category", "product_type", "brand", "attrs")
+            .order_by("id")[:max_suggestions]
+        )
+        for row in fallback_rows:
+            out.append(
+                {
+                    "product": row,
+                    "score": 0.0,
+                    "components": {"mode": "fallback_db_no_slot"},
+                    "why": ["fallback catalog match (slot relaxed)"],
+                }
+            )
+            if len(out) >= max_suggestions:
+                break
     return out
 
 
@@ -367,6 +461,10 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     _, owned_product_ids, owned_types_ordered, owned_types_set = _category_owned(user, category)
     purchased_by_category = _post_ctx_types_by_category(post_ctx)
     purchased_types = _unique(purchased_by_category.get(category, []))
+    if category == "fragrance":
+        owned_types_ordered = _unique(_owned_fragrance_slots(user))
+        owned_types_set = set(owned_types_ordered)
+        purchased_types = _unique(_purchased_fragrance_slots(post_ctx))
     purchased_types_set = set(purchased_types)
     context_product_ids = _context_product_ids(user, post_ctx, limit=50)
 
@@ -559,6 +657,48 @@ def update_roadmap_from_purchase(user, post_ctx: dict[str, Any] | None) -> dict[
         "next_missing_step": next_step,
         "roadmap_ctx": roadmap_ctx,
     }
+
+
+def match_completed_steps_for_purchase(user, post_ctx: dict[str, Any] | None) -> list[dict[str, Any]]:
+    categories = _resolve_categories_from_post_ctx(post_ctx)
+    if not categories:
+        return []
+
+    purchased_ids = {
+        int(x) for x in (post_ctx or {}).get("product_ids", []) if str(x).strip()
+    }
+    purchased_by_category = _post_ctx_types_by_category(post_ctx)
+    purchased_fragrance_slots = set(_purchased_fragrance_slots(post_ctx))
+
+    out: list[dict[str, Any]] = []
+    for category in categories:
+        plan = get_active_plan(user, category=category)
+        if not plan:
+            continue
+        step = get_next_missing_step(plan)
+        if not step:
+            continue
+
+        matched_by = None
+        if step.recommended_product_id and int(step.recommended_product_id) in purchased_ids:
+            matched_by = "recommended_product_id"
+        elif category == "fragrance":
+            if step.product_type in purchased_fragrance_slots:
+                matched_by = "fragrance_slot"
+        else:
+            if step.product_type in set(purchased_by_category.get(category, [])):
+                matched_by = "product_type"
+
+        if matched_by:
+            out.append(
+                {
+                    "category": category,
+                    "plan": plan,
+                    "step": step,
+                    "matched_by": matched_by,
+                }
+            )
+    return out
 
 
 def patch_step_status(*, user, step_id: int, status: str) -> RoadmapStep:

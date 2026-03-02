@@ -26,6 +26,7 @@ from django.db.models import Count
 from django.core.cache import cache
 from recs_analytics.fatigue import adjust_recs
 from recs_analytics.effectiveness import category_uplift
+from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
 
 ONBOARDING_FIRST_ORDER_CAMPAIGN = "onboarding_first_order"
 WINBACK_30D_CAMPAIGN = "winback_30d"
@@ -193,7 +194,7 @@ def _build_rec_profile(cp: CustomerProfile) -> RecUserProfile:
 
 def _load_products_for_recs() -> list[dict[str, Any]]:
     db_name = connection.settings_dict.get("NAME", "default")
-    key = f"recs:products:v1:{db_name}"
+    key = f"recs:products:v2:{db_name}"
     cached = cache.get(key)
     if cached is not None:
         sample_ids = [int(p["id"]) for p in cached[:100] if isinstance(p, dict) and p.get("id")]
@@ -206,7 +207,7 @@ def _load_products_for_recs() -> list[dict[str, Any]]:
     data = list(
         Product.objects.all().values(
             "id","name","brand","price","category","product_type",
-            "concerns","attrs","actives","flags","supported_skin_types","strength","in_stock",
+            "concerns","attrs","raw_meta","actives","flags","supported_skin_types","strength","in_stock",
         )
     )
     cache.set(key, data, timeout=600)  # 10 минут
@@ -216,7 +217,7 @@ def _load_products_for_recs() -> list[dict[str, Any]]:
 
 def _cooccurrence_90d(now: datetime):
     db_name = connection.settings_dict.get("NAME", "default")
-    key = f"recs:cooc90d:v1:{db_name}"
+    key = f"recs:cooc90d:v2:{db_name}"
     cached = cache.get(key)
     if cached is not None:
         return cached
@@ -372,11 +373,20 @@ def _pick_target_for_offer(
     roadmap_category = str((roadmap_ctx or {}).get("category") or "").strip()
     roadmap_next_type = str((roadmap_ctx or {}).get("next_product_type") or "").strip()
     roadmap_next_product_id = (roadmap_ctx or {}).get("next_product_id")
+    is_fragrance_slot = roadmap_category == "fragrance" and roadmap_next_type in FRAGRANCE_SLOTS
     if (
         roadmap_category
         and roadmap_next_type
         and offer.target_scope in {"product_type", "product_id"}
     ):
+        allowed_pt_values = {
+            str(x).strip()
+            for x in (offer.allowed_product_types or [])
+            if str(x).strip()
+        }
+        allowed_slot_values = {x for x in allowed_pt_values if x in FRAGRANCE_SLOTS}
+        allowed_actual_types = allowed_pt_values - allowed_slot_values
+
         allowed_cats = _effective_allowed_categories(offer, campaign)
         if forced_category:
             if forced_category != roadmap_category:
@@ -385,9 +395,16 @@ def _pick_target_for_offer(
                 allowed_cats = [forced_category]
 
         allow_category = (not allowed_cats) or (roadmap_category in allowed_cats)
-        allow_type = (not offer.allowed_product_types) or (
-            roadmap_next_type in (offer.allowed_product_types or [])
-        )
+        if is_fragrance_slot:
+            if not allowed_pt_values:
+                allow_type = True
+            elif allowed_slot_values:
+                allow_type = roadmap_next_type in allowed_slot_values
+            else:
+                # Backward-compatible mode: allowed_product_types may contain actual types (edp/edt)
+                allow_type = True
+        else:
+            allow_type = (not allowed_pt_values) or (roadmap_next_type in allowed_pt_values)
         if allow_category and allow_type:
             if offer.target_scope == "product_type":
                 return {
@@ -411,18 +428,28 @@ def _pick_target_for_offer(
                 pid_from_roadmap = None
 
             if pid_from_roadmap:
-                prod = Product.objects.filter(
+                prod_qs = Product.objects.filter(
                     id=pid_from_roadmap,
                     category=roadmap_category,
-                    product_type=roadmap_next_type,
                     in_stock=True,
-                ).first()
+                )
+                if not is_fragrance_slot:
+                    prod_qs = prod_qs.filter(product_type=roadmap_next_type)
+                prod = prod_qs.first()
+                if prod and is_fragrance_slot:
+                    slot = slot_of_fragrance(prod.attrs or {}, raw_meta=prod.raw_meta or {})
+                    if slot != roadmap_next_type:
+                        prod = None
+                if prod and is_fragrance_slot and allowed_actual_types:
+                    if str(prod.product_type) not in allowed_actual_types:
+                        prod = None
                 if prod and prod.id not in owned_ids and prod.id not in recent_vals:
                     return {
                         "scope": "product_id",
                         "value": int(prod.id),
                         "category": roadmap_category,
                         "product_type": roadmap_next_type,
+                        "actual_product_type": prod.product_type if is_fragrance_slot else None,
                         "picked_via": "roadmap_shortcut",
                     }
 
@@ -436,24 +463,62 @@ def _pick_target_for_offer(
                 owned_active_ids=list(owned_ids),
                 context_product_ids=((post_ctx or {}).get("product_ids") or list(owned_ids))[:50],
                 category=roadmap_category,
-                product_type=roadmap_next_type,
-                limit=10,
+                product_type=None if is_fragrance_slot else roadmap_next_type,
+                limit=50 if is_fragrance_slot else 10,
                 co=co,
             )
+            if is_fragrance_slot:
+                slot_filtered: list[dict[str, Any]] = []
+                for row in recs:
+                    product = row.get("product") or {}
+                    if allowed_actual_types and str(product.get("product_type") or "") not in allowed_actual_types:
+                        continue
+                    if slot_of_fragrance(
+                        product.get("attrs") or {},
+                        raw_meta=product.get("raw_meta") or {},
+                    ) == roadmap_next_type:
+                        slot_filtered.append(row)
+                recs = slot_filtered
             top = _pick_best_rec_target(user, recs, now=now, recent_vals=recent_vals)
             if top:
                 p = top["product"]
                 return {
                     "scope": "product_id",
                     "value": p["id"],
-                    "category": p["category"],
-                    "product_type": p["product_type"],
+                    "category": roadmap_category,
+                    "product_type": roadmap_next_type if is_fragrance_slot else p["product_type"],
+                    "actual_product_type": p.get("product_type") if is_fragrance_slot else None,
                     "rec_score": top.get("score"),
                     "rec_components": top.get("components", {}),
                     "rec_why": (top.get("why") or [])[:6],
                     "adjusted_score": top.get("adjusted_score"),
                     "picked_via": "roadmap_shortcut+recs",
                 }
+
+            if is_fragrance_slot:
+                blocked = set(owned_ids) | set(recent_vals)
+                fallback_rows = list(
+                    Product.objects.filter(category="fragrance", in_stock=True)
+                    .exclude(id__in=list(blocked))
+                    .values("id", "category", "product_type", "attrs", "raw_meta")
+                    .order_by("id")[:50]
+                )
+                for row in fallback_rows:
+                    if allowed_actual_types and str(row.get("product_type") or "") not in allowed_actual_types:
+                        continue
+                    if slot_of_fragrance(
+                        row.get("attrs") or {},
+                        raw_meta=row.get("raw_meta") or {},
+                    ) != roadmap_next_type:
+                        continue
+                    return {
+                        "scope": "product_id",
+                        "value": int(row["id"]),
+                        "category": "fragrance",
+                        "product_type": roadmap_next_type,
+                        "actual_product_type": str(row["product_type"]),
+                        "picked_via": "roadmap_shortcut_fallback+slot_db",
+                    }
 
             return {
                 "scope": "product_type",
@@ -964,6 +1029,7 @@ def _target_matches_roadmap_step(target: dict | None, roadmap_ctx: dict | None) 
     roadmap_cat, roadmap_pt, roadmap_pid = _roadmap_values(roadmap_ctx)
     if not roadmap_pt:
         return False
+    is_fragrance_slot = roadmap_cat == "fragrance" and roadmap_pt in FRAGRANCE_SLOTS
 
     scope = str(target.get("scope") or "").strip()
     tgt_cat = str(target.get("category") or "").strip()
@@ -983,6 +1049,17 @@ def _target_matches_roadmap_step(target: dict | None, roadmap_ctx: dict | None) 
             if roadmap_cat and tgt_cat:
                 return roadmap_cat == tgt_cat
             return True
+
+        if is_fragrance_slot and tgt_pid is not None:
+            p = Product.objects.filter(id=tgt_pid).values("category", "attrs", "raw_meta").first()
+            if not p:
+                return False
+            if roadmap_cat and str(p.get("category")) != roadmap_cat:
+                return False
+            return slot_of_fragrance(
+                p.get("attrs") or {},
+                raw_meta=p.get("raw_meta") or {},
+            ) == roadmap_pt
 
         if tgt_pt:
             if tgt_pt != roadmap_pt:
