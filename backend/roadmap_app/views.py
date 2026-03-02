@@ -12,7 +12,11 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
 
 from offers.models import OfferAssignment
-from roadmap_app.events import build_step_event_context, record_roadmap_event
+from roadmap_app.events import (
+    build_step_event_context,
+    record_roadmap_event,
+    record_step_exposed_dedup,
+)
 from roadmap_app.models import RoadmapEvent
 from roadmap_app.models import RoadmapStep
 from roadmap_app.serializers import (
@@ -133,17 +137,12 @@ class MeRoadmapView(APIView):
         if next_step:
             offer_assignment = _active_offer_assignment_for_step(request.user, next_step)
             request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
-            record_roadmap_event(
+            record_step_exposed_dedup(
                 user=request.user,
-                event_type=RoadmapEvent.Type.STEP_EXPOSED,
                 plan=plan,
                 step=next_step,
                 request_id=request_id,
-                context=build_step_event_context(
-                    category=plan.category,
-                    step=next_step,
-                    offer_assignment_id=offer_assignment.id if offer_assignment else None,
-                ),
+                offer_assignment_id=offer_assignment.id if offer_assignment else None,
             )
         return Response(RoadmapPlanReadSerializer(plan).data)
 

@@ -33,6 +33,7 @@ from backend.throttles import NextOfferRateThrottle
 
 from audit.logging import log_event
 from audit.models import AuditEvent
+from roadmap_app.events import record_exposed_from_offer_assignment
 
 def _ensure_loyalty_account(user):
     account, created = LoyaltyAccount.objects.get_or_create(user=user)
@@ -168,12 +169,15 @@ class MeNextOfferView(APIView):
             return Response({"offer": None, "reason": {"message": "No eligible offers"}})
 
         request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
-        record_offer_event(
+        _, created = record_offer_event(
             a,
             OfferEvent.Type.EXPOSED,
             request_id=request_id,
             context={"endpoint": "GET /api/me/next-offer", "variant": "v1"},
+            return_created=True,
         )
+        if created:
+            record_exposed_from_offer_assignment(assignment=a, request_id=request_id)
 
         return Response({
             "assignment_id": a.id,
@@ -330,12 +334,15 @@ class MeOffersView(APIView):
         for a in qs[:50]:
             if a.expires_at and a.expires_at <= now:
                 continue
-            record_offer_event(
+            _, created = record_offer_event(
                 a,
                 OfferEvent.Type.EXPOSED,
                 request_id=request_id,
                 context={"endpoint": "GET /api/me/offers", "variant": "v1"},
+                return_created=True,
             )
+            if created:
+                record_exposed_from_offer_assignment(assignment=a, request_id=request_id)
             out.append(
                 {
                     "assignment_id": a.id,

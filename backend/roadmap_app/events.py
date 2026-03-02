@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta, timezone as dt_timezone
 from typing import Any
 
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
+from django.utils import timezone
 
 
 def build_step_event_context(
@@ -42,4 +44,101 @@ def record_roadmap_event(
         event_type=event_type,
         request_id=request_id,
         context=context or {},
+    )
+
+
+def _utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
+    now = now or timezone.now()
+    day = now.astimezone(dt_timezone.utc).date()
+    start = datetime.combine(day, time.min, tzinfo=dt_timezone.utc)
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def has_step_exposed_today(*, user, step: RoadmapStep) -> bool:
+    start, end = _utc_day_bounds()
+    return RoadmapEvent.objects.filter(
+        user=user,
+        step=step,
+        event_type=RoadmapEvent.Type.STEP_EXPOSED,
+        created_at__gte=start,
+        created_at__lt=end,
+    ).exists()
+
+
+def record_step_exposed_dedup(
+    *,
+    user,
+    plan: RoadmapPlan,
+    step: RoadmapStep,
+    request_id: str | None = None,
+    offer_assignment_id: int | None = None,
+) -> tuple[RoadmapEvent | None, bool]:
+    if has_step_exposed_today(user=user, step=step):
+        return None, False
+    ev = record_roadmap_event(
+        user=user,
+        event_type=RoadmapEvent.Type.STEP_EXPOSED,
+        plan=plan,
+        step=step,
+        request_id=request_id,
+        context=build_step_event_context(
+            category=plan.category,
+            step=step,
+            offer_assignment_id=offer_assignment_id,
+        ),
+    )
+    return ev, True
+
+
+def record_exposed_from_offer_assignment(*, assignment, request_id: str | None = None) -> tuple[RoadmapEvent | None, bool]:
+    if not assignment:
+        return None, False
+
+    target = assignment.target if isinstance(assignment.target, dict) else {}
+    picked_via = str(target.get("picked_via") or "").strip()
+    if not picked_via.startswith("roadmap_shortcut"):
+        return None, False
+
+    reason = assignment.reason if isinstance(assignment.reason, dict) else {}
+    roadmap_reason = reason.get("roadmap") if isinstance(reason.get("roadmap"), dict) else {}
+
+    plan = None
+    plan_id_raw = roadmap_reason.get("plan_id")
+    try:
+        plan_id = int(plan_id_raw) if plan_id_raw is not None else None
+    except Exception:
+        plan_id = None
+
+    if plan_id:
+        plan = (
+            RoadmapPlan.objects.filter(id=plan_id, user=assignment.user, is_active=True)
+            .prefetch_related("steps")
+            .first()
+        )
+
+    if not plan:
+        category = str(target.get("category") or roadmap_reason.get("category") or "").strip()
+        if not category:
+            return None, False
+        from roadmap_app.services import get_active_plan
+
+        plan = get_active_plan(assignment.user, category=category)
+        if not plan:
+            return None, False
+
+    next_step = (
+        plan.steps.filter(status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED])
+        .order_by("step_index")
+        .first()
+    )
+    if not next_step:
+        return None, False
+
+    return record_step_exposed_dedup(
+        user=assignment.user,
+        plan=plan,
+        step=next_step,
+        request_id=request_id,
+        offer_assignment_id=assignment.id,
     )
