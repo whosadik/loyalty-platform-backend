@@ -5,7 +5,7 @@ from rest_framework.test import APITestCase
 
 from catalog.models import Product
 from loyalty.models import LoyaltyAccount, Tier
-from offers.models import CampaignBudget, Offer, OfferEvent
+from offers.models import CampaignBudget, Offer, OfferAssignment, OfferEvent
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 from users_app.models import CustomerProfile
 
@@ -214,6 +214,7 @@ class RoadmapTelemetryTests(APITestCase):
             .first()
         )
         self.assertIsNotNone(next_step)
+        step_id = int(next_step.id)
         self.assertEqual(
             RoadmapEvent.objects.filter(
                 user=self.user,
@@ -238,11 +239,86 @@ class RoadmapTelemetryTests(APITestCase):
         self.assertEqual(
             RoadmapEvent.objects.filter(
                 user=self.user,
-                step=next_step,
+                step_id=step_id,
                 event_type=RoadmapEvent.Type.STEP_EXPOSED,
             ).count(),
             1,
         )
+
+    def test_offer_exposed_merges_into_existing_roadmap_exposed(self):
+        default_campaign, _ = CampaignBudget.objects.get_or_create(
+            name="default",
+            defaults={
+                "weekly_limit": Decimal("1000.00"),
+                "weekly_spent": Decimal("0.00"),
+                "priority": 100,
+                "is_active": True,
+            },
+        )
+        Offer.objects.create(
+            name="Telemetry Haircare Roadmap Offer Merge",
+            offer_type=Offer.Type.DISCOUNT,
+            value=Decimal("10.00"),
+            estimated_cost=Decimal("2.00"),
+            is_active=True,
+            target_scope="product_type",
+            cooldown_days=0,
+            expires_in_days=7,
+            allowed_categories=["haircare"],
+            allowed_product_types=["conditioner", "hair_mask", "hair_oil"],
+            campaign=default_campaign,
+        )
+
+        checkout = self._checkout(self.p_shampoo.id)
+        self.assertEqual(checkout.status_code, 201)
+        seed_assignment_id = int((checkout.data.get("next_offer") or {}).get("assignment_id"))
+        OfferAssignment.objects.filter(id=seed_assignment_id).update(is_active=False)
+
+        roadmap = self.client.get("/api/me/roadmap?category=haircare")
+        self.assertEqual(roadmap.status_code, 200)
+        next_step = (roadmap.data.get("summary") or {}).get("next_step") or {}
+        step_id = int(next_step["id"])
+
+        exposed_before = RoadmapEvent.objects.filter(
+            user=self.user,
+            step_id=step_id,
+            event_type=RoadmapEvent.Type.STEP_EXPOSED,
+        ).order_by("-id").first()
+        self.assertIsNotNone(exposed_before)
+        self.assertIn((exposed_before.context or {}).get("offer_assignment_id"), [None, ""])
+
+        OfferAssignment.objects.filter(id=seed_assignment_id).update(is_active=True)
+        next_offer = self.client.get("/api/me/next-offer")
+        self.assertEqual(next_offer.status_code, 200)
+        assignment_id = int(next_offer.data["assignment_id"])
+        target = next_offer.data.get("target") or {}
+        self.assertTrue(str(target.get("picked_via") or "").startswith("roadmap_shortcut"))
+
+        self.assertEqual(
+            OfferEvent.objects.filter(
+                assignment_id=assignment_id,
+                event_type=OfferEvent.Type.EXPOSED,
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            RoadmapEvent.objects.filter(
+                user=self.user,
+                step_id=step_id,
+                event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            ).count(),
+            1,
+        )
+
+        exposed_after = RoadmapEvent.objects.filter(
+            user=self.user,
+            step_id=step_id,
+            event_type=RoadmapEvent.Type.STEP_EXPOSED,
+        ).order_by("-id").first()
+        self.assertIsNotNone(exposed_after)
+        self.assertEqual((exposed_after.context or {}).get("offer_assignment_id"), assignment_id)
+        sources = (exposed_after.context or {}).get("sources") or []
+        self.assertIn("offers", sources)
 
         r2 = self.client.get("/api/me/next-offer")
         self.assertEqual(r2.status_code, 200)
@@ -256,7 +332,7 @@ class RoadmapTelemetryTests(APITestCase):
         self.assertEqual(
             RoadmapEvent.objects.filter(
                 user=self.user,
-                step=next_step,
+                step_id=step_id,
                 event_type=RoadmapEvent.Type.STEP_EXPOSED,
             ).count(),
             1,

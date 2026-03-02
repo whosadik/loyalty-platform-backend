@@ -38,3 +38,4 @@ reports/**
 *.jsonl.gz
 data/catalog/**
 *.xlsx
+*.csv

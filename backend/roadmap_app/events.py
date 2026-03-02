@@ -56,14 +56,22 @@ def _utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
 
 
 def has_step_exposed_today(*, user, step: RoadmapStep) -> bool:
+    return get_step_exposed_today_event(user=user, step=step) is not None
+
+
+def get_step_exposed_today_event(*, user, step: RoadmapStep) -> RoadmapEvent | None:
     start, end = _utc_day_bounds()
-    return RoadmapEvent.objects.filter(
-        user=user,
-        step=step,
-        event_type=RoadmapEvent.Type.STEP_EXPOSED,
-        created_at__gte=start,
-        created_at__lt=end,
-    ).exists()
+    return (
+        RoadmapEvent.objects.filter(
+            user=user,
+            step=step,
+            event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            created_at__gte=start,
+            created_at__lt=end,
+        )
+        .order_by("created_at", "id")
+        .first()
+    )
 
 
 def record_step_exposed_dedup(
@@ -74,19 +82,44 @@ def record_step_exposed_dedup(
     request_id: str | None = None,
     offer_assignment_id: int | None = None,
 ) -> tuple[RoadmapEvent | None, bool]:
-    if has_step_exposed_today(user=user, step=step):
-        return None, False
+    source = "offers" if offer_assignment_id else "roadmap_api"
+    existing = get_step_exposed_today_event(user=user, step=step)
+    if existing:
+        existing_ctx = existing.context if isinstance(existing.context, dict) else {}
+        new_ctx = dict(existing_ctx)
+
+        sources_raw = new_ctx.get("sources")
+        if isinstance(sources_raw, list):
+            sources = [str(x) for x in sources_raw if str(x).strip()]
+        else:
+            # Backfill source for old events that were created before sources support.
+            inferred = "offers" if new_ctx.get("offer_assignment_id") not in (None, "") else "roadmap_api"
+            sources = [inferred]
+        if source not in sources:
+            sources.append(source)
+        new_ctx["sources"] = sources
+
+        if offer_assignment_id and new_ctx.get("offer_assignment_id") in (None, ""):
+            new_ctx["offer_assignment_id"] = int(offer_assignment_id)
+
+        if new_ctx != existing_ctx:
+            RoadmapEvent.objects.filter(id=existing.id).update(context=new_ctx)
+            existing.context = new_ctx
+        return existing, False
+
+    base_ctx = build_step_event_context(
+        category=plan.category,
+        step=step,
+        offer_assignment_id=offer_assignment_id,
+    )
+    base_ctx["sources"] = [source]
     ev = record_roadmap_event(
         user=user,
         event_type=RoadmapEvent.Type.STEP_EXPOSED,
         plan=plan,
         step=step,
         request_id=request_id,
-        context=build_step_event_context(
-            category=plan.category,
-            step=step,
-            offer_assignment_id=offer_assignment_id,
-        ),
+        context=base_ctx,
     )
     return ev, True
 

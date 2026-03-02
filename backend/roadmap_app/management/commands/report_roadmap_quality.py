@@ -9,6 +9,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import connection
 from django.db.migrations.recorder import MigrationRecorder
 from django.db.models import Count, Q
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from catalog.models import Product
@@ -135,8 +136,41 @@ class Command(BaseCommand):
             offers_with_roadmap_slot_total,
         )
 
-        exposed_events_total = event_qs.filter(event_type=RoadmapEvent.Type.STEP_EXPOSED).count()
-        telemetry_coverage_rate = _pct(exposed_events_total, plans_updated_total)
+        exposed_qs = event_qs.filter(event_type=RoadmapEvent.Type.STEP_EXPOSED)
+        exposed_events_total = exposed_qs.count()
+        plans_with_exposed = (
+            exposed_qs.annotate(_effective_plan_id=Coalesce("plan_id", "step__plan_id"))
+            .exclude(_effective_plan_id__isnull=True)
+            .values("_effective_plan_id")
+            .distinct()
+            .count()
+        )
+        steps_with_exposed = exposed_qs.exclude(step_id__isnull=True).values("step_id").distinct().count()
+        plan_exposed_coverage_rate = _pct(plans_with_exposed, plans_updated_total)
+        step_exposed_coverage_rate = _pct(steps_with_exposed, steps_updated_total)
+        exposed_from_offers = 0
+        exposed_from_roadmap_api = 0
+        for ctx in exposed_qs.values_list("context", flat=True).iterator():
+            c = _safe_dict(ctx)
+            sources_raw = c.get("sources")
+            if isinstance(sources_raw, list) and sources_raw:
+                sources = {str(x).strip().lower() for x in sources_raw if str(x).strip()}
+                if "offers" in sources:
+                    exposed_from_offers += 1
+                elif "roadmap_api" in sources:
+                    exposed_from_roadmap_api += 1
+                else:
+                    if c.get("offer_assignment_id") not in (None, ""):
+                        exposed_from_offers += 1
+                    else:
+                        exposed_from_roadmap_api += 1
+            else:
+                if c.get("offer_assignment_id") not in (None, ""):
+                    exposed_from_offers += 1
+                else:
+                    exposed_from_roadmap_api += 1
+        exposed_from_offers_share = _pct(exposed_from_offers, exposed_events_total)
+        exposed_from_roadmap_api_share = _pct(exposed_from_roadmap_api, exposed_events_total)
 
         # Fragrance catalog health (all-time, all fragrance products)
         fragrance_rows = list(
@@ -443,7 +477,9 @@ class Command(BaseCommand):
         lines.append(f"- offers_with_roadmap_shortcut: **{offers_with_roadmap_shortcut_total}**")
         lines.append(f"- fragrance_slot_fallback_rate: **{fragrance_slot_fallback_rate}%**")
         lines.append(f"- offer_roadmap_slot_product_id_rate: **{offer_slot_product_id_rate}%**")
-        lines.append(f"- telemetry_coverage_rate (exposed/plans_updated): **{telemetry_coverage_rate}%**")
+        lines.append(f"- plan_exposed_coverage_rate: **{plan_exposed_coverage_rate}%**")
+        lines.append(f"- step_exposed_coverage_rate: **{step_exposed_coverage_rate}%**")
+        lines.append(f"- exposed_from_offers_share: **{exposed_from_offers_share}%**")
         lines.append("")
 
         lines.append("## 2) Catalog health (fragrance signals, all-time)")
@@ -583,6 +619,22 @@ class Command(BaseCommand):
         lines.append(
             f"- plans_updated_total vs exposed_events_total: **{plans_updated_total} vs "
             f"{event_counts[RoadmapEvent.Type.STEP_EXPOSED]}**"
+        )
+        lines.append(
+            f"- plans_with_exposed / plans_updated_total: **{plans_with_exposed}/{plans_updated_total} "
+            f"({plan_exposed_coverage_rate}%)**"
+        )
+        lines.append(
+            f"- steps_with_exposed / steps_updated_total: **{steps_with_exposed}/{steps_updated_total} "
+            f"({step_exposed_coverage_rate}%)**"
+        )
+        lines.append(
+            f"- exposed_from_offers / total_exposed: **{exposed_from_offers}/{exposed_events_total} "
+            f"({exposed_from_offers_share}%)**"
+        )
+        lines.append(
+            f"- exposed_from_roadmap_api / total_exposed: **{exposed_from_roadmap_api}/{exposed_events_total} "
+            f"({exposed_from_roadmap_api_share}%)**"
         )
         lines.append(f"- clicked/exposed CTR proxy: **{clicked_exposed_ctr_proxy}%**")
         lines.append(f"- completed/exposed completion proxy: **{completed_exposed_proxy}%**")
