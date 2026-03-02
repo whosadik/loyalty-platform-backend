@@ -10,6 +10,7 @@ _ONE_SHOT_EVENT_TYPES = {
     OfferEvent.Type.ASSIGNED,
     OfferEvent.Type.REDEEMED,
     OfferEvent.Type.EXPIRED,
+    OfferEvent.Type.SUPERSEDED,
 }
 
 

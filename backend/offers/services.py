@@ -362,10 +362,105 @@ def _pick_target_for_offer(
     context_steps: list[str] | None,
     post_ctx: dict | None,
     campaign: CampaignBudget | None = None,
+    roadmap_ctx: dict | None = None,
 ):
     forced_category = _favorite_category(user, now) if _is_favorite_category_campaign(campaign) else None
     if forced_category and offer.target_scope == "category":
         return {"scope": "category", "value": forced_category, "picked_via": "favorite_category"}
+
+    # 0) roadmap shortcut
+    roadmap_category = str((roadmap_ctx or {}).get("category") or "").strip()
+    roadmap_next_type = str((roadmap_ctx or {}).get("next_product_type") or "").strip()
+    roadmap_next_product_id = (roadmap_ctx or {}).get("next_product_id")
+    if (
+        roadmap_category
+        and roadmap_next_type
+        and offer.target_scope in {"product_type", "product_id"}
+    ):
+        allowed_cats = _effective_allowed_categories(offer, campaign)
+        if forced_category:
+            if forced_category != roadmap_category:
+                allowed_cats = [forced_category]
+            elif not allowed_cats:
+                allowed_cats = [forced_category]
+
+        allow_category = (not allowed_cats) or (roadmap_category in allowed_cats)
+        allow_type = (not offer.allowed_product_types) or (
+            roadmap_next_type in (offer.allowed_product_types or [])
+        )
+        if allow_category and allow_type:
+            if offer.target_scope == "product_type":
+                return {
+                    "scope": "product_type",
+                    "value": roadmap_next_type,
+                    "category": roadmap_category,
+                    "picked_via": "roadmap_shortcut",
+                }
+
+            # product_id target from roadmap preferred recommendation or fresh recs
+            owned_ids = set(
+                OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
+            )
+            recent_vals = _recent_target_values(user, days=7, now=now)
+
+            pid_from_roadmap = None
+            try:
+                if roadmap_next_product_id is not None:
+                    pid_from_roadmap = int(roadmap_next_product_id)
+            except Exception:
+                pid_from_roadmap = None
+
+            if pid_from_roadmap:
+                prod = Product.objects.filter(
+                    id=pid_from_roadmap,
+                    category=roadmap_category,
+                    product_type=roadmap_next_type,
+                    in_stock=True,
+                ).first()
+                if prod and prod.id not in owned_ids and prod.id not in recent_vals:
+                    return {
+                        "scope": "product_id",
+                        "value": int(prod.id),
+                        "category": roadmap_category,
+                        "product_type": roadmap_next_type,
+                        "picked_via": "roadmap_shortcut",
+                    }
+
+            cp, _ = CustomerProfile.objects.get_or_create(user=user)
+            prof = _build_rec_profile(cp)
+            products = _load_products_for_recs()
+            co = _cooccurrence_90d(now)
+            recs = rec_recommend(
+                prof=prof,
+                products=products,
+                owned_active_ids=list(owned_ids),
+                context_product_ids=((post_ctx or {}).get("product_ids") or list(owned_ids))[:50],
+                category=roadmap_category,
+                product_type=roadmap_next_type,
+                limit=10,
+                co=co,
+            )
+            top = _pick_best_rec_target(user, recs, now=now, recent_vals=recent_vals)
+            if top:
+                p = top["product"]
+                return {
+                    "scope": "product_id",
+                    "value": p["id"],
+                    "category": p["category"],
+                    "product_type": p["product_type"],
+                    "rec_score": top.get("score"),
+                    "rec_components": top.get("components", {}),
+                    "rec_why": (top.get("why") or [])[:6],
+                    "adjusted_score": top.get("adjusted_score"),
+                    "picked_via": "roadmap_shortcut+recs",
+                }
+
+            return {
+                "scope": "product_type",
+                "value": roadmap_next_type,
+                "category": roadmap_category,
+                "picked_via": "roadmap_shortcut_fallback",
+            }
 
     # 1) routine-context shortcut
     if settings.USE_ROUTINE_SHORTCUT and context_steps and offer.target_scope in {"product_type", "product_id"}:
@@ -847,46 +942,190 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
     }
 
 
+def _to_int(v) -> int | None:
+    try:
+        if v is None:
+            return None
+        return int(v)
+    except Exception:
+        return None
+
+
+def _roadmap_values(roadmap_ctx: dict | None) -> tuple[str, str, int | None]:
+    cat = str((roadmap_ctx or {}).get("category") or "").strip()
+    next_pt = str((roadmap_ctx or {}).get("next_product_type") or "").strip()
+    next_pid = _to_int((roadmap_ctx or {}).get("next_product_id"))
+    return cat, next_pt, next_pid
+
+
+def _target_matches_roadmap_step(target: dict | None, roadmap_ctx: dict | None) -> bool:
+    if not isinstance(target, dict):
+        return False
+    roadmap_cat, roadmap_pt, roadmap_pid = _roadmap_values(roadmap_ctx)
+    if not roadmap_pt:
+        return False
+
+    scope = str(target.get("scope") or "").strip()
+    tgt_cat = str(target.get("category") or "").strip()
+    tgt_pt = str(target.get("product_type") or "").strip()
+    tgt_val_pt = str(target.get("value") or "").strip() if scope == "product_type" else ""
+    tgt_pid = _to_int(target.get("value")) if scope == "product_id" else None
+
+    if roadmap_cat and tgt_cat and roadmap_cat != tgt_cat:
+        return False
+
+    if scope == "product_type":
+        candidate_pt = tgt_val_pt or tgt_pt
+        return candidate_pt == roadmap_pt
+
+    if scope == "product_id":
+        if roadmap_pid is not None and tgt_pid is not None and roadmap_pid == tgt_pid:
+            if roadmap_cat and tgt_cat:
+                return roadmap_cat == tgt_cat
+            return True
+
+        if tgt_pt:
+            if tgt_pt != roadmap_pt:
+                return False
+            if not roadmap_cat:
+                return True
+            if tgt_cat:
+                return tgt_cat == roadmap_cat
+            if tgt_pid is not None:
+                p = Product.objects.filter(id=tgt_pid).values("category").first()
+                return bool(p and str(p.get("category")) == roadmap_cat)
+            return False
+
+        if tgt_pid is None:
+            return False
+        p = Product.objects.filter(id=tgt_pid).values("category", "product_type").first()
+        if not p:
+            return False
+        if str(p.get("product_type")) != roadmap_pt:
+            return False
+        if roadmap_cat and str(p.get("category")) != roadmap_cat:
+            return False
+        return True
+
+    if scope == "" and tgt_pt:
+        if tgt_pt != roadmap_pt:
+            return False
+        if roadmap_cat and tgt_cat:
+            return roadmap_cat == tgt_cat
+        return True
+
+    return False
+
+
+def _can_supersede_existing(existing: OfferAssignment, roadmap_ctx: dict | None, now: datetime) -> bool:
+    del now
+    _, roadmap_pt, _ = _roadmap_values(roadmap_ctx)
+    if not roadmap_pt:
+        return False
+
+    if _target_matches_roadmap_step(existing.target, roadmap_ctx):
+        return False
+
+    interacted = OfferEvent.objects.filter(
+        assignment=existing,
+        event_type__in=[OfferEvent.Type.CLICKED, OfferEvent.Type.REDEEMED],
+    ).exists()
+    if interacted:
+        return False
+
+    exposed_count = OfferEvent.objects.filter(
+        assignment=existing,
+        event_type=OfferEvent.Type.EXPOSED,
+    ).count()
+    max_exposed = int(getattr(settings, "OFFER_SUPERSEDE_MAX_EXPOSED", 1))
+    if exposed_count > max_exposed:
+        return False
+
+    return True
+
+
+def _refund_campaign_budget_for_superseded(existing: OfferAssignment, now: datetime) -> None:
+    interacted = OfferEvent.objects.filter(
+        assignment=existing,
+        event_type__in=[OfferEvent.Type.CLICKED, OfferEvent.Type.REDEEMED],
+    ).exists()
+    if interacted:
+        return
+
+    camp_id = getattr(existing.offer, "campaign_id", None)
+    if not camp_id:
+        return
+
+    camp = CampaignBudget.objects.select_for_update().filter(id=camp_id).first()
+    if not camp:
+        return
+
+    _reset_campaign_week_if_needed(camp, now)
+    cost = Decimal(str(getattr(existing.offer, "estimated_cost", 0) or 0))
+    if cost <= 0:
+        return
+
+    current = Decimal(str(camp.weekly_spent or 0))
+    camp.weekly_spent = max(Decimal("0"), current - cost)
+    camp.save(
+        update_fields=["weekly_spent"]
+        + (["week_start_date"] if hasattr(camp, "week_start_date") else [])
+    )
+
+
 def get_or_assign_next_offer(
     user,
     now: datetime,
     context_steps: list[str] | None = None,
     post_ctx: dict | None = None,
+    roadmap_ctx: dict | None = None,
 ) -> OfferAssignment | None:
-    existing = (
-        OfferAssignment.objects.filter(user=user, is_redeemed=False)
-        .select_related("offer", "offer__campaign")
-        .order_by("-assigned_at")
-        .first()
-    )
-
-    if existing:
-        existing_campaign = getattr(existing.offer, "campaign", None)
-        if _is_onboarding_first_order_campaign(existing_campaign) and _user_has_any_transactions(user):
-            existing.is_redeemed = True
-            existing.save(update_fields=["is_redeemed"])
-        if _is_winback_30d_campaign(existing_campaign) and not _is_winback_eligible(user, now):
-            existing.is_redeemed = True
-            existing.save(update_fields=["is_redeemed"])
-        if _is_favorite_category_campaign(existing_campaign) and not _favorite_category(user, now):
-            existing.is_redeemed = True
-            existing.save(update_fields=["is_redeemed"])
-        if existing.expires_at and existing.expires_at <= now:
-            existing.is_redeemed = True
-            existing.save(update_fields=["is_redeemed"])
-            record_offer_event(
-                existing,
-                OfferEvent.Type.EXPIRED,
-                request_id=None,
-                context={"source": "get_or_assign_next_offer"},
-            )
-        elif not existing.is_redeemed:
-            return existing
-
-    # всё, что связано с select_for_update + списанием бюджета — в atomic
     with db_tx.atomic():
+        existing = (
+            OfferAssignment.objects.select_for_update()
+            .filter(user=user, is_active=True, is_redeemed=False)
+            .select_related("offer")
+            .order_by("-assigned_at")
+            .first()
+        )
+
+        supersede_candidate: OfferAssignment | None = None
+        if existing:
+            existing_campaign = getattr(existing.offer, "campaign", None)
+            if _is_onboarding_first_order_campaign(existing_campaign) and _user_has_any_transactions(user):
+                existing.is_redeemed = True
+                existing.is_active = False
+                existing.save(update_fields=["is_redeemed", "is_active"])
+            if _is_winback_30d_campaign(existing_campaign) and not _is_winback_eligible(user, now):
+                existing.is_redeemed = True
+                existing.is_active = False
+                existing.save(update_fields=["is_redeemed", "is_active"])
+            if _is_favorite_category_campaign(existing_campaign) and not _favorite_category(user, now):
+                existing.is_redeemed = True
+                existing.is_active = False
+                existing.save(update_fields=["is_redeemed", "is_active"])
+
+            if existing.expires_at and existing.expires_at <= now:
+                existing.is_redeemed = True
+                existing.is_active = False
+                existing.save(update_fields=["is_redeemed", "is_active"])
+                record_offer_event(
+                    existing,
+                    OfferEvent.Type.EXPIRED,
+                    request_id=None,
+                    context={"source": "get_or_assign_next_offer"},
+                )
+            elif existing.is_active and not existing.is_redeemed:
+                if not roadmap_ctx:
+                    return existing
+                if not _can_supersede_existing(existing, roadmap_ctx=roadmap_ctx, now=now):
+                    return existing
+                supersede_candidate = existing
+
         picked, reason = _select_offer(user, now, context_steps, post_ctx)
         if not picked:
+            if existing and existing.is_active and not existing.is_redeemed:
+                return existing
             return None
 
         offer, camp = picked
@@ -900,7 +1139,29 @@ def get_or_assign_next_offer(
                 },
             }
 
-        target = _pick_target_for_offer(user, offer, now, context_steps, post_ctx, campaign=camp)
+        if roadmap_ctx:
+            reason = {
+                **(reason or {}),
+                "roadmap": {
+                    "category": roadmap_ctx.get("category"),
+                    "next_product_type": roadmap_ctx.get("next_product_type"),
+                    "plan_id": roadmap_ctx.get("plan_id"),
+                },
+            }
+
+        target = _pick_target_for_offer(
+            user,
+            offer,
+            now,
+            context_steps,
+            post_ctx,
+            campaign=camp,
+            roadmap_ctx=roadmap_ctx,
+        )
+
+        # replacement requires new target that follows roadmap next-step
+        if supersede_candidate and not _target_matches_roadmap_step(target, roadmap_ctx):
+            return existing
 
         if isinstance(target, dict) and str(target.get("picked_via", "")).startswith("bundle"):
             reason = {
@@ -911,6 +1172,21 @@ def get_or_assign_next_offer(
                     "why": target.get("bundle_why"),
                 },
             }
+
+        if supersede_candidate:
+            supersede_candidate.is_active = False
+            supersede_candidate.superseded_at = now
+            supersede_candidate.save(update_fields=["is_active", "superseded_at"])
+            record_offer_event(
+                supersede_candidate,
+                OfferEvent.Type.SUPERSEDED,
+                request_id=None,
+                context={
+                    "source": "roadmap_post_purchase",
+                    "roadmap_ctx": roadmap_ctx or {},
+                },
+            )
+            _refund_campaign_budget_for_superseded(supersede_candidate, now=now)
 
         # spend campaign budget
         cost = Decimal(str(getattr(offer, "estimated_cost", 0) or 0))
@@ -930,6 +1206,11 @@ def get_or_assign_next_offer(
             target=target,
             expires_at=expires_at,
         )
+
+        if supersede_candidate:
+            supersede_candidate.superseded_by = assignment
+            supersede_candidate.save(update_fields=["superseded_by"])
+
         record_offer_event(
             assignment,
             OfferEvent.Type.ASSIGNED,
@@ -1053,3 +1334,4 @@ def _pick_best_rec_target(user, recs: list[dict], *, now: datetime, recent_vals:
         return r
 
     return adjusted[0] if adjusted else None
+

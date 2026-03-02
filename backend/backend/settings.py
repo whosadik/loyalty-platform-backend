@@ -57,6 +57,7 @@ INSTALLED_APPS = [
     "audit",
     "admin_tools.apps.AdminToolsConfig",
     "recs_analytics",
+    "roadmap_app",
 ]
 
 REST_FRAMEWORK = {
@@ -207,6 +208,7 @@ WINBACK_INACTIVITY_DAYS = int(os.getenv("WINBACK_INACTIVITY_DAYS", "30"))
 WINBACK_REASSIGN_DAYS = int(os.getenv("WINBACK_REASSIGN_DAYS", "30"))
 FAVORITE_CATEGORY_WINDOW_DAYS = int(os.getenv("FAVORITE_CATEGORY_WINDOW_DAYS", "90"))
 FAVORITE_CATEGORY_REASSIGN_DAYS = int(os.getenv("FAVORITE_CATEGORY_REASSIGN_DAYS", "14"))
+OFFER_SUPERSEDE_MAX_EXPOSED = int(os.getenv("OFFER_SUPERSEDE_MAX_EXPOSED", "1"))
 ADMIN_METRICS_CACHE_TTL_SECONDS = int(os.getenv("ADMIN_METRICS_CACHE_TTL_SECONDS", "60"))
 ADMIN_OVERVIEW_CACHE_TTL_SECONDS = int(os.getenv("ADMIN_OVERVIEW_CACHE_TTL_SECONDS", "60"))
 
@@ -238,6 +240,14 @@ RECS_RERANKER_MODEL_PATH = os.getenv(
     "RECS_RERANKER_MODEL_PATH",
     str((BASE_DIR.parent / "models" / "recs_reranker_goldapple_deep_v2" / "model.pkl").resolve()),
 )
+ROADMAP_NEXTSTEP_MODEL_PATH = os.getenv(
+    "ROADMAP_NEXTSTEP_MODEL_PATH",
+    str((BASE_DIR.parent / "models" / "roadmap_next_step" / "model.pkl").resolve()),
+)
+ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD = float(
+    os.getenv("ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", "0.35")
+)
+ROADMAP_SUGGESTIONS_LIMIT = int(os.getenv("ROADMAP_SUGGESTIONS_LIMIT", "10"))
 RECS_CO_MAP_PATH = os.getenv("RECS_CO_MAP_PATH", "").strip()
 RECS_RERANKER_TOP_M = int(os.getenv("RECS_RERANKER_TOP_M", "1500"))
 RECS_RERANKER_CONTEXT_K = int(os.getenv("RECS_RERANKER_CONTEXT_K", "10"))

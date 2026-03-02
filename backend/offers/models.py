@@ -84,8 +84,17 @@ class OfferAssignment(models.Model):
     expires_at = models.DateTimeField(null=True, blank=True)
 
     reason = models.JSONField(default=dict, blank=True)  # explainability payload
+    is_active = models.BooleanField(default=True, db_index=True)
     is_redeemed = models.BooleanField(default=False)
     redeemed_transaction_id = models.IntegerField(null=True, blank=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    superseded_by = models.ForeignKey(
+        "self",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="superseded_children",
+    )
     target = models.JSONField(default=dict, blank=True)  # e.g. {"scope":"product_type","value":"lipstick","category":"makeup"}
 
     def __str__(self) -> str:
@@ -99,6 +108,7 @@ class OfferEvent(models.Model):
         CLICKED = "offer_clicked", "Offer clicked"
         REDEEMED = "offer_redeemed", "Offer redeemed"
         EXPIRED = "offer_expired", "Offer expired"
+        SUPERSEDED = "offer_superseded", "Offer superseded"
 
     assignment = models.ForeignKey("offers.OfferAssignment", on_delete=models.CASCADE, related_name="events")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="offer_events")

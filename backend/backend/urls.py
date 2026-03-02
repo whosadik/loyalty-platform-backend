@@ -19,4 +19,5 @@ urlpatterns = [
     path("api/", include("audit.urls")),
     path("api/", include("admin_tools.urls")),
     path("api/", include("recs_analytics.urls")),
+    path("api/", include("roadmap_app.urls")),
 ]

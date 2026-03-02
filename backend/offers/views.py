@@ -138,7 +138,7 @@ class MeNextOfferView(APIView):
 
         with db_tx.atomic():
             existing = (
-                OfferAssignment.objects.filter(user=user, is_redeemed=False)
+                OfferAssignment.objects.filter(user=user, is_active=True, is_redeemed=False)
                 .order_by("-assigned_at")
                 .first()
             )
@@ -319,7 +319,11 @@ class MeOffersView(APIView):
 
     def get(self, request):
         now = datetime.now(dt_timezone.utc)
-        qs = OfferAssignment.objects.filter(user=request.user, is_redeemed=False).select_related("offer").order_by("-assigned_at")
+        qs = (
+            OfferAssignment.objects.filter(user=request.user, is_active=True, is_redeemed=False)
+            .select_related("offer")
+            .order_by("-assigned_at")
+        )
 
         out = []
         request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")

@@ -7,4 +7,5 @@ urlpatterns = [
     path("", include("routines.urls")),
     path("", include("offers.urls")),
     path("", include("checkout_app.urls")),
+    path("", include("roadmap_app.urls")),
 ]

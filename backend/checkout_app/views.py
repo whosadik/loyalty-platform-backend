@@ -20,6 +20,7 @@ from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from catalog.models import Product
 from offers.services import get_or_assign_next_offer
 from offers.events import record_offer_event
+from roadmap_app.services import update_roadmap_from_purchase
 
 from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializer
 from drf_spectacular.types import OpenApiTypes
@@ -285,6 +286,12 @@ class CheckoutView(APIView):
                 "product_types": purchased_types,
                 "product_ids": purchased_ids,
             }
+            roadmap_ctx = None
+            try:
+                roadmap_result = update_roadmap_from_purchase(request.user, post_ctx)
+                roadmap_ctx = (roadmap_result or {}).get("roadmap_ctx")
+            except Exception:
+                roadmap_ctx = None
 
             # Auto-assign next offer after successful checkout
             next_assignment = get_or_assign_next_offer(
@@ -292,6 +299,7 @@ class CheckoutView(APIView):
                 now=now,
                 context_steps=None,
                 post_ctx=post_ctx,
+                roadmap_ctx=roadmap_ctx,
             )
 
             next_offer_payload = None
