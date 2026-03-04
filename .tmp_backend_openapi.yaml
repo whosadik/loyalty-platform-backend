@@ -1,0 +1,1867 @@
+openapi: 3.0.3
+info:
+  title: Loyalty Platform API
+  version: 1.0.0
+  description: Personalized loyalty + recommendations platform
+paths:
+  /api/admin/audit:
+    get:
+      operationId: admin_audit_retrieve
+      description: Audit events list with filters and pagination.
+      parameters:
+      - in: query
+        name: action
+        schema:
+          type: string
+      - in: query
+        name: entity_id
+        schema:
+          type: string
+      - in: query
+        name: entity_type
+        schema:
+          type: string
+      - in: query
+        name: page
+        schema:
+          type: integer
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+      - in: query
+        name: path
+        schema:
+          type: string
+      - in: query
+        name: request_id
+        schema:
+          type: string
+      - in: query
+        name: since
+        schema:
+          type: string
+        description: ISO datetime, e.g. 2026-01-01T00:00:00Z
+      - in: query
+        name: status_code
+        schema:
+          type: integer
+      - in: query
+        name: until
+        schema:
+          type: string
+        description: ISO datetime
+      - in: query
+        name: user_id
+        schema:
+          type: integer
+      tags:
+      - Admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/admin/audit/export.csv:
+    get:
+      operationId: admin_audit_export.csv_retrieve
+      description: CSV export of audit events (same filters as list).
+      parameters:
+      - in: query
+        name: action
+        schema:
+          type: string
+      - in: query
+        name: entity_id
+        schema:
+          type: string
+      - in: query
+        name: entity_type
+        schema:
+          type: string
+      - in: query
+        name: page
+        schema:
+          type: integer
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+      - in: query
+        name: path
+        schema:
+          type: string
+      - in: query
+        name: request_id
+        schema:
+          type: string
+      - in: query
+        name: since
+        schema:
+          type: string
+        description: ISO datetime, e.g. 2026-01-01T00:00:00Z
+      - in: query
+        name: status_code
+        schema:
+          type: integer
+      - in: query
+        name: until
+        schema:
+          type: string
+        description: ISO datetime
+      - in: query
+        name: user_id
+        schema:
+          type: integer
+      tags:
+      - Admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/admin/cache/invalidate:
+    post:
+      operationId: admin_cache_invalidate_create
+      tags:
+      - admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/admin/campaigns:
+    get:
+      operationId: admin_campaigns_retrieve
+      description: List campaigns (budgets) with optional filters.
+      parameters:
+      - in: query
+        name: is_active
+        schema:
+          type: boolean
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: substring match
+      - in: query
+        name: ordering
+        schema:
+          type: string
+        description: priority|name|-priority|-name
+      tags:
+      - Admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+    post:
+      operationId: admin_campaigns_create
+      description: Create campaign (budget).
+      tags:
+      - Admin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Campaign'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Campaign'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Campaign'
+        required: true
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/admin/campaigns/{id}:
+    get:
+      operationId: admin_campaigns_retrieve_2
+      description: Get campaign details.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+    patch:
+      operationId: admin_campaigns_partial_update
+      description: 'Patch campaign fields. Optional: reset_weekly_spent=true resets
+        weekly_spent and week_start_date.'
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/admin/health:
+    get:
+      operationId: admin_health_retrieve
+      description: 'Health check: database + cache + basic counters.'
+      tags:
+      - Admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/admin/metrics:
+    get:
+      operationId: admin_metrics_retrieve
+      tags:
+      - admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/admin/overview:
+    get:
+      operationId: admin_overview_retrieve
+      description: 'Single dashboard payload for defense/demo: txns, offers lifecycle,
+        promo, retention, recs.'
+      tags:
+      - Admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/admin/recs/experiments:
+    get:
+      operationId: admin_recs_experiments_retrieve
+      description: Detailed recommendation experiment KPIs with optional filters.
+      parameters:
+      - in: query
+        name: days
+        schema:
+          type: integer
+      - in: query
+        name: experiment_id
+        schema:
+          type: string
+      - in: query
+        name: variant
+        schema:
+          type: string
+      tags:
+      - Admin
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/checkout:
+    post:
+      operationId: checkout_create
+      tags:
+      - checkout
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/checkout/preview:
+    post:
+      operationId: checkout_preview_create
+      description: 'Full checkout preview: offer + points redeem (no DB writes).'
+      tags:
+      - Checkout
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+            examples:
+              PreviewWithOffer+RedeemPoints:
+                value:
+                  apply_assignment_id: 4
+                  redeem_points: 10
+                  items:
+                  - product: 330
+                    quantity: 1
+                    unit_price: '12.99'
+                  - product: 322
+                    quantity: 1
+                    unit_price: '12.99'
+                summary: Preview with offer + redeem_points
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutPreviewResponse'
+              examples:
+                PreviewResponse(sample):
+                  value:
+                    ok: true
+                    gross_total: '25.98'
+                    discount_amount: '1.30'
+                    net_total: '24.68'
+                    offer_applied: true
+                    applied_offer:
+                      assignment_id: 4
+                      offer:
+                        id: 1
+                        name: whosadik
+                        type: discount
+                        value: '10.00'
+                      target:
+                        scope: product_id
+                        value: 330
+                    eligible_total: '12.99'
+                    estimated_points_earned: 25
+                    points_redeemed: 10
+                    balance_before: 121
+                    balance_after_estimated: 136
+                    tier: Bronze
+                  summary: Preview response (sample)
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/loyalty/redeem-points:
+    post:
+      operationId: loyalty_redeem_points_create
+      tags:
+      - loyalty
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/me/favorite-category:
+    get:
+      operationId: me_favorite_category_retrieve
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/me/loyalty:
+    get:
+      operationId: me_loyalty_retrieve
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/me/next-offer:
+    get:
+      operationId: me_next_offer_retrieve
+      description: Get active offer assignment or auto-assign next offer under budget/cooldown
+        constraints.
+      tags:
+      - Offers
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+              examples:
+                NextOffer(bundle-drivenExample):
+                  value:
+                    assignment_id: 4
+                    offer:
+                      id: 1
+                      name: whosadik
+                      type: discount
+                      value: '2.00'
+                      estimated_cost: '5.00'
+                    target:
+                      scope: product_id
+                      value: 322
+                      category: makeup
+                      product_type: eyeshadow
+                      picked_via: bundle
+                      bundle_mode: cooccurrence
+                      bundle_why:
+                      - frequently purchased with product_id=330 (count=1)
+                    reason:
+                      segment: new_or_rare
+                      picked_because: max(score) under eligibility + cooldown + budget
+                        constraints
+                      post_purchase:
+                        categories:
+                        - makeup
+                        product_types:
+                        - foundation
+                  summary: Next offer (bundle-driven example)
+          description: ''
+  /api/me/offers:
+    get:
+      operationId: me_offers_retrieve
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/me/owned-products/:
+    get:
+      operationId: me_owned_products_list
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/OwnedProduct'
+          description: ''
+    post:
+      operationId: me_owned_products_create
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+      security:
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnedProduct'
+          description: ''
+  /api/me/owned-products/{id}/:
+    get:
+      operationId: me_owned_products_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnedProduct'
+          description: ''
+    patch:
+      operationId: me_owned_products_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedOwnedProduct'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedOwnedProduct'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedOwnedProduct'
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnedProduct'
+          description: ''
+  /api/me/owned-products/{id}/activate/:
+    post:
+      operationId: me_owned_products_activate_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnedProduct'
+          description: ''
+  /api/me/owned-products/{id}/deactivate/:
+    post:
+      operationId: me_owned_products_deactivate_create
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OwnedProduct'
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OwnedProduct'
+          description: ''
+  /api/me/profile:
+    get:
+      operationId: me_profile_retrieve
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+    put:
+      operationId: me_profile_update
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/me/recommendations:
+    get:
+      operationId: me_recommendations_retrieve
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/me/recommendations/bundle:
+    get:
+      operationId: me_recommendations_bundle_retrieve
+      parameters:
+      - in: query
+        name: algo
+        schema:
+          type: string
+        description: cooc, reranker or auto
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: Max results (default 10)
+      - in: query
+        name: product_id
+        schema:
+          type: integer
+        description: Base product id
+        required: true
+      tags:
+      - Recommendations
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+              examples:
+                BundleResponse(sample):
+                  value:
+                    query:
+                      product_id: 330
+                      limit: 10
+                    results:
+                    - product:
+                        id: 322
+                        name: Eyeshadow 17
+                        category: makeup
+                        product_type: eyeshadow
+                      score: 1.0
+                      components:
+                        mode: cooccurrence
+                        cooccurrence: 1
+                      why:
+                      - frequently purchased with product_id=330 (count=1)
+                    - product:
+                        id: 282
+                        name: Blush 2
+                        category: makeup
+                        product_type: blush
+                      score: 1.7
+                      components:
+                        mode: fallback
+                        similarity: 1.3
+                        content: 0.8
+                      why:
+                      - no/weak co-occurrence yet; showing similar items
+                      - same brand
+                      - same finish=matte
+                  summary: Bundle response (sample)
+          description: ''
+  /api/me/recommendations/event:
+    post:
+      operationId: me_recommendations_event_create
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/me/recommendations/home:
+    get:
+      operationId: me_recommendations_home_retrieve
+      tags:
+      - me
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/me/roadmap:
+    get:
+      operationId: me_roadmap_retrieve
+      parameters:
+      - in: query
+        name: category
+        schema:
+          type: string
+          enum:
+          - fragrance
+          - haircare
+          - makeup
+          - skincare
+        description: Roadmap category. Recommended for deterministic response.
+      tags:
+      - Roadmap
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+              examples:
+                RoadmapResponse(haircare):
+                  value:
+                    id: 7
+                    category: haircare
+                    is_active: true
+                    version: 1
+                    meta:
+                      source: roadmap_v1
+                    steps:
+                    - id: 12
+                      step_index: 1
+                      product_type: shampoo
+                      status: completed
+                      recommended_product: null
+                      suggestions: []
+                      why:
+                      - picked via rules
+                      - already owned
+                    - id: 13
+                      step_index: 2
+                      product_type: conditioner
+                      status: recommended
+                      recommended_product:
+                        id: 18
+                        name: Conditioner X
+                      suggestions:
+                      - 18
+                      - 19
+                      - 20
+                      why:
+                      - picked via rules
+                      - recommended via reranker/cooc
+                    summary:
+                      next_step:
+                        id: 13
+                        step_index: 2
+                        product_type: conditioner
+                        status: recommended
+                      missing_steps_count: 3
+                      total_steps: 5
+                  summary: Roadmap response (haircare)
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/me/roadmap/refresh:
+    post:
+      operationId: me_roadmap_refresh_create
+      tags:
+      - Roadmap
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoadmapRefreshRequest'
+            examples:
+              RefreshRequest:
+                value:
+                  category: haircare
+                summary: Refresh request
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RoadmapRefreshRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RoadmapRefreshRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+              examples:
+                RefreshResponse(sample):
+                  value:
+                    id: 7
+                    category: haircare
+                    summary:
+                      next_step:
+                        step_index: 2
+                        product_type: conditioner
+                      missing_steps_count: 3
+                      total_steps: 5
+                  summary: Refresh response (sample)
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/me/roadmap/steps/{step_id}:
+    patch:
+      operationId: me_roadmap_steps_partial_update
+      parameters:
+      - in: path
+        name: step_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Roadmap
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedRoadmapStepPatchRequest'
+            examples:
+              PatchRequest:
+                value:
+                  status: skipped
+                summary: Patch request
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedRoadmapStepPatchRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedRoadmapStepPatchRequest'
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+              examples:
+                PatchResponse:
+                  value:
+                    ok: true
+                    step:
+                      id: 13
+                      step_index: 2
+                      product_type: conditioner
+                      status: skipped
+                  summary: Patch response
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/me/roadmap/steps/{step_id}/click:
+    post:
+      operationId: me_roadmap_steps_click_create
+      parameters:
+      - in: path
+        name: step_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - Roadmap
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+              examples:
+                ClickResponse:
+                  value:
+                    ok: true
+                    step_id: 42
+                  summary: Click response
+          description: ''
+        '404':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/offers/click:
+    post:
+      operationId: offers_click_create
+      description: Record user click on active offer assignment (idempotent by request
+        key).
+      tags:
+      - Offers
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfferClickRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OfferClickRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OfferClickRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/offers/preview:
+    post:
+      operationId: offers_preview_create
+      description: Preview offer effect on provided cart (no DB writes).
+      tags:
+      - Offers
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OfferPreviewRequest'
+            examples:
+              PreviewDiscountOnTargetProduct:
+                value:
+                  assignment_id: 4
+                  items:
+                  - product: 330
+                    quantity: 1
+                    unit_price: '12.99'
+                  - product: 322
+                    quantity: 1
+                    unit_price: '12.99'
+                summary: Preview discount on target product
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/OfferPreviewRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/OfferPreviewRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OfferPreviewResponse'
+              examples:
+                PreviewResponse(sample):
+                  value:
+                    ok: true
+                    assignment_id: 4
+                    offer:
+                      id: 1
+                      name: whosadik
+                      type: discount
+                      value: '10.00'
+                    target:
+                      scope: product_id
+                      value: 330
+                      category: makeup
+                      product_type: foundation
+                    gross_total: '25.98'
+                    eligible_total: '12.99'
+                    discount_amount: '1.30'
+                    net_total: '24.68'
+                    estimated_points_earned: 25
+                  summary: Preview response (sample)
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/offers/redeem:
+    post:
+      operationId: offers_redeem_create
+      description: |-
+        Применяем оффер к транзакции и начисляем баллы в ledger.
+        MVP: реализуем points_multiplier.
+      tags:
+      - offers
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/products/:
+    get:
+      operationId: products_list
+      tags:
+      - products
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Product'
+          description: ''
+    post:
+      operationId: products_create
+      tags:
+      - products
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Product'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Product'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Product'
+        required: true
+      security:
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+          description: ''
+  /api/products/{id}/:
+    get:
+      operationId: products_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this product.
+        required: true
+      tags:
+      - products
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+          description: ''
+    put:
+      operationId: products_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this product.
+        required: true
+      tags:
+      - products
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Product'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Product'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Product'
+        required: true
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+          description: ''
+    patch:
+      operationId: products_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this product.
+        required: true
+      tags:
+      - products
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedProduct'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedProduct'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedProduct'
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+          description: ''
+    delete:
+      operationId: products_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this product.
+        required: true
+      tags:
+      - products
+      security:
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/routine/generate:
+    post:
+      operationId: routine_generate_create
+      tags:
+      - routine
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/routine/validate:
+    post:
+      operationId: routine_validate_create
+      tags:
+      - routine
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          description: No response body
+  /api/schema/:
+    get:
+      operationId: schema_retrieve
+      description: |-
+        OpenApi3 schema for this API. Format can be selected via content negotiation.
+
+        - YAML: application/vnd.oai.openapi
+        - JSON: application/vnd.oai.openapi+json
+      parameters:
+      - in: query
+        name: format
+        schema:
+          type: string
+          enum:
+          - json
+          - yaml
+      - in: query
+        name: lang
+        schema:
+          type: string
+          enum:
+          - af
+          - ar
+          - ar-dz
+          - ast
+          - az
+          - be
+          - bg
+          - bn
+          - br
+          - bs
+          - ca
+          - ckb
+          - cs
+          - cy
+          - da
+          - de
+          - dsb
+          - el
+          - en
+          - en-au
+          - en-gb
+          - eo
+          - es
+          - es-ar
+          - es-co
+          - es-mx
+          - es-ni
+          - es-ve
+          - et
+          - eu
+          - fa
+          - fi
+          - fr
+          - fy
+          - ga
+          - gd
+          - gl
+          - he
+          - hi
+          - hr
+          - hsb
+          - hu
+          - hy
+          - ia
+          - id
+          - ig
+          - io
+          - is
+          - it
+          - ja
+          - ka
+          - kab
+          - kk
+          - km
+          - kn
+          - ko
+          - ky
+          - lb
+          - lt
+          - lv
+          - mk
+          - ml
+          - mn
+          - mr
+          - ms
+          - my
+          - nb
+          - ne
+          - nl
+          - nn
+          - os
+          - pa
+          - pl
+          - pt
+          - pt-br
+          - ro
+          - ru
+          - sk
+          - sl
+          - sq
+          - sr
+          - sr-latn
+          - sv
+          - sw
+          - ta
+          - te
+          - tg
+          - th
+          - tk
+          - tr
+          - tt
+          - udm
+          - ug
+          - uk
+          - ur
+          - uz
+          - vi
+          - zh-hans
+          - zh-hant
+      tags:
+      - schema
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/vnd.oai.openapi:
+              schema:
+                type: object
+                additionalProperties: {}
+            application/yaml:
+              schema:
+                type: object
+                additionalProperties: {}
+            application/vnd.oai.openapi+json:
+              schema:
+                type: object
+                additionalProperties: {}
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+  /api/transactions/:
+    get:
+      operationId: transactions_list
+      tags:
+      - transactions
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Transaction'
+          description: ''
+  /api/transactions/{id}/:
+    get:
+      operationId: transactions_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: string
+        required: true
+      tags:
+      - transactions
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+          description: ''
+components:
+  schemas:
+    BlankEnum:
+      enum:
+      - ''
+    Campaign:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 64
+        is_active:
+          type: boolean
+        priority:
+          type: integer
+          maximum: 2147483647
+          minimum: -2147483648
+        weekly_limit:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
+        weekly_spent:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
+        week_start_date:
+          type: string
+          format: date
+          nullable: true
+        allowed_categories: {}
+        allowed_steps: {}
+      required:
+      - id
+      - name
+    CheckoutItem:
+      type: object
+      properties:
+        product:
+          type: integer
+        quantity:
+          type: integer
+          minimum: 1
+          default: 1
+      required:
+      - product
+    CheckoutPreviewResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        gross_total:
+          type: string
+        discount_amount:
+          type: string
+        net_total:
+          type: string
+        offer_applied:
+          type: boolean
+        applied_offer:
+          type: object
+          additionalProperties: {}
+          nullable: true
+        eligible_total:
+          type: string
+        estimated_points_earned:
+          type: integer
+        points_redeemed:
+          type: integer
+        balance_before:
+          type: integer
+        balance_after_estimated:
+          type: integer
+        tier:
+          type: string
+          nullable: true
+      required:
+      - applied_offer
+      - balance_after_estimated
+      - balance_before
+      - discount_amount
+      - eligible_total
+      - estimated_points_earned
+      - gross_total
+      - net_total
+      - offer_applied
+      - ok
+      - points_redeemed
+      - tier
+    CheckoutRequest:
+      type: object
+      properties:
+        channel:
+          type: string
+          default: offline
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CheckoutItem'
+        idempotency_key:
+          type: string
+        apply_assignment_id:
+          type: integer
+        redeem_points:
+          type: integer
+          minimum: 1
+      required:
+      - items
+    OfferClickRequest:
+      type: object
+      properties:
+        assignment_id:
+          type: integer
+        context: {}
+      required:
+      - assignment_id
+    OfferPreviewRequest:
+      type: object
+      properties:
+        assignment_id:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreviewItem'
+      required:
+      - assignment_id
+      - items
+    OfferPreviewResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        assignment_id:
+          type: integer
+        offer:
+          type: object
+          additionalProperties: {}
+        target:
+          type: object
+          additionalProperties: {}
+        gross_total:
+          type: string
+        eligible_total:
+          type: string
+        discount_amount:
+          type: string
+        net_total:
+          type: string
+        estimated_points_earned:
+          type: integer
+      required:
+      - assignment_id
+      - discount_amount
+      - eligible_total
+      - estimated_points_earned
+      - gross_total
+      - net_total
+      - offer
+      - ok
+      - target
+    OwnedProduct:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        product:
+          allOf:
+          - $ref: '#/components/schemas/Product'
+          readOnly: true
+        quantity_total:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+        is_active:
+          type: boolean
+        acquired_at:
+          type: string
+          format: date-time
+        last_acquired_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          maxLength: 30
+      required:
+      - id
+      - product
+    PatchedOwnedProduct:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        product:
+          allOf:
+          - $ref: '#/components/schemas/Product'
+          readOnly: true
+        quantity_total:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+        is_active:
+          type: boolean
+        acquired_at:
+          type: string
+          format: date-time
+        last_acquired_at:
+          type: string
+          format: date-time
+        source:
+          type: string
+          maxLength: 30
+    PatchedProduct:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        source_product_id:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 200
+        brand:
+          type: string
+          maxLength: 120
+        price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          nullable: true
+        currency:
+          type: string
+          maxLength: 8
+        category:
+          $ref: '#/components/schemas/ProductCategoryEnum'
+        product_type:
+          type: string
+          maxLength: 50
+        concerns: {}
+        attrs: {}
+        actives: {}
+        flags: {}
+        supported_skin_types: {}
+        step:
+          oneOf:
+          - $ref: '#/components/schemas/StepEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        strength:
+          $ref: '#/components/schemas/StrengthEnum'
+        in_stock:
+          type: boolean
+        image_url:
+          type: string
+          format: uri
+          maxLength: 500
+        image_urls: {}
+        description:
+          type: string
+        application_text:
+          type: string
+        ingredients_inci:
+          type: string
+        volume_raw:
+          type: string
+        raw_meta: {}
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+    PatchedRoadmapStepPatchRequest:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/StatusEnum'
+    PreviewItem:
+      type: object
+      properties:
+        product:
+          type: integer
+        quantity:
+          type: integer
+          minimum: 1
+          default: 1
+      required:
+      - product
+    Product:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        source_product_id:
+          type: string
+          maxLength: 64
+        name:
+          type: string
+          maxLength: 200
+        brand:
+          type: string
+          maxLength: 120
+        price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          nullable: true
+        currency:
+          type: string
+          maxLength: 8
+        category:
+          $ref: '#/components/schemas/ProductCategoryEnum'
+        product_type:
+          type: string
+          maxLength: 50
+        concerns: {}
+        attrs: {}
+        actives: {}
+        flags: {}
+        supported_skin_types: {}
+        step:
+          oneOf:
+          - $ref: '#/components/schemas/StepEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        strength:
+          $ref: '#/components/schemas/StrengthEnum'
+        in_stock:
+          type: boolean
+        image_url:
+          type: string
+          format: uri
+          maxLength: 500
+        image_urls: {}
+        description:
+          type: string
+        application_text:
+          type: string
+        ingredients_inci:
+          type: string
+        volume_raw:
+          type: string
+        raw_meta: {}
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - name
+      - product_type
+      - updated_at
+    ProductCategoryEnum:
+      enum:
+      - skincare
+      - haircare
+      - makeup
+      - fragrance
+      type: string
+      description: |-
+        * `skincare` - Skincare
+        * `haircare` - Haircare
+        * `makeup` - Makeup
+        * `fragrance` - Fragrance
+    RoadmapRefreshRequest:
+      type: object
+      properties:
+        category:
+          $ref: '#/components/schemas/RoadmapRefreshRequestCategoryEnum'
+      required:
+      - category
+    RoadmapRefreshRequestCategoryEnum:
+      enum:
+      - skincare
+      - haircare
+      - makeup
+      - fragrance
+      type: string
+      description: |-
+        * `skincare` - skincare
+        * `haircare` - haircare
+        * `makeup` - makeup
+        * `fragrance` - fragrance
+    StatusEnum:
+      enum:
+      - missing
+      - recommended
+      - owned
+      - skipped
+      - completed
+      type: string
+      description: |-
+        * `missing` - Missing
+        * `recommended` - Recommended
+        * `owned` - Owned
+        * `skipped` - Skipped
+        * `completed` - Completed
+    StepEnum:
+      enum:
+      - cleanser
+      - toner
+      - serum
+      - moisturizer
+      - spf
+      - mask
+      type: string
+      description: |-
+        * `cleanser` - Cleanser
+        * `toner` - Toner
+        * `serum` - Serum
+        * `moisturizer` - Moisturizer
+        * `spf` - SPF
+        * `mask` - Mask
+    StrengthEnum:
+      enum:
+      - low
+      - medium
+      - high
+      type: string
+      description: |-
+        * `low` - Low
+        * `medium` - Medium
+        * `high` - High
+    Transaction:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        total_amount:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        channel:
+          type: string
+          maxLength: 20
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TransactionItem'
+      required:
+      - created_at
+      - id
+      - items
+      - total_amount
+    TransactionItem:
+      type: object
+      properties:
+        product:
+          type: integer
+        quantity:
+          type: integer
+          maximum: 2147483647
+          minimum: 0
+        unit_price:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+      required:
+      - product
+      - unit_price
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: sessionid
