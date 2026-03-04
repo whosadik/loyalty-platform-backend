@@ -8,6 +8,11 @@ from django.conf import settings
 
 
 def _model_path() -> Path:
+    if bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)):
+        raw = str(getattr(settings, "ROADMAP_NEXTSTEP_V3_MODEL_PATH", "") or "").strip()
+        if not raw:
+            raw = str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or "")
+        return Path(raw).expanduser()
     return Path(str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or "")).expanduser()
 
 

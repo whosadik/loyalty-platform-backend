@@ -213,75 +213,73 @@ def _build_chain(
     context_product_ids: list[int],
 ) -> tuple[list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
     rules = CATEGORY_RULES[category]
+    min_steps = int(rules["min_steps"])
+    max_steps = int(rules["max_steps"])
+
     if category == "fragrance":
         purchased_slots = [x for x in purchased_types if x in FRAGRANCE_SLOTS]
         owned_slots = [x for x in owned_types_ordered if x in FRAGRANCE_SLOTS]
         chain = _unique(purchased_slots + FRAGRANCE_DEFAULT_CHAIN + owned_slots)
-        min_steps = int(rules["min_steps"])
-        max_steps = int(rules["max_steps"])
-        chain = chain[: max(min_steps, min(max_steps, len(chain)))]
-        source_by_type = {slot: {"source": "rules", "score": None} for slot in chain}
-        return chain, source_by_type, []
+        target_len = max(min_steps, min(max_steps, len(chain)))
+        chain = chain[:target_len]
+    else:
+        chain = _unique(purchased_types + rules["base"] + rules["optional"] + owned_types_ordered)
+        recent_types = list(
+            TransactionItem.objects.filter(transaction__user=user, product__category=category)
+            .order_by("-transaction__created_at", "-id")
+            .values_list("product__product_type", flat=True)[:40]
+        )
+        chain = _unique(chain + [str(x) for x in recent_types])
+        chain = _unique(chain + _distinct_catalog_types(category, exclude=set(chain), limit=30))
+        owned_signal = min(max_steps - min_steps, len(set(owned_types_ordered)))
+        target_len = min_steps + max(0, owned_signal)
+        target_len = max(min_steps, min(max_steps, target_len))
+        if len(chain) < target_len:
+            chain = _unique(chain + _distinct_catalog_types(category, exclude=set(chain), limit=40))
+        chain = chain[: min(max_steps, target_len)]
 
-    chain = _unique(purchased_types + rules["base"] + rules["optional"] + owned_types_ordered)
-
-    recent_types = list(
-        TransactionItem.objects.filter(transaction__user=user, product__category=category)
-        .order_by("-transaction__created_at", "-id")
-        .values_list("product__product_type", flat=True)[:40]
-    )
-    chain = _unique(chain + [str(x) for x in recent_types])
-    chain = _unique(chain + _distinct_catalog_types(category, exclude=set(chain), limit=30))
-
-    min_steps = int(rules["min_steps"])
-    max_steps = int(rules["max_steps"])
-    owned_signal = min(max_steps - min_steps, len(set(owned_types_ordered)))
-    target_len = min_steps + max(0, owned_signal)
-    target_len = max(min_steps, min(max_steps, target_len))
+    source_by_type: dict[str, dict[str, Any]] = {
+        pt: {"source": "rules", "score": None} for pt in chain
+    }
+    ml_predictions: list[dict[str, Any]] = []
+    if not bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)):
+        return chain, source_by_type, ml_predictions
 
     threshold = float(getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35))
     ml_predictions = predict_next_product_types(user, context_product_ids, category)
-    confident = [x for x in ml_predictions if float(x.get("score", 0.0)) >= threshold]
+    if not ml_predictions:
+        return chain, source_by_type, ml_predictions
 
-    source_by_type: dict[str, dict[str, Any]] = {}
-    if confident:
-        top_pt = str(confident[0].get("product_type") or "").strip()
-        if top_pt:
-            if top_pt in chain:
-                chain.remove(top_pt)
-            insert_pos = min(len(chain), max(1, len(purchased_types))) if chain else 0
-            chain.insert(insert_pos, top_pt)
-            source_by_type[top_pt] = {
-                "source": "ml_next_step",
-                "score": float(confident[0].get("score", 0.0)),
-            }
+    score_by_type: dict[str, float] = {}
+    for row in ml_predictions:
+        pt = str(row.get("product_type") or "").strip()
+        if not pt or pt not in chain:
+            continue
+        score = float(row.get("score", 0.0))
+        if score < threshold:
+            continue
+        prev = score_by_type.get(pt)
+        if prev is None or score > prev:
+            score_by_type[pt] = score
 
-        for row in confident[1:]:
-            pt = str(row.get("product_type") or "").strip()
-            if not pt:
-                continue
-            if pt not in chain:
-                chain.append(pt)
-            source_by_type.setdefault(
-                pt,
-                {"source": "ml_next_step", "score": float(row.get("score", 0.0))},
-            )
+    if not score_by_type:
+        return chain, source_by_type, ml_predictions
 
-        extension = min(max(0, len(confident) - 1), max(0, 10 - max_steps))
-        desired_len = max(target_len, min(max_steps + extension, 10))
-    else:
-        desired_len = target_len
-
-    if len(chain) < desired_len:
-        chain = _unique(chain + _distinct_catalog_types(category, exclude=set(chain), limit=40))
-
-    if not confident:
-        chain = chain[: min(max_steps, desired_len)]
-    else:
-        chain = chain[: min(10, max(desired_len, max_steps))]
-
-    for pt in chain:
-        source_by_type.setdefault(pt, {"source": "rules", "score": None})
+    anchor = min(len(chain), max(0, len(purchased_types)))
+    prefix = list(chain[:anchor])
+    suffix = list(chain[anchor:])
+    suffix_pos = {pt: idx for idx, pt in enumerate(suffix)}
+    suffix_sorted = sorted(
+        suffix,
+        key=lambda pt: (
+            0 if pt in score_by_type else 1,
+            -float(score_by_type.get(pt, 0.0)),
+            int(suffix_pos.get(pt, 0)),
+        ),
+    )
+    chain = prefix + suffix_sorted
+    for pt, score in score_by_type.items():
+        source_by_type[pt] = {"source": "ml_next_step", "score": float(score)}
     return chain, source_by_type, ml_predictions
 
 
@@ -561,7 +559,14 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "threshold": threshold,
             "predictions": ml_predictions[:10],
             "used": any((x.get("source") == "ml_next_step") for x in source_by_type.values()),
-            "model_path": str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or ""),
+            "model_path": str(
+                (
+                    getattr(settings, "ROADMAP_NEXTSTEP_V3_MODEL_PATH", "")
+                    if bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False))
+                    else getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "")
+                )
+                or ""
+            ),
         },
         "context": {
             "post_ctx_categories": (post_ctx or {}).get("categories") or [],

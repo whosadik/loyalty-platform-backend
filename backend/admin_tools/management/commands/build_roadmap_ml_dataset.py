@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from datetime import timedelta, timezone as dt_timezone
 from pathlib import Path
@@ -113,6 +113,180 @@ def _deterministic_split_user_ids(user_ids: list[int], seed: int) -> dict[str, l
     }
 
 
+def _coverage_curve_rows(
+    rows: list[dict[str, Any]],
+    *,
+    thresholds: list[float],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    total = len(rows)
+    if total == 0:
+        for thr in thresholds:
+            out.append(
+                {
+                    "threshold": float(thr),
+                    "coverage": 0.0,
+                    "top1_accuracy_on_covered": 0.0,
+                    "covered_rows": 0,
+                }
+            )
+        return out
+    for thr in thresholds:
+        covered = [r for r in rows if float(r.get("max_prob", 0.0)) >= float(thr)]
+        covered_n = len(covered)
+        covered_hits = sum(1 for r in covered if bool(r.get("hit_top1")))
+        out.append(
+            {
+                "threshold": float(thr),
+                "coverage": round(float(covered_n / total), 6),
+                "top1_accuracy_on_covered": round(float(covered_hits / covered_n), 6)
+                if covered_n
+                else 0.0,
+                "covered_rows": int(covered_n),
+            }
+        )
+    return out
+
+
+def _evaluate_ranked_predictions(
+    ranked_rows: list[dict[str, Any]],
+    *,
+    thresholds: list[float],
+) -> dict[str, Any]:
+    n = len(ranked_rows)
+    if n == 0:
+        return {
+            "rows": 0,
+            "top1_accuracy": 0.0,
+            "top3_accuracy": 0.0,
+            "top5_accuracy": 0.0,
+            "coverage_curve": _coverage_curve_rows([], thresholds=thresholds),
+        }
+    top1 = sum(1 for r in ranked_rows if bool(r.get("hit_top1")))
+    top3 = sum(1 for r in ranked_rows if bool(r.get("hit_top3")))
+    top5 = sum(1 for r in ranked_rows if bool(r.get("hit_top5")))
+    return {
+        "rows": int(n),
+        "top1_accuracy": round(float(top1 / n), 6),
+        "top3_accuracy": round(float(top3 / n), 6),
+        "top5_accuracy": round(float(top5 / n), 6),
+        "coverage_curve": _coverage_curve_rows(ranked_rows, thresholds=thresholds),
+    }
+
+
+def _evaluate_popularity_baseline(
+    *,
+    train_task_rows: list[dict[str, Any]],
+    eval_task_rows: list[dict[str, Any]],
+    classes: list[str],
+    thresholds: list[float],
+) -> dict[str, Any]:
+    global_counter: Counter[str] = Counter()
+    by_category: dict[str, Counter[str]] = defaultdict(Counter)
+    for row in train_task_rows:
+        cat = str(row.get("category") or "")
+        cls = str(row.get("target_class") or "")
+        if not cls:
+            continue
+        by_category[cat][cls] += 1
+        global_counter[cls] += 1
+    for cls in classes:
+        global_counter.setdefault(cls, 0)
+
+    ranked_rows: list[dict[str, Any]] = []
+    for row in eval_task_rows:
+        cat = str(row.get("category") or "")
+        target = str(row.get("target_class") or "")
+        counter = by_category.get(cat) or global_counter
+        total = float(sum(counter.values()) or 1.0)
+        ordered = sorted(classes, key=lambda c: (-int(counter.get(c, 0)), c))
+        probs = {c: float(counter.get(c, 0)) / total for c in classes}
+        max_prob = float(max((probs.get(c, 0.0) for c in classes), default=0.0))
+        top3 = set(ordered[:3])
+        top5 = set(ordered[:5])
+        ranked_rows.append(
+            {
+                "hit_top1": bool(ordered and ordered[0] == target),
+                "hit_top3": bool(target in top3),
+                "hit_top5": bool(target in top5),
+                "max_prob": max_prob,
+            }
+        )
+    return _evaluate_ranked_predictions(ranked_rows, thresholds=thresholds)
+
+
+def _markov_state_key(row: dict[str, Any]) -> tuple[str, str]:
+    category = str(row.get("category") or "")
+    raw_types = str(row.get("last_k_purchase_product_types") or "").strip()
+    if not raw_types or raw_types == "__none__":
+        return (category, "__none__")
+    first = str(raw_types.split("|")[0] or "").strip() or "__none__"
+    return (category, first)
+
+
+def _evaluate_markov_baseline(
+    *,
+    train_task_rows: list[dict[str, Any]],
+    eval_task_rows: list[dict[str, Any]],
+    classes: list[str],
+    thresholds: list[float],
+) -> dict[str, Any]:
+    transitions: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+    by_category: dict[str, Counter[str]] = defaultdict(Counter)
+    global_counter: Counter[str] = Counter()
+
+    for row in train_task_rows:
+        cls = str(row.get("target_class") or "")
+        cat = str(row.get("category") or "")
+        if not cls:
+            continue
+        key = _markov_state_key(row)
+        transitions[key][cls] += 1
+        by_category[cat][cls] += 1
+        global_counter[cls] += 1
+
+    for cls in classes:
+        global_counter.setdefault(cls, 0)
+
+    ranked_rows: list[dict[str, Any]] = []
+    for row in eval_task_rows:
+        target = str(row.get("target_class") or "")
+        cat = str(row.get("category") or "")
+        key = _markov_state_key(row)
+        counter = transitions.get(key)
+        if not counter:
+            counter = by_category.get(cat) or global_counter
+        total = float(sum(counter.values()) or 1.0)
+        ordered = sorted(classes, key=lambda c: (-int(counter.get(c, 0)), c))
+        probs = {c: float(counter.get(c, 0)) / total for c in classes}
+        max_prob = float(max((probs.get(c, 0.0) for c in classes), default=0.0))
+        ranked_rows.append(
+            {
+                "hit_top1": bool(ordered and ordered[0] == target),
+                "hit_top3": bool(target in set(ordered[:3])),
+                "hit_top5": bool(target in set(ordered[:5])),
+                "max_prob": max_prob,
+            }
+        )
+    return _evaluate_ranked_predictions(ranked_rows, thresholds=thresholds)
+
+
+def _class_distribution_for_splits(
+    task_df: "pd.DataFrame",
+    *,
+    split_map: dict[str, list[int]],
+) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    for split_name, user_ids in split_map.items():
+        if not user_ids:
+            out[split_name] = {}
+            continue
+        part = task_df[task_df["user_id"].isin(set(int(x) for x in user_ids))]
+        counts = Counter(str(x) for x in part["target_class"].fillna("").tolist() if str(x))
+        out[split_name] = {k: int(v) for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))}
+    return out
+
+
 def _write_dataset_frame(df: "pd.DataFrame", out_dir: Path) -> tuple[str, str]:
     out_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = out_dir / "dataset.parquet"
@@ -138,7 +312,7 @@ def _resolve_out_dir(raw_path: str) -> Path:
 
 
 class Command(BaseCommand):
-    help = "Build Roadmap ML v2 offline dataset from RoadmapEvent + Transactions without leakage."
+    help = "Build Roadmap NextStep offline dataset (v3-ready) from RoadmapEvent + Transactions without leakage."
 
     def add_arguments(self, parser):
         parser.add_argument("--days", type=int, default=180)
@@ -156,6 +330,12 @@ class Command(BaseCommand):
             default=14,
             help="Label window after first exposure to mark STEP_COMPLETED positive.",
         )
+        parser.add_argument(
+            "--include-negatives",
+            action="store_true",
+            default=False,
+            help='Include negatives as multiclass target "__none__".',
+        )
         parser.add_argument("--seed", type=int, default=42)
 
     def handle(self, *args, **options):
@@ -167,6 +347,7 @@ class Command(BaseCommand):
         include_ga = bool(options["include_ga"])
         top_types_k = int(options["k"])
         label_window_days = int(options["label_window_days"])
+        include_negatives = bool(options["include_negatives"])
         seed = int(options["seed"])
 
         if days <= 0:
@@ -326,7 +507,7 @@ class Command(BaseCommand):
             if first_complete is not None and first_complete <= (t0 + timedelta(days=label_window_days)):
                 label = 1
 
-            target_class = row["step_product_type"] if label == 1 else ""
+            target_class = row["step_product_type"] if label == 1 else ("__none__" if include_negatives else "")
             row["label"] = int(label)
             row["target_class"] = target_class
 
@@ -427,6 +608,7 @@ class Command(BaseCommand):
         }
 
         rows: list[dict[str, Any]] = []
+        leakage_checks_total = 0
         for inst in instances:
             user_id = int(inst["user_id"])
             t0 = inst["t0"]
@@ -434,8 +616,18 @@ class Command(BaseCommand):
 
             items = user_items.get(user_id, [])
             timeline = timeline_by_user.get(user_id, [])
-            idx = bisect_left(timeline, t0) if timeline else 0
+            idx = bisect_right(timeline, t0) if timeline else 0
             prior_items = items[:idx]
+            future_items = items[idx:]
+            leakage_checks_total += 1
+            if any(item["ts"] > t0 for item in prior_items):
+                raise CommandError(
+                    f"Leakage detected: prior_items contains ts > t0 (user_id={user_id}, step_id={inst['step_id']})"
+                )
+            if any(item["ts"] <= t0 for item in future_items):
+                raise CommandError(
+                    f"Leakage detected: future_items contains ts <= t0 (user_id={user_id}, step_id={inst['step_id']})"
+                )
 
             recent_types: list[str] = []
             recent_categories: list[str] = []
@@ -546,6 +738,51 @@ class Command(BaseCommand):
             "val_user_ids": split_map["val"],
             "test_user_ids": split_map["test"],
         }
+        task_df = df[df["target_class"].fillna("").astype(str).str.strip() != ""].copy()
+        if task_df.empty:
+            raise CommandError("No multiclass rows available after label mapping.")
+
+        class_distribution = _class_distribution_for_splits(task_df, split_map=split_map)
+        train_task_rows = task_df[task_df["user_id"].isin(set(split_map["train"]))].to_dict("records")
+        val_task_rows = task_df[task_df["user_id"].isin(set(split_map["val"]))].to_dict("records")
+        test_task_rows = task_df[task_df["user_id"].isin(set(split_map["test"]))].to_dict("records")
+        train_classes = sorted({str(r.get("target_class") or "") for r in train_task_rows if str(r.get("target_class") or "")})
+        if not train_classes:
+            raise CommandError("No train classes produced for multiclass task.")
+
+        baseline_thresholds = [0.20, 0.35, 0.50, 0.65, 0.80]
+        baseline_comparison = {
+            "splits": {
+                "val": {
+                    "popularity": _evaluate_popularity_baseline(
+                        train_task_rows=train_task_rows,
+                        eval_task_rows=val_task_rows,
+                        classes=train_classes,
+                        thresholds=baseline_thresholds,
+                    ),
+                    "markov": _evaluate_markov_baseline(
+                        train_task_rows=train_task_rows,
+                        eval_task_rows=val_task_rows,
+                        classes=train_classes,
+                        thresholds=baseline_thresholds,
+                    ),
+                },
+                "test": {
+                    "popularity": _evaluate_popularity_baseline(
+                        train_task_rows=train_task_rows,
+                        eval_task_rows=test_task_rows,
+                        classes=train_classes,
+                        thresholds=baseline_thresholds,
+                    ),
+                    "markov": _evaluate_markov_baseline(
+                        train_task_rows=train_task_rows,
+                        eval_task_rows=test_task_rows,
+                        classes=train_classes,
+                        thresholds=baseline_thresholds,
+                    ),
+                },
+            }
+        }
 
         dataset_format, dataset_file = _write_dataset_frame(df, out_dir)
 
@@ -586,20 +823,30 @@ class Command(BaseCommand):
             "window_until_utc": now_utc.isoformat().replace("+00:00", "Z"),
             "label_window_days": label_window_days,
             "include_ga": include_ga,
+            "include_negatives": include_negatives,
             "top_owned_product_types_k": top_types_k,
             "dataset_format": dataset_format,
             "dataset_file": dataset_file,
             "rows_total": int(len(df)),
             "rows_positive": int(positives_total),
             "rows_negative": int(len(df) - positives_total),
+            "rows_multiclass_task": int(len(task_df)),
             "exposed_total": int(raw_exposed_count),
             "instances_total": int(len(instances)),
             "positives_by_category": {k: int(v) for k, v in sorted(positives_by_category.items())},
             "positives_by_class": {k: int(v) for k, v in sorted(positives_by_class.items())},
+            "class_distribution": class_distribution,
             "exposures_from_offers": int(exposed_from_offers),
             "exposures_from_roadmap_api": int(exposed_from_roadmap_api),
             "avg_latency_to_click_hours": avg_click_h,
             "avg_latency_to_complete_hours": avg_complete_h,
+            "baselines": baseline_comparison,
+            "leakage_assertions": {
+                "transactions_query_lte_max_t0": True,
+                "features_only_use_items_lte_t0": True,
+                "checks_total": int(leakage_checks_total),
+                "status": "passed",
+            },
             "feature_columns": feature_columns,
             "categorical_features": categorical_features,
             "numeric_features": numeric_features,
@@ -630,4 +877,8 @@ class Command(BaseCommand):
         self.stdout.write(
             "[build_roadmap_ml_dataset] "
             f"avg_latency_click_h={avg_click_h} avg_latency_complete_h={avg_complete_h}"
+        )
+        self.stdout.write(
+            "[build_roadmap_ml_dataset] "
+            f"include_negatives={include_negatives} rows_multiclass_task={len(task_df)}"
         )

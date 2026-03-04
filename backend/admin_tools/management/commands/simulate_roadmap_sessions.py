@@ -5,10 +5,13 @@ import json
 import random
 import time
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime, time as dt_time, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -159,6 +162,11 @@ class Command(BaseCommand):
       - p-complete-next-step >= 0.35
       - max-orders-per-session >= 1
       - p-roadmap-get >= 0.8 (to keep next_step available)
+
+    Reliability notes:
+      - DRF throttling is disabled by default via --disable-throttle.
+      - HTTP 429 has retry/backoff (3 attempts, exponential + jitter).
+      - HTTP >=400 details are logged to reports/sim_errors_<timestamp>.jsonl
     """
 
     help = "Simulate realistic roadmap/offers/checkout sessions through DRF APIClient with virtual time."
@@ -184,10 +192,36 @@ class Command(BaseCommand):
         parser.add_argument("--batch-users", type=int, default=200)
         parser.add_argument("--progress-every", type=int, default=100)
         parser.add_argument("--dry-run", action="store_true", default=False)
+        parser.add_argument(
+            "--disable-throttle",
+            dest="disable_throttle",
+            action="store_true",
+            default=True,
+            help="Disable DRF throttling during simulation run (default: enabled).",
+        )
+        parser.add_argument(
+            "--enable-throttle",
+            dest="disable_throttle",
+            action="store_false",
+            help="Keep normal DRF throttling (opposite of --disable-throttle).",
+        )
+        parser.add_argument(
+            "--max-errors",
+            type=int,
+            default=1000,
+            help="Max number of HTTP errors to persist into JSONL log.",
+        )
+        parser.add_argument(
+            "--stop-on-fatal",
+            action="store_true",
+            default=False,
+            help="Stop command immediately when HTTP 5xx is detected.",
+        )
 
     def handle(self, *args, **options):
         started = time.monotonic()
         rng = random.Random(int(options["seed"]))
+        self._request_rng = rng
 
         days = int(options["days"])
         if days <= 0:
@@ -220,6 +254,17 @@ class Command(BaseCommand):
         start_date = self._resolve_start_date(options.get("start_date"), days=days)
         include_ga = bool(options["include_ga"])
         dry_run = bool(options["dry_run"])
+        disable_throttle = bool(options["disable_throttle"])
+        max_errors = int(options["max_errors"])
+        stop_on_fatal = bool(options["stop_on_fatal"])
+        if max_errors <= 0:
+            raise CommandError("--max-errors must be > 0")
+
+        self._max_errors = max_errors
+        self._stop_on_fatal = stop_on_fatal
+        self._error_counts: Counter[tuple[str, int, str]] = Counter()
+        self._error_rows_written = 0
+        self._error_log_path: Path | None = None
 
         p_roadmap_get = clamp_prob(options["p_roadmap_get"])
         p_next_offer_get = clamp_prob(options["p_next_offer_get"])
@@ -231,7 +276,7 @@ class Command(BaseCommand):
         self.stdout.write(
             "simulate_roadmap_sessions config: "
             f"days={days}, start_date={start_date.isoformat()}, users={users_n}, include_ga={include_ga}, "
-            f"seed={int(options['seed'])}, avg_sessions={avg_sessions}"
+            f"seed={int(options['seed'])}, avg_sessions={avg_sessions}, disable_throttle={disable_throttle}"
         )
         self._soft_fix_ownedproduct_sequence()
 
@@ -269,66 +314,69 @@ class Command(BaseCommand):
         idem_counter = 0
         processed_users = 0
 
-        throttled_rf = copy.deepcopy(getattr(settings, "REST_FRAMEWORK", {}))
-        rates = dict(throttled_rf.get("DEFAULT_THROTTLE_RATES") or {})
-        rates.update(
-            {
-                "anon": "100000/min",
-                "user": "100000/min",
-                "next_offer": "100000/min",
-                "checkout_preview": "100000/min",
-            }
-        )
-        throttled_rf["DEFAULT_THROTTLE_RATES"] = rates
+        runtime_rf = copy.deepcopy(getattr(settings, "REST_FRAMEWORK", {}))
+        if disable_throttle:
+            runtime_rf["DEFAULT_THROTTLE_CLASSES"] = []
+            runtime_rf["DEFAULT_THROTTLE_RATES"] = {}
 
-        with override_settings(REST_FRAMEWORK=throttled_rf):
-            for batch_start in range(0, len(users), batch_users):
-                batch = users[batch_start : batch_start + batch_users]
-                states = self._build_user_states(
-                    users=batch,
-                    rng=rng,
-                    start_date=start_date,
+        self._prepare_error_log()
+        try:
+            with override_settings(REST_FRAMEWORK=runtime_rf):
+                throttle_ctx = (
+                    patch("rest_framework.throttling.UserRateThrottle.allow_request", return_value=True)
+                    if disable_throttle
+                    else nullcontext()
                 )
-                for user in batch:
-                    state = states.get(int(user.id))
-                    if not state:
-                        continue
-                    client = APIClient()
-                    client.force_authenticate(user=user)
-                    idem_counter = self._simulate_user_days(
-                        client=client,
-                        user=user,
-                        state=state,
-                        start_date=start_date,
-                        days=days,
-                        avg_sessions=avg_sessions,
-                        max_orders_per_session=max_orders_per_session,
-                        max_items=max_items,
-                        p_roadmap_get=p_roadmap_get,
-                        p_next_offer_get=p_next_offer_get,
-                        p_step_click=p_step_click,
-                        p_step_skip=p_step_skip,
-                        p_complete_next_step=p_complete_next_step,
-                        p_redeem_offer=p_redeem_offer,
-                        counters=counters,
-                        warnings=warnings,
-                        product_cache=product_cache,
-                        rng=rng,
-                        idem_counter=idem_counter,
-                        run_nonce=run_nonce,
-                    )
-                    processed_users += 1
-                    if processed_users % progress_every == 0:
-                        elapsed = time.monotonic() - started
-                        completed_now = self._count_completed()
-                        completed_delta = completed_now - base_counts["roadmap_completed"]
-                        self.stdout.write(
-                            f"Progress {processed_users}/{len(users)} users, {elapsed:.1f}s | "
-                            f"tx_created={counters['tx_created']}, offer_exposed={counters['offer_exposed']}, "
-                            f"roadmap_exposed={counters['roadmap_exposed']}, roadmap_clicked={counters['roadmap_clicked']}, "
-                            f"roadmap_skipped={counters['roadmap_skipped']}, roadmap_completed={completed_delta}"
+                with throttle_ctx:
+                    for batch_start in range(0, len(users), batch_users):
+                        batch = users[batch_start : batch_start + batch_users]
+                        states = self._build_user_states(
+                            users=batch,
+                            rng=rng,
+                            start_date=start_date,
                         )
-                close_old_connections()
+                        for user in batch:
+                            state = states.get(int(user.id))
+                            if not state:
+                                continue
+                            client = APIClient()
+                            client.force_authenticate(user=user)
+                            idem_counter = self._simulate_user_days(
+                                client=client,
+                                user=user,
+                                state=state,
+                                start_date=start_date,
+                                days=days,
+                                avg_sessions=avg_sessions,
+                                max_orders_per_session=max_orders_per_session,
+                                max_items=max_items,
+                                p_roadmap_get=p_roadmap_get,
+                                p_next_offer_get=p_next_offer_get,
+                                p_step_click=p_step_click,
+                                p_step_skip=p_step_skip,
+                                p_complete_next_step=p_complete_next_step,
+                                p_redeem_offer=p_redeem_offer,
+                                counters=counters,
+                                warnings=warnings,
+                                product_cache=product_cache,
+                                rng=rng,
+                                idem_counter=idem_counter,
+                                run_nonce=run_nonce,
+                            )
+                            processed_users += 1
+                            if processed_users % progress_every == 0:
+                                elapsed = time.monotonic() - started
+                                completed_now = self._count_completed()
+                                completed_delta = completed_now - base_counts["roadmap_completed"]
+                                self.stdout.write(
+                                    f"Progress {processed_users}/{len(users)} users, {elapsed:.1f}s | "
+                                    f"tx_created={counters['tx_created']}, offer_exposed={counters['offer_exposed']}, "
+                                    f"roadmap_exposed={counters['roadmap_exposed']}, roadmap_clicked={counters['roadmap_clicked']}, "
+                                    f"roadmap_skipped={counters['roadmap_skipped']}, roadmap_completed={completed_delta}"
+                                )
+                        close_old_connections()
+        finally:
+            self._close_error_log()
 
         final_counts = self._snapshot_counts()
         deltas = {k: final_counts[k] - base_counts.get(k, 0) for k in final_counts}
@@ -349,6 +397,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(f"- {line}"))
         if len(warnings) > 10:
             self.stdout.write(self.style.WARNING(f"... and {len(warnings) - 10} more"))
+        self._print_error_summary()
 
         self.stdout.write("Running report_roadmap_quality --days 7")
         call_command("report_roadmap_quality", days=7, include_ga=include_ga)
@@ -384,6 +433,204 @@ class Command(BaseCommand):
                 f"Added in this run: STEP_COMPLETED={added_completed}, "
                 f"fragrance STEP_COMPLETED={added_completed_fragrance}"
             )
+
+    def _prepare_error_log(self) -> None:
+        reports_dir = (Path(settings.BASE_DIR).parent / "reports").resolve()
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
+        self._error_log_path = reports_dir / f"sim_errors_{ts}.jsonl"
+        self._error_log_handle = self._error_log_path.open("a", encoding="utf-8")
+
+    def _close_error_log(self) -> None:
+        handle = getattr(self, "_error_log_handle", None)
+        if handle:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        self._error_log_handle = None
+
+    def _extract_first_error_key(self, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict) or not payload:
+            return "__content__"
+        details = payload.get("details")
+        if isinstance(details, dict):
+            msg = details.get("message")
+            if isinstance(msg, str) and msg.strip():
+                return msg.strip()[:220]
+        elif isinstance(details, str) and details.strip():
+            return details.strip()[:220]
+
+        message = payload.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()[:220]
+
+        code = payload.get("code")
+        if isinstance(code, str) and code.strip():
+            return code.strip()[:220]
+
+        keys = [str(k) for k in payload.keys()]
+        keys.sort()
+        return keys[0] if keys else "__content__"
+
+    def _log_http_error(
+        self,
+        *,
+        endpoint: str,
+        method: str,
+        status_code: int,
+        request_id: str,
+        user_id: int | None,
+        request_payload: dict[str, Any] | None,
+        response,
+        response_payload: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> None:
+        if not hasattr(self, "_error_counts"):
+            self._error_counts = Counter()
+        if not hasattr(self, "_error_rows_written"):
+            self._error_rows_written = 0
+        if not hasattr(self, "_max_errors"):
+            self._max_errors = 1000
+        if int(status_code) < 400 and not bool(force):
+            return
+
+        body: dict[str, Any] = {}
+        if isinstance(response_payload, dict):
+            body = response_payload
+        else:
+            body = _safe_json(response)
+            if not body:
+                try:
+                    raw_text = response.content.decode("utf-8", errors="ignore")
+                except Exception:
+                    raw_text = ""
+                body = {"raw": raw_text[:500]}
+        first_key = self._extract_first_error_key(body)
+        self._error_counts[(str(endpoint), int(status_code), first_key)] += 1
+
+        if self._error_rows_written < int(self._max_errors):
+            event = {
+                "ts_utc": datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z"),
+                "endpoint": str(endpoint),
+                "method": str(method).upper(),
+                "status_code": int(status_code),
+                "first_error_key": first_key,
+                "request_id": str(request_id),
+                "user_id": int(user_id) if user_id is not None else None,
+                "request_payload": request_payload if isinstance(request_payload, dict) else {},
+                "response": body,
+            }
+            handle = getattr(self, "_error_log_handle", None)
+            if handle:
+                handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+                handle.flush()
+            self._error_rows_written += 1
+
+        if int(status_code) >= 500 and bool(self._stop_on_fatal):
+            raise CommandError(
+                f"Fatal HTTP {status_code} from {method.upper()} {endpoint}. "
+                f"See error log: {self._error_log_path}"
+            )
+
+    def _log_checkout_skip_no_eligible(
+        self,
+        *,
+        user_id: int,
+        request_id: str,
+        request_payload: dict[str, Any],
+        assignment_id: int,
+        target: dict[str, Any],
+    ) -> None:
+        body = {
+            "code": "skipped",
+            "details": {"message": "no_eligible_item_for_assignment"},
+            "reason": "no_eligible_item_for_assignment",
+            "assignment_id": int(assignment_id),
+            "target": target if isinstance(target, dict) else {},
+        }
+        self._log_http_error(
+            endpoint="/api/checkout",
+            method="POST",
+            status_code=0,
+            request_id=request_id,
+            user_id=user_id,
+            request_payload=request_payload,
+            response=None,
+            response_payload=body,
+            force=True,
+        )
+
+    def _print_error_summary(self) -> None:
+        if not self._error_counts:
+            self.stdout.write("HTTP errors captured: 0")
+            return
+        self.stdout.write(
+            f"HTTP errors captured: {sum(self._error_counts.values())} "
+            f"(logged_rows={self._error_rows_written}, max_errors={self._max_errors})"
+        )
+        if self._error_log_path:
+            self.stdout.write(f"Error log JSONL: {self._error_log_path}")
+        self.stdout.write("Error summary by (endpoint, status, first_error_key):")
+        sorted_rows = sorted(self._error_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        for (endpoint, status, first_key), count in sorted_rows[:20]:
+            self.stdout.write(f"  {count} | {endpoint} | {status} | {first_key}")
+
+    def _request_with_retry(
+        self,
+        *,
+        client: APIClient,
+        method: str,
+        path: str,
+        sim_now: datetime,
+        request_id: str,
+        user_id: int | None,
+        payload: dict[str, Any] | None,
+        format_value: str | None = None,
+    ):
+        max_attempts = 3
+        attempt = 0
+        last_response = None
+        while attempt < max_attempts:
+            call_now = sim_now + timedelta(milliseconds=attempt)
+            with patched_now(call_now):
+                if method == "GET":
+                    last_response = client.get(path, data=payload or {}, HTTP_X_REQUEST_ID=request_id)
+                elif method == "POST":
+                    last_response = client.post(
+                        path,
+                        data=payload or {},
+                        format=format_value or "json",
+                        HTTP_X_REQUEST_ID=request_id,
+                    )
+                elif method == "PATCH":
+                    last_response = client.patch(
+                        path,
+                        data=payload or {},
+                        format=format_value or "json",
+                        HTTP_X_REQUEST_ID=request_id,
+                    )
+                else:
+                    raise ValueError(f"Unsupported method: {method}")
+            if int(getattr(last_response, "status_code", 0)) != 429:
+                break
+            attempt += 1
+            if attempt >= max_attempts:
+                break
+            backoff = (0.05 * (2 ** (attempt - 1))) + float(self._request_rng.random() * 0.03)
+            time.sleep(backoff)
+
+        status_code = int(getattr(last_response, "status_code", 0) or 0)
+        self._log_http_error(
+            endpoint=path,
+            method=method,
+            status_code=status_code,
+            request_id=request_id,
+            user_id=user_id,
+            request_payload=payload or {},
+            response=last_response,
+        )
+        return last_response
 
     def _resolve_start_date(self, raw_value: str | None, *, days: int) -> date:
         if raw_value:
@@ -812,6 +1059,7 @@ class Command(BaseCommand):
                 body={"category": category},
                 sim_now=sim_now,
                 request_id=rid("refresh"),
+                user_id=user_id,
             )
             if refresh_resp.status_code not in (200, 201):
                 self._warn(warnings, f"roadmap/refresh status={refresh_resp.status_code} user_id={user_id}")
@@ -823,6 +1071,7 @@ class Command(BaseCommand):
                 params={"category": category},
                 sim_now=sim_now + timedelta(seconds=20),
                 request_id=rid("roadmap"),
+                user_id=user_id,
             )
             if roadmap_resp.status_code == 200:
                 counters["roadmap_exposed"] += 1
@@ -847,6 +1096,7 @@ class Command(BaseCommand):
                 params=None,
                 sim_now=sim_now + timedelta(seconds=40),
                 request_id=rid("nextoffer"),
+                user_id=user_id,
             )
             if next_offer_resp.status_code == 200:
                 offer_payload = _safe_json(next_offer_resp)
@@ -870,6 +1120,7 @@ class Command(BaseCommand):
                             },
                             sim_now=sim_now + timedelta(seconds=45),
                             request_id=rid("offerclick"),
+                            user_id=user_id,
                         )
                         if click_resp.status_code == 200:
                             counters["offer_clicked"] += 1
@@ -893,6 +1144,7 @@ class Command(BaseCommand):
                     body={"status": "skipped"},
                     sim_now=sim_now + timedelta(seconds=55),
                     request_id=rid("stepskip"),
+                    user_id=user_id,
                 )
                 if patch_resp.status_code == 200:
                     counters["roadmap_skipped"] += 1
@@ -909,6 +1161,7 @@ class Command(BaseCommand):
                     body={},
                     sim_now=sim_now + timedelta(seconds=58),
                     request_id=rid("stepclick"),
+                    user_id=user_id,
                 )
                 if click_resp.status_code == 200:
                     counters["roadmap_clicked"] += 1
@@ -948,35 +1201,53 @@ class Command(BaseCommand):
                     f"no checkout items user_id={user_id} category={category} should_complete={should_complete}",
                 )
                 continue
+            items_payload = self._sanitize_checkout_items(items_payload, product_cache=product_cache)
+            if not items_payload:
+                self._warn(
+                    warnings,
+                    f"checkout items invalid after sanitize user_id={user_id} category={category}",
+                )
+                continue
 
-            apply_assignment_id = None
+            apply_candidate_id = None
             redeem_prob = clamp_prob(p_redeem_offer * state.segment.redeem_mult)
             if assignment_id and rng.random() < redeem_prob:
-                if self._assignment_matches_items(
-                    target=assignment_target,
-                    purchased_product_ids=chosen_product_ids,
-                    product_cache=product_cache,
-                ):
-                    apply_assignment_id = int(assignment_id)
+                apply_candidate_id = int(assignment_id)
 
             idem_counter += 1
             idem_key = (
                 f"sim-{run_nonce}-{day_index}-{user_id}-{session_index}-{order_idx}-{idem_counter}"
             )[:64]
-            body = {
-                "channel": "offline",
-                "items": items_payload,
-                "idempotency_key": idem_key,
-            }
-            if apply_assignment_id:
-                body["apply_assignment_id"] = apply_assignment_id
+            checkout_request_id = rid("checkout")
+            body, apply_assignment_used = self._build_checkout_payload(
+                user_id=user_id,
+                category=category,
+                base_items=items_payload,
+                base_product_ids=chosen_product_ids,
+                max_items=max_items,
+                assignment_id=apply_candidate_id,
+                assignment_target=assignment_target,
+                idempotency_key=idem_key,
+                request_id=checkout_request_id,
+                warnings=warnings,
+                rng=rng,
+                product_cache=product_cache,
+            )
+            apply_assignment_id = (
+                int(body.get("apply_assignment_id"))
+                if body.get("apply_assignment_id") is not None
+                else None
+            )
+            if apply_candidate_id and not apply_assignment_used:
+                counters["offer_apply_skipped_no_eligible"] += 1
 
             checkout_resp = self._api_post(
                 client=client,
                 path="/api/checkout",
                 body=body,
                 sim_now=sim_now + timedelta(minutes=1, seconds=order_idx * 8),
-                request_id=rid("checkout"),
+                request_id=checkout_request_id,
+                user_id=user_id,
             )
             if checkout_resp.status_code != 201 and apply_assignment_id:
                 idem_counter += 1
@@ -984,7 +1255,7 @@ class Command(BaseCommand):
                     f"sim-retry-{run_nonce}-{day_index}-{user_id}-{session_index}-{order_idx}-{idem_counter}"
                 )[:64]
                 retry_body = {
-                    "channel": "offline",
+                    "channel": "web",
                     "items": items_payload,
                     "idempotency_key": retry_key,
                 }
@@ -994,6 +1265,7 @@ class Command(BaseCommand):
                     body=retry_body,
                     sim_now=sim_now + timedelta(minutes=1, seconds=order_idx * 8 + 1),
                     request_id=rid("checkoutretry"),
+                    user_id=user_id,
                 )
             if checkout_resp.status_code == 201:
                 counters["tx_created"] += 1
@@ -1093,6 +1365,221 @@ class Command(BaseCommand):
             chosen.append(int(pid))
 
         return items, chosen, int(target_pid)
+
+    def _load_assignment_target(
+        self,
+        *,
+        user_id: int,
+        assignment_id: int,
+        fallback_target: dict[str, Any],
+    ) -> dict[str, Any]:
+        row = (
+            OfferAssignment.objects.filter(id=int(assignment_id), user_id=int(user_id))
+            .values("target")
+            .first()
+        )
+        db_target = row.get("target") if isinstance(row, dict) else None
+        if isinstance(db_target, dict):
+            return db_target
+        if isinstance(fallback_target, dict):
+            return fallback_target
+        return {}
+
+    def _pick_eligible_product_for_assignment(
+        self,
+        *,
+        target: dict[str, Any],
+        rng: random.Random,
+        product_cache: "ProductPoolCache",
+    ) -> int | None:
+        target = target if isinstance(target, dict) else {}
+        scope = str(target.get("scope") or "cart").strip().lower()
+        value = target.get("value")
+        target_category = str(target.get("category") or "").strip().lower()
+        target_pt = str(target.get("product_type") or "").strip().lower()
+        slot_target = bool(target_category == "fragrance" and target_pt in SLOTS)
+
+        if scope == "cart":
+            return None
+
+        if scope == "product_id":
+            target_pid = _safe_int(value)
+            if target_pid is None:
+                return None
+            meta = product_cache.product_meta(int(target_pid))
+            if not meta or not bool(meta.get("in_stock")):
+                return None
+            if target_category and str(meta.get("category") or "") != target_category:
+                return None
+            return int(target_pid)
+
+        if slot_target and scope in {"product_type", "category"}:
+            return product_cache.pick_random_slot_product(target_pt, rng=rng)
+
+        if scope == "product_type":
+            wanted = str(value or target_pt).strip().lower()
+            if not wanted:
+                return None
+            if target_category:
+                return product_cache.pick_random_product(
+                    category=target_category,
+                    product_type=wanted,
+                    rng=rng,
+                )
+            return product_cache.pick_random_product_by_type(product_type=wanted, rng=rng)
+
+        if scope == "category":
+            wanted_cat = str(value or "").strip().lower() or target_category
+            if not wanted_cat:
+                return None
+            return product_cache.pick_random_product(
+                category=wanted_cat,
+                product_type=None,
+                rng=rng,
+            )
+
+        return None
+
+    def _fill_checkout_items_to_max(
+        self,
+        *,
+        items: list[dict[str, int]],
+        chosen_product_ids: list[int],
+        category: str,
+        max_items: int,
+        rng: random.Random,
+        product_cache: "ProductPoolCache",
+    ) -> tuple[list[dict[str, int]], list[int]]:
+        tries = 0
+        seen = {int(x) for x in chosen_product_ids}
+        while len(items) < int(max_items) and tries < int(max_items * 40):
+            tries += 1
+            same_category = rng.random() < 0.80
+            pick_cat = category if same_category else rng.choice(CATEGORIES)
+            pid = product_cache.pick_random_product(category=pick_cat, product_type=None, rng=rng)
+            if pid is None or int(pid) in seen:
+                continue
+            qty = 1 if rng.random() < 0.90 else 2
+            items.append({"product": int(pid), "quantity": int(qty)})
+            chosen_product_ids.append(int(pid))
+            seen.add(int(pid))
+        return items, chosen_product_ids
+
+    def _build_checkout_payload(
+        self,
+        *,
+        user_id: int,
+        category: str,
+        base_items: list[dict[str, int]],
+        base_product_ids: list[int],
+        max_items: int,
+        assignment_id: int | None,
+        assignment_target: dict[str, Any],
+        idempotency_key: str,
+        request_id: str,
+        warnings: list[str],
+        rng: random.Random,
+        product_cache: "ProductPoolCache",
+    ) -> tuple[dict[str, Any], bool]:
+        items = self._sanitize_checkout_items(base_items, product_cache=product_cache)
+        chosen = [int(x) for x in base_product_ids if str(x).strip()]
+        if not items:
+            return {"channel": "web", "items": [], "idempotency_key": idempotency_key}, False
+
+        apply_assignment = False
+        target = {}
+        scope = "cart"
+        if assignment_id is not None:
+            target = self._load_assignment_target(
+                user_id=user_id,
+                assignment_id=int(assignment_id),
+                fallback_target=assignment_target,
+            )
+            scope = str((target or {}).get("scope") or "cart").strip().lower()
+            if scope == "cart":
+                apply_assignment = True
+            else:
+                eligible_pid = None
+                for _ in range(20):
+                    candidate = self._pick_eligible_product_for_assignment(
+                        target=target,
+                        rng=rng,
+                        product_cache=product_cache,
+                    )
+                    if candidate is not None:
+                        eligible_pid = int(candidate)
+                        break
+
+                if eligible_pid is None:
+                    self._warn(
+                        warnings,
+                        "checkout apply skipped: no eligible item for assignment "
+                        f"user_id={user_id} assignment_id={assignment_id}",
+                    )
+                    self._log_checkout_skip_no_eligible(
+                        user_id=user_id,
+                        request_id=request_id,
+                        request_payload={
+                            "channel": "web",
+                            "items": items,
+                            "idempotency_key": idempotency_key,
+                            "apply_assignment_id": int(assignment_id),
+                        },
+                        assignment_id=int(assignment_id),
+                        target=target,
+                    )
+                else:
+                    qty = 1
+                    for row in items:
+                        if _safe_int((row or {}).get("product")) == int(eligible_pid):
+                            qty = max(1, _safe_int((row or {}).get("quantity")) or 1)
+                            break
+                    new_items: list[dict[str, int]] = [
+                        {"product": int(eligible_pid), "quantity": int(qty)}
+                    ]
+                    new_chosen: list[int] = [int(eligible_pid)]
+                    for row in items:
+                        pid = _safe_int((row or {}).get("product"))
+                        if pid is None or int(pid) in set(new_chosen):
+                            continue
+                        q = max(1, _safe_int((row or {}).get("quantity")) or 1)
+                        if len(new_items) >= int(max_items):
+                            break
+                        new_items.append({"product": int(pid), "quantity": int(q)})
+                        new_chosen.append(int(pid))
+                    items, chosen = self._fill_checkout_items_to_max(
+                        items=new_items,
+                        chosen_product_ids=new_chosen,
+                        category=category,
+                        max_items=max_items,
+                        rng=rng,
+                        product_cache=product_cache,
+                    )
+                    apply_assignment = True
+
+        if apply_assignment:
+            chosen_from_items = [
+                int(_safe_int((row or {}).get("product")))
+                for row in items
+                if _safe_int((row or {}).get("product")) is not None
+            ]
+            items, chosen = self._fill_checkout_items_to_max(
+                items=items,
+                chosen_product_ids=chosen_from_items,
+                category=category,
+                max_items=max_items,
+                rng=rng,
+                product_cache=product_cache,
+            )
+
+        payload: dict[str, Any] = {
+            "channel": "web",
+            "items": items,
+            "idempotency_key": idempotency_key,
+        }
+        if apply_assignment and assignment_id is not None:
+            payload["apply_assignment_id"] = int(assignment_id)
+        return payload, bool(apply_assignment)
 
     def _pick_product_for_next_step(
         self,
@@ -1203,6 +1690,30 @@ class Command(BaseCommand):
 
         return False
 
+    def _sanitize_checkout_items(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        product_cache: "ProductPoolCache",
+    ) -> list[dict[str, int]]:
+        out: list[dict[str, int]] = []
+        seen: set[int] = set()
+        for row in items or []:
+            pid = _safe_int((row or {}).get("product"))
+            qty = _safe_int((row or {}).get("quantity")) or 1
+            if pid is None:
+                continue
+            if qty <= 0:
+                qty = 1
+            meta = product_cache.product_meta(int(pid))
+            if not meta or not bool(meta.get("in_stock")):
+                continue
+            if int(pid) in seen:
+                continue
+            seen.add(int(pid))
+            out.append({"product": int(pid), "quantity": int(qty)})
+        return out
+
     def _api_get(
         self,
         *,
@@ -1211,9 +1722,17 @@ class Command(BaseCommand):
         params: dict[str, Any] | None,
         sim_now: datetime,
         request_id: str,
+        user_id: int | None = None,
     ):
-        with patched_now(sim_now):
-            return client.get(path, data=params or {}, HTTP_X_REQUEST_ID=request_id)
+        return self._request_with_retry(
+            client=client,
+            method="GET",
+            path=path,
+            sim_now=sim_now,
+            request_id=request_id,
+            user_id=user_id,
+            payload=params or {},
+        )
 
     def _api_post(
         self,
@@ -1223,9 +1742,18 @@ class Command(BaseCommand):
         body: dict[str, Any],
         sim_now: datetime,
         request_id: str,
+        user_id: int | None = None,
     ):
-        with patched_now(sim_now):
-            return client.post(path, data=body, format="json", HTTP_X_REQUEST_ID=request_id)
+        return self._request_with_retry(
+            client=client,
+            method="POST",
+            path=path,
+            sim_now=sim_now,
+            request_id=request_id,
+            user_id=user_id,
+            payload=body,
+            format_value="json",
+        )
 
     def _api_patch(
         self,
@@ -1235,9 +1763,18 @@ class Command(BaseCommand):
         body: dict[str, Any],
         sim_now: datetime,
         request_id: str,
+        user_id: int | None = None,
     ):
-        with patched_now(sim_now):
-            return client.patch(path, data=body, format="json", HTTP_X_REQUEST_ID=request_id)
+        return self._request_with_retry(
+            client=client,
+            method="PATCH",
+            path=path,
+            sim_now=sim_now,
+            request_id=request_id,
+            user_id=user_id,
+            payload=body,
+            format_value="json",
+        )
 
     def _warn(self, warnings: list[str], text: str):
         if len(warnings) < 200:
@@ -1290,6 +1827,7 @@ class ProductPoolCache:
         self.rng = rng
         self._by_cat: dict[str, list[int]] = {}
         self._by_cat_type: dict[tuple[str, str], list[int]] = {}
+        self._by_type: dict[str, list[int]] = {}
         self._types_by_cat: dict[str, list[str]] = {}
         self._slot_products: dict[str, list[int]] | None = None
         self._meta_cache: dict[int, dict[str, Any]] = {}
@@ -1369,6 +1907,17 @@ class ProductPoolCache:
             )
         return self._by_cat_type[key]
 
+    def _load_type(self, product_type: str) -> list[int]:
+        key = str(product_type)
+        if key not in self._by_type:
+            self._by_type[key] = list(
+                Product.objects.filter(
+                    product_type=key,
+                    in_stock=True,
+                ).values_list("id", flat=True)
+            )
+        return self._by_type[key]
+
     def _load_types_by_category(self, category: str) -> list[str]:
         key = str(category)
         if key not in self._types_by_cat:
@@ -1392,6 +1941,12 @@ class ProductPoolCache:
             rows = self._load_cat_type(category, product_type)
         if not rows:
             rows = self._load_category(category)
+        if not rows:
+            return None
+        return int(rng.choice(rows))
+
+    def pick_random_product_by_type(self, *, product_type: str, rng: random.Random) -> int | None:
+        rows = self._load_type(product_type)
         if not rows:
             return None
         return int(rng.choice(rows))

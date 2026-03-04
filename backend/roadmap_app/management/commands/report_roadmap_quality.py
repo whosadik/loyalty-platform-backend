@@ -138,16 +138,27 @@ class Command(BaseCommand):
 
         exposed_qs = event_qs.filter(event_type=RoadmapEvent.Type.STEP_EXPOSED)
         exposed_events_total = exposed_qs.count()
-        plans_with_exposed = (
-            exposed_qs.annotate(_effective_plan_id=Coalesce("plan_id", "step__plan_id"))
+        exposed_plan_ids = {
+            int(x)
+            for x in exposed_qs.annotate(_effective_plan_id=Coalesce("plan_id", "step__plan_id"))
             .exclude(_effective_plan_id__isnull=True)
-            .values("_effective_plan_id")
+            .values_list("_effective_plan_id", flat=True)
             .distinct()
-            .count()
-        )
-        steps_with_exposed = exposed_qs.exclude(step_id__isnull=True).values("step_id").distinct().count()
-        plan_exposed_coverage_rate = _pct(plans_with_exposed, plans_updated_total)
-        step_exposed_coverage_rate = _pct(steps_with_exposed, steps_updated_total)
+        }
+        exposed_step_ids = {
+            int(x)
+            for x in exposed_qs.exclude(step_id__isnull=True).values_list("step_id", flat=True).distinct()
+        }
+        updated_plan_ids = {int(x) for x in plan_qs.values_list("id", flat=True)}
+        updated_step_ids = {int(x) for x in step_qs.values_list("id", flat=True)}
+
+        plans_with_exposed_total = len(exposed_plan_ids)
+        steps_with_exposed_total = len(exposed_step_ids)
+        updated_plans_with_exposed = len(updated_plan_ids.intersection(exposed_plan_ids))
+        updated_steps_with_exposed = len(updated_step_ids.intersection(exposed_step_ids))
+
+        plan_exposed_coverage_rate = _pct(updated_plans_with_exposed, plans_updated_total)
+        step_exposed_coverage_rate = _pct(updated_steps_with_exposed, steps_updated_total)
         exposed_from_offers = 0
         exposed_from_roadmap_api = 0
         for ctx in exposed_qs.values_list("context", flat=True).iterator():
@@ -477,8 +488,16 @@ class Command(BaseCommand):
         lines.append(f"- offers_with_roadmap_shortcut: **{offers_with_roadmap_shortcut_total}**")
         lines.append(f"- fragrance_slot_fallback_rate: **{fragrance_slot_fallback_rate}%**")
         lines.append(f"- offer_roadmap_slot_product_id_rate: **{offer_slot_product_id_rate}%**")
-        lines.append(f"- plan_exposed_coverage_rate: **{plan_exposed_coverage_rate}%**")
-        lines.append(f"- step_exposed_coverage_rate: **{step_exposed_coverage_rate}%**")
+        lines.append(
+            "- plan_exposed_coverage_rate (updated_plans_with_exposed / updated_plans_total): "
+            f"**{plan_exposed_coverage_rate}%**"
+        )
+        lines.append(
+            "- step_exposed_coverage_rate (updated_steps_with_exposed / updated_steps_total): "
+            f"**{step_exposed_coverage_rate}%**"
+        )
+        lines.append(f"- plans_with_exposed_total: **{plans_with_exposed_total}**")
+        lines.append(f"- steps_with_exposed_total: **{steps_with_exposed_total}**")
         lines.append(f"- exposed_from_offers_share: **{exposed_from_offers_share}%**")
         lines.append("")
 
@@ -621,13 +640,15 @@ class Command(BaseCommand):
             f"{event_counts[RoadmapEvent.Type.STEP_EXPOSED]}**"
         )
         lines.append(
-            f"- plans_with_exposed / plans_updated_total: **{plans_with_exposed}/{plans_updated_total} "
+            f"- updated_plans_with_exposed / plans_updated_total: **{updated_plans_with_exposed}/{plans_updated_total} "
             f"({plan_exposed_coverage_rate}%)**"
         )
         lines.append(
-            f"- steps_with_exposed / steps_updated_total: **{steps_with_exposed}/{steps_updated_total} "
+            f"- updated_steps_with_exposed / steps_updated_total: **{updated_steps_with_exposed}/{steps_updated_total} "
             f"({step_exposed_coverage_rate}%)**"
         )
+        lines.append(f"- plans_with_exposed_total (distinct in window): **{plans_with_exposed_total}**")
+        lines.append(f"- steps_with_exposed_total (distinct in window): **{steps_with_exposed_total}**")
         lines.append(
             f"- exposed_from_offers / total_exposed: **{exposed_from_offers}/{exposed_events_total} "
             f"({exposed_from_offers_share}%)**"
