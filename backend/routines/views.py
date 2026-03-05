@@ -1,7 +1,10 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 
+from backend.api_serializers import ApiErrorSerializer
 from catalog.models import Product
 from users_app.models import CustomerProfile
 from .serializers import RoutineGenerateRequestSerializer, RoutineValidateRequestSerializer
@@ -15,6 +18,14 @@ from transactions.models import OwnedProduct
 class RoutineGenerateView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Routine"],
+        request=RoutineGenerateRequestSerializer,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiResponse(response=ApiErrorSerializer),
+        },
+    )
     def post(self, request):
         req = RoutineGenerateRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)
@@ -74,6 +85,14 @@ class RoutineGenerateView(APIView):
 class RoutineValidateView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Routine"],
+        request=RoutineValidateRequestSerializer,
+        responses={
+            200: OpenApiTypes.OBJECT,
+            400: OpenApiResponse(response=ApiErrorSerializer),
+        },
+    )
     def post(self, request):
         req = RoutineValidateRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)

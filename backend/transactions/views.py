@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import MethodNotAllowed
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from drf_spectacular.utils import extend_schema, extend_schema_view
 
 from .models import Transaction, OwnedProduct
 from .serializers import TransactionSerializer, OwnedProductSerializer
@@ -16,6 +17,9 @@ class TransactionViewSet(viewsets.ReadOnlyModelViewSet):
         return Transaction.objects.filter(user=self.request.user).order_by("-created_at")
 
 
+@extend_schema_view(
+    create=extend_schema(exclude=True),
+)
 class OwnedProductViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = OwnedProductSerializer

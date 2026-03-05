@@ -1,9 +1,11 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 
+from backend.api_serializers import ApiErrorSerializer
 from .models import CustomerProfile
-from .serializers import CustomerProfileSerializer
+from .serializers import CustomerProfileSerializer, MeProfileUpdateResponseSerializer
 from .services import (
     favorite_category_snapshot,
     is_profile_complete,
@@ -14,10 +16,22 @@ from .services import (
 class MeProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Me"],
+        responses={200: CustomerProfileSerializer},
+    )
     def get(self, request):
         profile, _ = CustomerProfile.objects.get_or_create(user=request.user)
         return Response(CustomerProfileSerializer(profile).data)
 
+    @extend_schema(
+        tags=["Me"],
+        request=CustomerProfileSerializer,
+        responses={
+            200: MeProfileUpdateResponseSerializer,
+            400: OpenApiResponse(response=ApiErrorSerializer),
+        },
+    )
     def put(self, request):
         profile, _ = CustomerProfile.objects.get_or_create(user=request.user)
         serializer = CustomerProfileSerializer(profile, data=request.data, partial=True)

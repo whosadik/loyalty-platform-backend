@@ -155,7 +155,11 @@ paths:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCampaignListResponse'
+          description: ''
     post:
       operationId: admin_campaigns_create
       description: Create campaign (budget).
@@ -176,8 +180,18 @@ paths:
       security:
       - cookieAuth: []
       responses:
-        '200':
-          description: No response body
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCampaignDetailResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
   /api/admin/campaigns/{id}:
     get:
       operationId: admin_campaigns_retrieve_2
@@ -194,7 +208,11 @@ paths:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCampaignDetailResponse'
+          description: ''
     patch:
       operationId: admin_campaigns_partial_update
       description: 'Patch campaign fields. Optional: reset_weekly_spent=true resets
@@ -207,11 +225,32 @@ paths:
         required: true
       tags:
       - Admin
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedAdminCampaignPatchRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedAdminCampaignPatchRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedAdminCampaignPatchRequest'
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminCampaignDetailResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
   /api/admin/health:
     get:
       operationId: admin_health_retrieve
@@ -269,16 +308,152 @@ paths:
       responses:
         '200':
           description: No response body
-  /api/checkout:
-    post:
-      operationId: checkout_create
+  /api/auth/csrf:
+    get:
+      operationId: auth_csrf_retrieve
       tags:
-      - checkout
+      - Auth
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthCsrfResponse'
+          description: ''
+  /api/auth/login:
+    post:
+      operationId: auth_login_create
+      tags:
+      - Auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AuthLoginRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLoginResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Validation or invalid credentials
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: CSRF failed
+  /api/auth/logout:
+    post:
+      operationId: auth_logout_create
+      tags:
+      - Auth
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthLogoutResponse'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: CSRF failed
+  /api/auth/me:
+    get:
+      operationId: auth_me_retrieve
+      tags:
+      - Auth
+      security:
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthMeResponse'
+          description: ''
+        '401':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
+        '403':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
+  /api/checkout:
+    post:
+      operationId: checkout_create
+      description: Commit checkout transaction. Returns 201 for a fresh commit and
+        200 with idempotent_replay=true for a replayed idempotency key.
+      tags:
+      - Checkout
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CheckoutRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutCommitResponse'
+          description: ''
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckoutCommitResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: Duplicate idempotency key without stored payload
   /api/checkout/preview:
     post:
       operationId: checkout_preview_create
@@ -355,12 +530,34 @@ paths:
     post:
       operationId: loyalty_redeem_points_create
       tags:
-      - loyalty
+      - Loyalty
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemPointsRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RedeemPointsRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RedeemPointsRequest'
+        required: true
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedeemPointsResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
   /api/me/favorite-category:
     get:
       operationId: me_favorite_category_retrieve
@@ -375,12 +572,16 @@ paths:
     get:
       operationId: me_loyalty_retrieve
       tags:
-      - me
+      - Loyalty
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeLoyaltyResponse'
+          description: ''
   /api/me/next-offer:
     get:
       operationId: me_next_offer_retrieve
@@ -452,30 +653,6 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/OwnedProduct'
-          description: ''
-    post:
-      operationId: me_owned_products_create
-      tags:
-      - me
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OwnedProduct'
-          application/x-www-form-urlencoded:
-            schema:
-              $ref: '#/components/schemas/OwnedProduct'
-          multipart/form-data:
-            schema:
-              $ref: '#/components/schemas/OwnedProduct'
-      security:
-      - cookieAuth: []
-      responses:
-        '201':
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OwnedProduct'
           description: ''
   /api/me/owned-products/{id}/:
     get:
@@ -593,21 +770,46 @@ paths:
     get:
       operationId: me_profile_retrieve
       tags:
-      - me
+      - Me
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerProfile'
+          description: ''
     put:
       operationId: me_profile_update
       tags:
-      - me
+      - Me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerProfile'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CustomerProfile'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CustomerProfile'
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MeProfileUpdateResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
   /api/me/recommendations:
     get:
       operationId: me_recommendations_retrieve
@@ -687,12 +889,34 @@ paths:
     post:
       operationId: me_recommendations_event_create
       tags:
-      - me
+      - Recommendations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecEventCreate'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RecEventCreate'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RecEventCreate'
+        required: true
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationEventCreateResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
   /api/me/recommendations/home:
     get:
       operationId: me_recommendations_home_retrieve
@@ -1034,12 +1258,34 @@ paths:
         Применяем оффер к транзакции и начисляем баллы в ledger.
         MVP: реализуем points_multiplier.
       tags:
-      - offers
+      - Offers
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RedeemOfferRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RedeemOfferRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RedeemOfferRequest'
+        required: true
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RedeemOfferResponse'
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
   /api/products/:
     get:
       operationId: products_list
@@ -1185,22 +1431,67 @@ paths:
     post:
       operationId: routine_generate_create
       tags:
-      - routine
+      - Routine
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutineGenerateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RoutineGenerateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RoutineGenerateRequest'
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
   /api/routine/validate:
     post:
       operationId: routine_validate_create
       tags:
-      - routine
+      - Routine
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RoutineValidateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RoutineValidateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RoutineValidateRequest'
+        required: true
       security:
       - cookieAuth: []
       responses:
         '200':
-          description: No response body
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: {}
+          description: ''
+        '400':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+          description: ''
   /api/schema/:
     get:
       operationId: schema_retrieve
@@ -1384,9 +1675,130 @@ paths:
           description: ''
 components:
   schemas:
+    ActionEnum:
+      enum:
+      - click
+      - add_to_cart
+      type: string
+      description: |-
+        * `click` - click
+        * `add_to_cart` - add_to_cart
+    AdminCampaignDetailResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        campaign:
+          $ref: '#/components/schemas/Campaign'
+      required:
+      - campaign
+      - ok
+    AdminCampaignListResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Campaign'
+      required:
+      - ok
+      - results
+    ApiError:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          default: false
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          nullable: true
+        request_id:
+          type: string
+          nullable: true
+      required:
+      - code
+      - message
+    AuthCsrfResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        csrfToken:
+          type: string
+      required:
+      - csrfToken
+      - ok
+    AuthLoginRequest:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          writeOnly: true
+      required:
+      - password
+      - username
+    AuthLoginResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        user:
+          $ref: '#/components/schemas/AuthUser'
+      required:
+      - ok
+      - user
+    AuthLogoutResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required:
+      - ok
+    AuthMeResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        user:
+          $ref: '#/components/schemas/AuthUser'
+      required:
+      - ok
+      - user
+    AuthUser:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        username:
+          type: string
+          description: Required. 150 characters or fewer. Letters, digits and @/./+/-/_
+            only.
+          pattern: ^[\w.@+-]+$
+          maxLength: 150
+      required:
+      - id
+      - username
     BlankEnum:
       enum:
       - ''
+    BudgetEnum:
+      enum:
+      - low
+      - medium
+      - high
+      type: string
+      description: |-
+        * `low` - Low
+        * `medium` - Medium
+        * `high` - High
     Campaign:
       type: object
       properties:
@@ -1419,6 +1831,54 @@ components:
       required:
       - id
       - name
+    CheckoutCommitResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        idempotent_replay:
+          type: boolean
+        transaction_id:
+          type: integer
+        gross_total:
+          type: string
+        discount_amount:
+          type: string
+        net_total:
+          type: string
+        offer_applied:
+          type: boolean
+        offer_assignment_id:
+          type: integer
+          nullable: true
+        target:
+          nullable: true
+        eligible_total:
+          type: string
+        points_redeemed:
+          type: integer
+        points_earned:
+          type: integer
+        new_balance:
+          type: integer
+        tier:
+          type: string
+          nullable: true
+        next_offer:
+          allOf:
+          - $ref: '#/components/schemas/CheckoutNextOffer'
+          nullable: true
+      required:
+      - discount_amount
+      - eligible_total
+      - gross_total
+      - net_total
+      - new_balance
+      - offer_applied
+      - ok
+      - points_earned
+      - points_redeemed
+      - transaction_id
     CheckoutItem:
       type: object
       properties:
@@ -1430,6 +1890,43 @@ components:
           default: 1
       required:
       - product
+    CheckoutNextOffer:
+      type: object
+      properties:
+        assignment_id:
+          type: integer
+        offer:
+          $ref: '#/components/schemas/CheckoutOffer'
+        target:
+          nullable: true
+        reason:
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+      - assignment_id
+      - expires_at
+      - offer
+    CheckoutOffer:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        type:
+          type: string
+        value:
+          type: string
+        estimated_cost:
+          type: string
+      required:
+      - id
+      - name
+      - type
+      - value
     CheckoutPreviewResponse:
       type: object
       properties:
@@ -1492,6 +1989,65 @@ components:
           minimum: 1
       required:
       - items
+    CustomerProfile:
+      type: object
+      properties:
+        skin_type:
+          $ref: '#/components/schemas/SkinTypeEnum'
+        goals: {}
+        avoid_flags: {}
+        budget:
+          $ref: '#/components/schemas/BudgetEnum'
+        hair_profile: {}
+        makeup_profile: {}
+        fragrance_profile: {}
+        profile_completed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        profile_completion_rewarded_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - profile_completed_at
+      - profile_completion_rewarded_at
+      - updated_at
+    MeLoyaltyResponse:
+      type: object
+      properties:
+        tier:
+          type: string
+          nullable: true
+        points_balance:
+          type: integer
+      required:
+      - points_balance
+      - tier
+    MeProfileUpdateResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        profile:
+          $ref: '#/components/schemas/CustomerProfile'
+        profile_completion_bonus:
+          $ref: '#/components/schemas/ProfileCompletionBonus'
+      required:
+      - ok
+      - profile
+      - profile_completion_bonus
     OfferClickRequest:
       type: object
       properties:
@@ -1573,6 +2129,37 @@ components:
       required:
       - id
       - product
+    PatchedAdminCampaignPatchRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        is_active:
+          type: boolean
+        priority:
+          type: integer
+        weekly_limit:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
+        weekly_spent:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
+        week_start_date:
+          type: string
+          format: date
+          nullable: true
+        allowed_categories:
+          type: array
+          items:
+            type: string
+        allowed_steps:
+          type: array
+          items:
+            type: string
+        reset_weekly_spent:
+          type: boolean
     PatchedOwnedProduct:
       type: object
       properties:
@@ -1758,6 +2345,96 @@ components:
         * `haircare` - Haircare
         * `makeup` - Makeup
         * `fragrance` - Fragrance
+    ProfileCompletionBonus:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        awarded:
+          type: boolean
+        points_added:
+          type: integer
+        completed:
+          type: boolean
+      required:
+      - awarded
+      - completed
+      - ok
+      - points_added
+    RecEventCreate:
+      type: object
+      properties:
+        action:
+          $ref: '#/components/schemas/ActionEnum'
+        product_id:
+          type: integer
+        page:
+          type: string
+          default: home
+        section_key:
+          type: string
+          nullable: true
+        context: {}
+      required:
+      - action
+      - product_id
+    RecommendationEventCreateResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+      required:
+      - ok
+    RedeemOfferRequest:
+      type: object
+      properties:
+        assignment_id:
+          type: integer
+        transaction_id:
+          type: integer
+      required:
+      - assignment_id
+      - transaction_id
+    RedeemOfferResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        earned_points:
+          type: integer
+        new_balance:
+          type: integer
+        tier:
+          type: string
+          nullable: true
+        discount_amount:
+          type: string
+      required:
+      - discount_amount
+      - earned_points
+      - new_balance
+      - ok
+    RedeemPointsRequest:
+      type: object
+      properties:
+        points:
+          type: integer
+          minimum: 1
+        reference:
+          type: string
+          default: ''
+      required:
+      - points
+    RedeemPointsResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        new_balance:
+          type: integer
+      required:
+      - new_balance
+      - ok
     RoadmapRefreshRequest:
       type: object
       properties:
@@ -1777,6 +2454,44 @@ components:
         * `haircare` - haircare
         * `makeup` - makeup
         * `fragrance` - fragrance
+    RoutineGenerateRequest:
+      type: object
+      properties:
+        use_owned:
+          type: boolean
+          default: true
+    RoutineValidateRequest:
+      type: object
+      properties:
+        am:
+          type: array
+          items:
+            type: object
+            additionalProperties: {}
+          description: 'Example: [{"step":"cleanser","product_id":1}]'
+        pm:
+          type: array
+          items:
+            type: object
+            additionalProperties: {}
+          description: 'Example: [{"step":"serum","product_id":5}]'
+      required:
+      - am
+      - pm
+    SkinTypeEnum:
+      enum:
+      - dry
+      - oily
+      - combination
+      - sensitive
+      - normal
+      type: string
+      description: |-
+        * `dry` - Dry
+        * `oily` - Oily
+        * `combination` - Combination
+        * `sensitive` - Sensitive
+        * `normal` - Normal
     StatusEnum:
       enum:
       - missing

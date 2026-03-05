@@ -24,3 +24,16 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+
+class ProfileCompletionBonusSerializer(serializers.Serializer):
+    ok = serializers.BooleanField()
+    awarded = serializers.BooleanField()
+    points_added = serializers.IntegerField()
+    completed = serializers.BooleanField()
+
+
+class MeProfileUpdateResponseSerializer(serializers.Serializer):
+    ok = serializers.BooleanField()
+    profile = CustomerProfileSerializer()
+    profile_completion_bonus = ProfileCompletionBonusSerializer()

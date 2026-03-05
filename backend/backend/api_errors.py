@@ -1,20 +1,31 @@
-from rest_framework.views import exception_handler as drf_exception_handler
 from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
+from rest_framework.views import exception_handler as drf_exception_handler
+
+
+def _request_id_from_context(context) -> str | None:
+    request = (context or {}).get("request") if context else None
+    if request is None:
+        return None
+    return getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
 
 
 def exception_handler(exc, context):
+    request_id = _request_id_from_context(context)
     resp = drf_exception_handler(exc, context)
     if resp is None:
-        # неожиданные ошибки (500)
         return Response(
-            {"ok": False, "code": "server_error", "message": "Internal server error", "details": None},
+            {
+                "ok": False,
+                "code": "server_error",
+                "message": "Internal server error",
+                "details": None,
+                "request_id": request_id,
+            },
             status=500,
         )
 
-    status = resp.status_code
     data = resp.data
-
     code = getattr(exc, "default_code", None) or "error"
     message = "Request failed"
     details = data
@@ -23,7 +34,6 @@ def exception_handler(exc, context):
         code = "validation_error"
         message = "Validation error"
     elif isinstance(exc, APIException):
-        # DRF часто кладёт строку в detail
         if isinstance(data, dict) and "detail" in data and isinstance(data["detail"], str):
             message = data["detail"]
             details = None
@@ -31,8 +41,15 @@ def exception_handler(exc, context):
             message = data
             details = None
         else:
-            # оставим как details
-            message = getattr(exc, "detail", None) if isinstance(getattr(exc, "detail", None), str) else message
+            detail_value = getattr(exc, "detail", None)
+            if isinstance(detail_value, str):
+                message = detail_value
 
-    resp.data = {"ok": False, "code": str(code), "message": str(message), "details": details}
+    resp.data = {
+        "ok": False,
+        "code": str(code),
+        "message": str(message),
+        "details": details,
+        "request_id": request_id,
+    }
     return resp

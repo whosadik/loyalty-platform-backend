@@ -1,9 +1,14 @@
 from django.contrib import admin
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from backend.auth_views import AuthCsrfView, AuthLoginView, AuthLogoutView, AuthMeView
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api-auth/", include("rest_framework.urls", namespace="rest_framework")),
+    path("api/auth/csrf", AuthCsrfView.as_view(), name="auth-csrf"),
+    path("api/auth/login", AuthLoginView.as_view(), name="auth-login"),
+    path("api/auth/logout", AuthLogoutView.as_view(), name="auth-logout"),
+    path("api/auth/me", AuthMeView.as_view(), name="auth-me"),
 
     path("api/", include("catalog.urls")),
     path("api/", include("users_app.urls")),

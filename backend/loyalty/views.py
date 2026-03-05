@@ -1,10 +1,16 @@
 from django.db import transaction as db_tx
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
+from backend.api_serializers import ApiErrorSerializer
 from .models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
-from .serializers import RedeemPointsRequestSerializer
+from .serializers import (
+    MeLoyaltyResponseSerializer,
+    RedeemPointsRequestSerializer,
+    RedeemPointsResponseSerializer,
+)
 
 
 def _ensure_account(user) -> LoyaltyAccount:
@@ -22,6 +28,10 @@ def _ensure_account(user) -> LoyaltyAccount:
 class MeLoyaltyStatusView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Loyalty"],
+        responses={200: MeLoyaltyResponseSerializer},
+    )
     def get(self, request):
         account = _ensure_account(request.user)
         return Response(
@@ -35,6 +45,14 @@ class MeLoyaltyStatusView(APIView):
 class RedeemPointsView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Loyalty"],
+        request=RedeemPointsRequestSerializer,
+        responses={
+            200: RedeemPointsResponseSerializer,
+            400: OpenApiResponse(response=ApiErrorSerializer),
+        },
+    )
     def post(self, request):
         req = RedeemPointsRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)

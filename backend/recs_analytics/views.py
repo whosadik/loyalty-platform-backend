@@ -1,7 +1,10 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
+from rest_framework import serializers
 
+from backend.api_serializers import ApiErrorSerializer
 from backend.throttles import RecsRateThrottle
 from recs_analytics.experiment import extract_experiment_context
 from recs_analytics.models import RecommendationEvent
@@ -12,6 +15,19 @@ class RecEventCreateView(APIView):
     permission_classes = [IsAuthenticated]
     throttle_classes = [RecsRateThrottle]
 
+    @extend_schema(
+        tags=["Recommendations"],
+        request=RecEventCreateSerializer,
+        responses={
+            200: inline_serializer(
+                name="RecommendationEventCreateResponse",
+                fields={
+                    "ok": serializers.BooleanField(),
+                },
+            ),
+            400: OpenApiResponse(response=ApiErrorSerializer),
+        },
+    )
     def post(self, request):
         s = RecEventCreateSerializer(data=request.data)
         s.is_valid(raise_exception=True)

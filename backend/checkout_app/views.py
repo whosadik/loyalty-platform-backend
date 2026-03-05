@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import ValidationError
 
-from checkout_app.serializers import CheckoutRequestSerializer
+from checkout_app.serializers import CheckoutCommitResponseSerializer, CheckoutRequestSerializer
 from checkout_app.pricing import Line, apply_offer_to_totals, calc_gross
 from transactions.models import Transaction, TransactionItem, OwnedProduct
 from offers.models import OfferAssignment, OfferEvent
@@ -24,11 +24,12 @@ from roadmap_app.events import build_step_event_context, record_roadmap_event
 from roadmap_app.models import RoadmapEvent
 from roadmap_app.services import match_completed_steps_for_purchase, update_roadmap_from_purchase
 
-from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializer
+from drf_spectacular.utils import OpenApiResponse, OpenApiExample, extend_schema, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 
 from django.db import IntegrityError
+from backend.api_serializers import ApiErrorSerializer
 from backend.throttles import CheckoutPreviewRateThrottle
 
 from audit.logging import log_event
@@ -78,6 +79,20 @@ def _raise_validation(message: str) -> None:
 class CheckoutView(APIView):
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Checkout"],
+        description=(
+            "Commit checkout transaction. "
+            "Returns 201 for a fresh commit and 200 with idempotent_replay=true for a replayed idempotency key."
+        ),
+        request=CheckoutRequestSerializer,
+        responses={
+            201: CheckoutCommitResponseSerializer,
+            200: CheckoutCommitResponseSerializer,
+            400: OpenApiResponse(response=ApiErrorSerializer),
+            409: OpenApiResponse(response=ApiErrorSerializer, description="Duplicate idempotency key without stored payload"),
+        },
+    )
     def post(self, request):
         req = CheckoutRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)

@@ -39,3 +39,5 @@ reports/**
 data/catalog/**
 *.xlsx
 *.csv
+*.zip
+docs/

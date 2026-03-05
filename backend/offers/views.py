@@ -11,7 +11,7 @@ from users_app.models import CustomerProfile
 from transactions.models import OwnedProduct, Transaction, TransactionItem
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from .models import Offer, OfferAssignment, CampaignBudget, OfferEvent
-from .serializers import RedeemOfferRequestSerializer
+from .serializers import RedeemOfferRequestSerializer, RedeemOfferResponseSerializer
 from offers.services import get_or_assign_next_offer 
 from offers.events import record_offer_event
 from ml_logic.next_best_reward import compute_rfm, segment, pick_next_offer
@@ -31,6 +31,7 @@ from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
 from backend.throttles import NextOfferRateThrottle
 
+from backend.api_serializers import ApiErrorSerializer
 from audit.logging import log_event
 from audit.models import AuditEvent
 from roadmap_app.events import record_exposed_from_offer_assignment
@@ -200,6 +201,14 @@ class RedeemOfferView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(
+        tags=["Offers"],
+        request=RedeemOfferRequestSerializer,
+        responses={
+            200: RedeemOfferResponseSerializer,
+            400: ApiErrorSerializer,
+        },
+    )
     def post(self, request):
         req = RedeemOfferRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)
