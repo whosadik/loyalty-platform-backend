@@ -32,6 +32,7 @@ from admin_tools.sim.sim_utils import (
 )
 from admin_tools.postgres_sequences import apply_postgres_sequences, inspect_postgres_sequences
 from catalog.models import Product
+from checkout_app.pricing import is_eligible
 from loyalty.models import LoyaltyAccount, Tier
 from offers.models import OfferAssignment
 from roadmap_app.fragrance_slots import SLOTS, slot_of_fragrance
@@ -1465,6 +1466,37 @@ class Command(BaseCommand):
             seen.add(int(pid))
         return items, chosen_product_ids
 
+    def _payload_has_eligible_item(
+        self,
+        *,
+        items: list[dict[str, int]],
+        target: dict[str, Any],
+    ) -> bool:
+        target = target if isinstance(target, dict) else {}
+        scope = str(target.get("scope") or "cart").strip().lower()
+        if scope == "cart":
+            return True
+
+        product_ids = [
+            int(pid)
+            for pid in (_safe_int((row or {}).get("product")) for row in (items or []))
+            if pid is not None
+        ]
+        if not product_ids:
+            return False
+
+        products = Product.objects.in_bulk(product_ids)
+        for product_id in product_ids:
+            product = products.get(int(product_id))
+            if product is None or not bool(product.in_stock):
+                continue
+            try:
+                if is_eligible(product, target):
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _build_checkout_payload(
         self,
         *,
@@ -1571,6 +1603,26 @@ class Command(BaseCommand):
                 rng=rng,
                 product_cache=product_cache,
             )
+            if not self._payload_has_eligible_item(items=items, target=target):
+                apply_assignment = False
+                self._warn(
+                    warnings,
+                    "checkout apply skipped after final eligibility validation "
+                    f"user_id={user_id} assignment_id={assignment_id}",
+                )
+                if assignment_id is not None:
+                    self._log_checkout_skip_no_eligible(
+                        user_id=user_id,
+                        request_id=request_id,
+                        request_payload={
+                            "channel": "web",
+                            "items": items,
+                            "idempotency_key": idempotency_key,
+                            "apply_assignment_id": int(assignment_id),
+                        },
+                        assignment_id=int(assignment_id),
+                        target=target,
+                    )
 
         payload: dict[str, Any] = {
             "channel": "web",

@@ -12,7 +12,11 @@ from catalog.models import Product
 from ml_logic.recommender import recommend as rec_recommend
 from offers.services import _build_rec_profile, _cooccurrence_90d, _load_products_for_recs
 from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
-from roadmap_app.ml_next_step import predict_next_product_types
+from roadmap_app.ml_next_step import (
+    predict_next_product_types,
+    v4_category_staged_rollout_status,
+    v4_min_lift_guard_status,
+)
 from roadmap_app.models import RoadmapPlan, RoadmapStep
 from transactions.models import OwnedProduct, TransactionItem
 from users_app.models import CustomerProfile
@@ -74,6 +78,75 @@ def _unique(values: list[str]) -> list[str]:
             continue
         seen.add(s)
         out.append(s)
+    return out
+
+
+def _default_ml_mode_and_path() -> tuple[str, str]:
+    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
+    use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
+    if use_v4:
+        return "v4_ranking", str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or "")
+    if use_v3:
+        return "v3_multiclass", str(getattr(settings, "ROADMAP_NEXTSTEP_V3_MODEL_PATH", "") or "")
+    return "legacy", str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or "")
+
+
+def _default_ml_threshold(mode: str) -> float:
+    if str(mode) == "v4_ranking":
+        return float(
+            getattr(
+                settings,
+                "ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD",
+                getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35),
+            )
+        )
+    return float(getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35))
+
+
+def _normalize_plan_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    out = dict(meta) if isinstance(meta, dict) else {}
+    ml = out.get("ml")
+    ml_out: dict[str, Any] = dict(ml) if isinstance(ml, dict) else {}
+    default_mode, default_path = _default_ml_mode_and_path()
+    mode = str(ml_out.get("mode") or default_mode)
+    model_path = str(ml_out.get("model_path") or default_path)
+    ml_out["mode"] = mode
+    ml_out["model_path"] = model_path
+    if "threshold" not in ml_out:
+        ml_out["threshold"] = _default_ml_threshold(mode)
+    if "predictions" not in ml_out:
+        ml_out["predictions"] = []
+    if "used" not in ml_out:
+        ml_out["used"] = False
+    if "category_guard" not in ml_out:
+        ml_out["category_guard"] = None
+    if "guard" not in ml_out:
+        ml_out["guard"] = None
+
+    decision_raw = str(ml_out.get("decision") or "").strip().lower()
+    if decision_raw not in {"model_used", "fallback", "disabled"}:
+        if bool(ml_out.get("used")):
+            decision_raw = "model_used"
+        elif str(ml_out.get("fallback_reason") or "").strip():
+            decision_raw = "fallback"
+        else:
+            decision_raw = "disabled"
+    ml_out["decision"] = decision_raw
+    fallback_reason = str(ml_out.get("fallback_reason") or "").strip()
+    disabled_reason = str(ml_out.get("disabled_reason") or "").strip()
+    if decision_raw == "fallback":
+        ml_out["disabled_reason"] = None
+        ml_out["fallback_reason"] = fallback_reason or None
+    elif decision_raw == "disabled":
+        if not disabled_reason:
+            disabled_reason = fallback_reason or "ml_disabled"
+        ml_out["disabled_reason"] = disabled_reason
+        ml_out["fallback_reason"] = None
+    else:
+        ml_out["disabled_reason"] = None
+        ml_out["fallback_reason"] = None
+
+    out["ml"] = ml_out
     return out
 
 
@@ -211,7 +284,7 @@ def _build_chain(
     purchased_types: list[str],
     owned_types_ordered: list[str],
     context_product_ids: list[int],
-) -> tuple[list[str], dict[str, dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[str], dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     rules = CATEGORY_RULES[category]
     min_steps = int(rules["min_steps"])
     max_steps = int(rules["max_steps"])
@@ -238,21 +311,179 @@ def _build_chain(
             chain = _unique(chain + _distinct_catalog_types(category, exclude=set(chain), limit=40))
         chain = chain[: min(max_steps, target_len)]
 
-    source_by_type: dict[str, dict[str, Any]] = {
-        pt: {"source": "rules", "score": None} for pt in chain
-    }
+    source_by_type: dict[str, dict[str, Any]] = {pt: {"source": "rules", "score": None} for pt in chain}
     ml_predictions: list[dict[str, Any]] = []
-    if not bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)):
-        return chain, source_by_type, ml_predictions
+    if not chain:
+        return chain, source_by_type, ml_predictions, {
+            "decision": "disabled",
+            "fallback_reason": None,
+            "disabled_reason": "no_candidate_types",
+            "guard": None,
+            "category_guard": None,
+        }
+
+    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
+    use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
+    ml_runtime: dict[str, Any] = {
+        "decision": "disabled",
+        "fallback_reason": None,
+        "disabled_reason": "ml_disabled",
+        "guard": None,
+        "category_guard": None,
+    }
+    if not use_v4 and not use_v3:
+        return chain, source_by_type, ml_predictions, ml_runtime
+
+    if use_v4:
+        threshold = float(
+            getattr(
+                settings,
+                "ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD",
+                getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35),
+            )
+        )
+        category_guard_thresholds = {
+            "min_plans": int(getattr(settings, "ROADMAP_NEXTSTEP_V4_CATEGORY_MIN_PLANS", 100)),
+            "min_step_completion_lift": float(
+                getattr(settings, "ROADMAP_NEXTSTEP_V4_MIN_STEP_COMPLETION_LIFT", 0.01)
+            ),
+            "min_offer_redeem_lift": float(
+                getattr(settings, "ROADMAP_NEXTSTEP_V4_MIN_OFFER_REDEEM_LIFT", 0.005)
+            ),
+            "max_negative_step_ctr_lift_soft": float(
+                getattr(
+                    settings,
+                    "ROADMAP_NEXTSTEP_V4_MAX_NEGATIVE_STEP_CTR_LIFT_SOFT",
+                    getattr(settings, "ROADMAP_NEXTSTEP_V4_MAX_NEGATIVE_STEP_CTR_LIFT", -0.02),
+                )
+            ),
+            "max_negative_offer_ctr_lift_soft": float(
+                getattr(
+                    settings,
+                    "ROADMAP_NEXTSTEP_V4_MAX_NEGATIVE_OFFER_CTR_LIFT_SOFT",
+                    getattr(settings, "ROADMAP_NEXTSTEP_V4_MAX_NEGATIVE_OFFER_CTR_LIFT", -0.03),
+                )
+            ),
+            "allow_primary_win_despite_soft_ctr_drop": bool(
+                getattr(settings, "ROADMAP_NEXTSTEP_V4_ALLOW_PRIMARY_WIN_DESPITE_SOFT_CTR_DROP", True)
+            ),
+        }
+        staged = v4_category_staged_rollout_status(category)
+        rollout = staged.get("rollout") if isinstance(staged.get("rollout"), dict) else {}
+        final_status = str(staged.get("final_status") or "HOLD").upper()
+        category_guard = {
+            "passed": final_status == "ENABLE",
+            "reason": str(staged.get("reason") or ""),
+            "hold_reason": staged.get("hold_reason"),
+            "final_status": final_status,
+            "current_decision": str(staged.get("current_decision") or final_status),
+            "recommendation_7d": str(staged.get("recommendation_7d") or ""),
+            "recommendation_30d": str(staged.get("recommendation_30d") or ""),
+            "stability_gate_failures": list(staged.get("stability_gate_failures") or []),
+            "source_report_path_7d": str(staged.get("source_report_path_7d") or ""),
+            "source_report_path_30d": str(staged.get("source_report_path_30d") or ""),
+            "category": str(category),
+            "cohort_mode": "fresh",
+            "control": "non_model",
+            "thresholds": category_guard_thresholds,
+            "guard_7d": staged.get("guard_7d"),
+            "guard_30d": staged.get("guard_30d"),
+        }
+
+        if final_status == "DISABLE":
+            rollout_reason = str(staged.get("reason") or rollout.get("reason") or "category_disabled")
+            disabled_reason = "ml_disabled" if rollout_reason == "ml_disabled" else "category_disabled"
+            category_guard["passed"] = False
+            category_guard["reason"] = rollout_reason
+            ml_runtime = {
+                "decision": "disabled",
+                "fallback_reason": None,
+                "disabled_reason": disabled_reason,
+                "guard": None,
+                "category_guard": category_guard,
+            }
+            return chain, source_by_type, ml_predictions, ml_runtime
+
+        if final_status != "ENABLE":
+            ml_runtime = {
+                "decision": "fallback",
+                "fallback_reason": "category_guard_failed",
+                "disabled_reason": None,
+                "guard": None,
+                "category_guard": category_guard,
+            }
+            return chain, source_by_type, ml_predictions, ml_runtime
+
+        guard = v4_min_lift_guard_status()
+        ml_runtime = {
+            "decision": "fallback",
+            "fallback_reason": None,
+            "disabled_reason": None,
+            "guard": guard,
+            "category_guard": category_guard,
+        }
+        if not bool(guard.get("passed")):
+            ml_runtime["fallback_reason"] = str(guard.get("reason") or "min_lift_guard_blocked")
+            return chain, source_by_type, ml_predictions, ml_runtime
+        ml_predictions = predict_next_product_types(
+            user,
+            context_product_ids,
+            category,
+            candidate_types=chain,
+        )
+        if not ml_predictions:
+            ml_runtime["fallback_reason"] = "no_predictions"
+            return chain, source_by_type, ml_predictions, ml_runtime
+
+        top = None
+        for row in ml_predictions:
+            pt = str(row.get("product_type") or row.get("candidate_type") or "").strip()
+            if pt in chain:
+                top = {"product_type": pt, "score": float(row.get("score", 0.0))}
+                break
+        if not top:
+            ml_runtime["fallback_reason"] = "top_outside_guardrails"
+            return chain, source_by_type, ml_predictions, ml_runtime
+        if float(top["score"]) < threshold:
+            ml_runtime["fallback_reason"] = "low_confidence"
+            return chain, source_by_type, ml_predictions, ml_runtime
+
+        top_pt = str(top["product_type"])
+        top_score = float(top["score"])
+        anchor = min(len(chain), max(0, len(purchased_types)))
+        if top_pt in chain:
+            old_idx = int(chain.index(top_pt))
+            if old_idx >= anchor and old_idx != anchor:
+                chain = list(chain)
+                chain.pop(old_idx)
+                chain.insert(anchor, top_pt)
+        source_by_type[top_pt] = {"source": "ml_next_step", "score": top_score}
+        ml_runtime["decision"] = "model_used"
+        ml_runtime["fallback_reason"] = None
+        ml_runtime["disabled_reason"] = None
+        return chain, source_by_type, ml_predictions, ml_runtime
 
     threshold = float(getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35))
-    ml_predictions = predict_next_product_types(user, context_product_ids, category)
+    ml_runtime = {
+        "decision": "fallback",
+        "fallback_reason": None,
+        "disabled_reason": None,
+        "guard": None,
+        "category_guard": None,
+    }
+    ml_predictions = predict_next_product_types(
+        user,
+        context_product_ids,
+        category,
+        candidate_types=chain,
+    )
     if not ml_predictions:
-        return chain, source_by_type, ml_predictions
+        ml_runtime["fallback_reason"] = "no_predictions"
+        return chain, source_by_type, ml_predictions, ml_runtime
 
     score_by_type: dict[str, float] = {}
     for row in ml_predictions:
-        pt = str(row.get("product_type") or "").strip()
+        pt = str(row.get("product_type") or row.get("candidate_type") or "").strip()
         if not pt or pt not in chain:
             continue
         score = float(row.get("score", 0.0))
@@ -263,7 +494,8 @@ def _build_chain(
             score_by_type[pt] = score
 
     if not score_by_type:
-        return chain, source_by_type, ml_predictions
+        ml_runtime["fallback_reason"] = "low_confidence"
+        return chain, source_by_type, ml_predictions, ml_runtime
 
     anchor = min(len(chain), max(0, len(purchased_types)))
     prefix = list(chain[:anchor])
@@ -280,7 +512,9 @@ def _build_chain(
     chain = prefix + suffix_sorted
     for pt, score in score_by_type.items():
         source_by_type[pt] = {"source": "ml_next_step", "score": float(score)}
-    return chain, source_by_type, ml_predictions
+    ml_runtime["decision"] = "model_used"
+    ml_runtime["disabled_reason"] = None
+    return chain, source_by_type, ml_predictions, ml_runtime
 
 
 def _recommend_candidates_for_type(
@@ -429,7 +663,7 @@ def _upsert_plan_with_steps(
         else:
             plan = RoadmapPlan.objects.create(user=user, category=category, is_active=True, meta={})
 
-        plan.meta = meta
+        plan.meta = _normalize_plan_meta(meta)
         plan.save(update_fields=["meta", "updated_at"])
 
         keep_indexes: list[int] = []
@@ -466,7 +700,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     purchased_types_set = set(purchased_types)
     context_product_ids = _context_product_ids(user, post_ctx, limit=50)
 
-    chain, source_by_type, ml_predictions = _build_chain(
+    chain, source_by_type, ml_predictions, ml_runtime = _build_chain(
         user=user,
         category=category,
         purchased_types=purchased_types,
@@ -549,7 +783,24 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             }
         )
 
-    threshold = float(getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35))
+    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
+    use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False))
+    threshold = float(
+        getattr(
+            settings,
+            "ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD",
+            getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35),
+        )
+    ) if use_v4 else float(getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35))
+    if use_v4:
+        model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or "")
+        ml_mode = "v4_ranking"
+    elif use_v3:
+        model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_V3_MODEL_PATH", "") or "")
+        ml_mode = "v3_multiclass"
+    else:
+        model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or "")
+        ml_mode = "legacy"
     meta = {
         "generation_state": "ok",
         "source": "roadmap_v1",
@@ -559,16 +810,20 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "threshold": threshold,
             "predictions": ml_predictions[:10],
             "used": any((x.get("source") == "ml_next_step") for x in source_by_type.values()),
-            "model_path": str(
-                (
-                    getattr(settings, "ROADMAP_NEXTSTEP_V3_MODEL_PATH", "")
-                    if bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False))
-                    else getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "")
-                )
-                or ""
-            ),
+            "decision": str(ml_runtime.get("decision") or "fallback"),
+            "fallback_reason": ml_runtime.get("fallback_reason"),
+            "disabled_reason": ml_runtime.get("disabled_reason"),
+            "guard": ml_runtime.get("guard"),
+            "category_guard": ml_runtime.get("category_guard"),
+            "mode": ml_mode,
+            "model_path": model_path,
         },
         "context": {
+            "refresh_caller": (
+                "update_roadmap_from_purchase"
+                if (post_ctx and ((post_ctx.get("product_ids") or []) or (post_ctx.get("categories") or [])))
+                else "refresh_roadmap"
+            ),
             "post_ctx_categories": (post_ctx or {}).get("categories") or [],
             "post_ctx_product_ids": (post_ctx or {}).get("product_ids") or [],
             "context_product_ids_count": len(context_product_ids),

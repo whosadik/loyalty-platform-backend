@@ -16,6 +16,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from catalog.models import Product
+from checkout_app.pricing import is_eligible
 from offers.models import CampaignBudget, Offer, OfferAssignment
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 from transactions.models import Transaction, TransactionItem
@@ -365,6 +366,14 @@ class SimulatorCheckoutEligibilityBuilderTests(TestCase):
             product_type="cleanser",
             in_stock=True,
         )
+        self.haircare_product = Product.objects.create(
+            name="Builder Haircare Product",
+            brand="B",
+            price=Decimal("13.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
 
         self.campaign = CampaignBudget.objects.create(
             name="builder_campaign",
@@ -414,6 +423,12 @@ class SimulatorCheckoutEligibilityBuilderTests(TestCase):
         self.assertEqual(int(payload.get("apply_assignment_id")), int(assignment.id))
         ids = {int(x.get("product")) for x in payload.get("items", [])}
         self.assertIn(int(self.target_product.id), ids)
+        self.assertTrue(
+            any(
+                is_eligible(Product.objects.get(id=int(item["product"])), assignment.target)
+                for item in payload.get("items", [])
+            )
+        )
 
     def test_builder_skips_apply_when_no_eligible_item(self):
         assignment = OfferAssignment.objects.create(
@@ -442,3 +457,70 @@ class SimulatorCheckoutEligibilityBuilderTests(TestCase):
 
         self.assertFalse(applied)
         self.assertNotIn("apply_assignment_id", payload)
+
+    def test_builder_includes_product_type_eligible_item(self):
+        assignment = OfferAssignment.objects.create(
+            user=self.user,
+            offer=self.offer,
+            target={
+                "scope": "product_type",
+                "value": "serum",
+                "category": "skincare",
+            },
+        )
+        payload, applied = self.command._build_checkout_payload(
+            user_id=int(self.user.id),
+            category="skincare",
+            base_items=[{"product": int(self.other_product.id), "quantity": 1}],
+            base_product_ids=[int(self.other_product.id)],
+            max_items=3,
+            assignment_id=int(assignment.id),
+            assignment_target=assignment.target,
+            idempotency_key="builder-k3",
+            request_id="req-builder-3",
+            warnings=[],
+            rng=self.rng,
+            product_cache=self.product_cache,
+        )
+
+        self.assertTrue(applied)
+        self.assertEqual(int(payload.get("apply_assignment_id")), int(assignment.id))
+        self.assertTrue(
+            any(
+                is_eligible(Product.objects.get(id=int(item["product"])), assignment.target)
+                for item in payload.get("items", [])
+            )
+        )
+
+    def test_builder_includes_category_eligible_item(self):
+        assignment = OfferAssignment.objects.create(
+            user=self.user,
+            offer=self.offer,
+            target={
+                "scope": "category",
+                "value": "skincare",
+            },
+        )
+        payload, applied = self.command._build_checkout_payload(
+            user_id=int(self.user.id),
+            category="haircare",
+            base_items=[{"product": int(self.haircare_product.id), "quantity": 1}],
+            base_product_ids=[int(self.haircare_product.id)],
+            max_items=3,
+            assignment_id=int(assignment.id),
+            assignment_target=assignment.target,
+            idempotency_key="builder-k4",
+            request_id="req-builder-4",
+            warnings=[],
+            rng=self.rng,
+            product_cache=self.product_cache,
+        )
+
+        self.assertTrue(applied)
+        self.assertEqual(int(payload.get("apply_assignment_id")), int(assignment.id))
+        self.assertTrue(
+            any(
+                is_eligible(Product.objects.get(id=int(item["product"])), assignment.target)
+                for item in payload.get("items", [])
+            )
+        )

@@ -65,6 +65,26 @@ def _why_to_text(why: Any) -> str:
     return str(why or "").lower()
 
 
+def _fallback_reason_bucket(reason: Any) -> str:
+    normalized = str(reason or "").strip().lower()
+    if normalized in {"no_predictions", "low_confidence", "top_outside_guardrails", "category_guard_failed"}:
+        return normalized
+    return "other"
+
+
+def _disabled_reason_bucket(reason: Any) -> str:
+    normalized = str(reason or "").strip().lower()
+    if normalized in {"ml_disabled", "category_disabled"}:
+        return normalized
+    return "other"
+
+
+def _top_reason_text(counter: Counter[str], limit: int = 3) -> str:
+    if not counter:
+        return "-"
+    return ", ".join(f"{reason}:{count}" for reason, count in counter.most_common(limit))
+
+
 def _md_table(headers: list[str], rows: list[list[Any]]) -> str:
     if not rows:
         rows = [["-"] * len(headers)]
@@ -124,6 +144,83 @@ class Command(BaseCommand):
         plans_updated_total = plan_qs.count()
         steps_updated_total = step_qs.count()
         offers_assigned_total = offer_qs.count()
+
+        ml_decision_counts: Counter[str] = Counter()
+        ml_decision_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        ml_fallback_reason_counts: Counter[str] = Counter()
+        ml_disabled_reason_counts: Counter[str] = Counter()
+        ml_fallback_reason_group_counts: Counter[str] = Counter()
+        ml_disabled_reason_group_counts: Counter[str] = Counter()
+        ml_category_guard_reason_counts: Counter[str] = Counter()
+        ml_fallback_reason_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        ml_disabled_reason_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        ml_rollout_status_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        ml_hold_reason_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        ml_stability_failures_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        decision_order = ["model_used", "fallback", "disabled", "missing_ml_meta"]
+        for row in plan_qs.values("category", "meta").iterator():
+            category_key = str(row.get("category") or "").strip() or "__unknown__"
+            meta = row.get("meta")
+            meta_dict = _safe_dict(meta)
+            ml_meta = _safe_dict(meta_dict.get("ml"))
+            category_guard = _safe_dict(ml_meta.get("category_guard"))
+            category_guard_reason = str(category_guard.get("reason") or "").strip() or "__missing_reason__"
+            if category_guard:
+                ml_category_guard_reason_counts[category_guard_reason] += 1
+                rollout_status = str(category_guard.get("final_status") or "").strip().upper()
+                if rollout_status not in {"ENABLE", "HOLD", "DISABLE"}:
+                    rollout_status = "__unknown__"
+                ml_rollout_status_by_category[category_key][rollout_status] += 1
+                if rollout_status == "HOLD":
+                    hold_reason = str(
+                        category_guard.get("hold_reason")
+                        or category_guard.get("reason")
+                        or "__missing_reason__"
+                    ).strip() or "__missing_reason__"
+                    ml_hold_reason_by_category[category_key][hold_reason] += 1
+                failures = category_guard.get("stability_gate_failures")
+                if isinstance(failures, list):
+                    for raw_failure in failures:
+                        failure = str(raw_failure or "").strip() or "__missing_reason__"
+                        ml_stability_failures_by_category[category_key][failure] += 1
+            decision = str(ml_meta.get("decision") or "").strip().lower()
+            if decision not in {"model_used", "fallback", "disabled"}:
+                decision = "missing_ml_meta"
+            ml_decision_counts[decision] += 1
+            ml_decision_by_category[category_key][decision] += 1
+            if not category_guard:
+                derived_rollout_status = "__unknown__"
+                if decision == "model_used":
+                    derived_rollout_status = "ENABLE"
+                elif decision == "fallback":
+                    derived_rollout_status = "HOLD"
+                    hold_reason_derived = str(ml_meta.get("fallback_reason") or "__missing_reason__").strip() or "__missing_reason__"
+                    ml_hold_reason_by_category[category_key][hold_reason_derived] += 1
+                elif decision == "disabled":
+                    derived_rollout_status = "DISABLE"
+                ml_rollout_status_by_category[category_key][derived_rollout_status] += 1
+            if decision == "fallback":
+                reason = str(ml_meta.get("fallback_reason") or "").strip() or "__missing_reason__"
+                ml_fallback_reason_counts[reason] += 1
+                ml_fallback_reason_by_category[category_key][reason] += 1
+                ml_fallback_reason_group_counts[_fallback_reason_bucket(reason)] += 1
+            elif decision == "disabled":
+                reason = str(
+                    ml_meta.get("disabled_reason")
+                    or ml_meta.get("fallback_reason")
+                    or ""
+                ).strip() or "__missing_reason__"
+                ml_disabled_reason_counts[reason] += 1
+                ml_disabled_reason_by_category[category_key][reason] += 1
+                ml_disabled_reason_group_counts[_disabled_reason_bucket(reason)] += 1
+        model_used_plans = int(ml_decision_counts.get("model_used", 0))
+        fallback_plans = int(ml_decision_counts.get("fallback", 0))
+        disabled_plans = int(ml_decision_counts.get("disabled", 0))
+        missing_ml_meta_plans = int(ml_decision_counts.get("missing_ml_meta", 0))
+        model_used_share = _pct(model_used_plans, plans_updated_total)
+        fallback_share = _pct(fallback_plans, plans_updated_total)
+        disabled_share = _pct(disabled_plans, plans_updated_total)
+        missing_ml_meta_share = _pct(missing_ml_meta_plans, plans_updated_total)
 
         shortcut_qs = offer_qs.filter(target__picked_via__startswith="roadmap_shortcut")
         offers_with_roadmap_shortcut_total = shortcut_qs.count()
@@ -483,6 +580,12 @@ class Command(BaseCommand):
         lines.append("## 1) Summary")
         lines.append(f"- users_touched: **{users_touched}**")
         lines.append(f"- plans_updated: **{plans_updated_total}**")
+        lines.append(
+            f"- ml decision share: **model_used={model_used_plans}/{plans_updated_total} ({model_used_share}%)**, "
+            f"**fallback={fallback_plans}/{plans_updated_total} ({fallback_share}%)**, "
+            f"**disabled={disabled_plans}/{plans_updated_total} ({disabled_share}%)**, "
+            f"**missing_ml_meta={missing_ml_meta_plans}/{plans_updated_total} ({missing_ml_meta_share}%)**"
+        )
         lines.append(f"- steps_updated: **{steps_updated_total}**")
         lines.append(f"- offers_assigned: **{offers_assigned_total}**")
         lines.append(f"- offers_with_roadmap_shortcut: **{offers_with_roadmap_shortcut_total}**")
@@ -542,6 +645,185 @@ class Command(BaseCommand):
             _md_table(
                 ["category", "plans_updated"],
                 [[k, v] for k, v in sorted(plans_by_category.items(), key=lambda kv: (-kv[1], kv[0]))],
+            )
+        )
+        lines.append("")
+        lines.append("### ML runtime decisions")
+        decision_rows = [[decision, int(ml_decision_counts.get(decision, 0))] for decision in decision_order]
+        lines.append(
+            _md_table(
+                ["decision", "count"],
+                decision_rows,
+            )
+        )
+        lines.append("")
+        lines.append("### ML runtime decisions by category")
+        lines.append(
+            _md_table(
+                ["category", "model_used", "fallback", "disabled", "missing_ml_meta"],
+                [
+                    [
+                        cat,
+                        int(ml_decision_by_category[cat].get("model_used", 0)),
+                        int(ml_decision_by_category[cat].get("fallback", 0)),
+                        int(ml_decision_by_category[cat].get("disabled", 0)),
+                        int(ml_decision_by_category[cat].get("missing_ml_meta", 0)),
+                    ]
+                    for cat in sorted(ml_decision_by_category.keys())
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### ML fallback reasons")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [
+                    [bucket, int(ml_fallback_reason_group_counts.get(bucket, 0))]
+                    for bucket in [
+                        "no_predictions",
+                        "low_confidence",
+                        "top_outside_guardrails",
+                        "category_guard_failed",
+                        "other",
+                    ]
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### ML fallback reasons (raw)")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [
+                    [k, v]
+                    for k, v in sorted(ml_fallback_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### ML disabled reasons")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [
+                    [bucket, int(ml_disabled_reason_group_counts.get(bucket, 0))]
+                    for bucket in ["ml_disabled", "category_disabled", "other"]
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### ML disabled reasons (raw)")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [
+                    [k, v]
+                    for k, v in sorted(ml_disabled_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### Category guard reasons")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [
+                    [k, v]
+                    for k, v in sorted(ml_category_guard_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### ML per-category detail")
+        lines.append(
+            _md_table(
+                ["category", "model_used", "fallback", "disabled", "top_fallback_reasons", "top_disabled_reasons"],
+                [
+                    [
+                        cat,
+                        int(ml_decision_by_category[cat].get("model_used", 0)),
+                        int(ml_decision_by_category[cat].get("fallback", 0)),
+                        int(ml_decision_by_category[cat].get("disabled", 0)),
+                        _top_reason_text(ml_fallback_reason_by_category.get(cat, Counter())),
+                        _top_reason_text(ml_disabled_reason_by_category.get(cat, Counter())),
+                    ]
+                    for cat in sorted(ml_decision_by_category.keys())
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### Rollout status by category")
+        lines.append(
+            _md_table(
+                ["category", "ENABLE", "HOLD", "DISABLE", "__unknown__"],
+                [
+                    [
+                        cat,
+                        int(ml_rollout_status_by_category[cat].get("ENABLE", 0)),
+                        int(ml_rollout_status_by_category[cat].get("HOLD", 0)),
+                        int(ml_rollout_status_by_category[cat].get("DISABLE", 0)),
+                        int(ml_rollout_status_by_category[cat].get("__unknown__", 0)),
+                    ]
+                    for cat in sorted(ml_rollout_status_by_category.keys())
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### Model-used share by category")
+        lines.append(
+            _md_table(
+                ["category", "model_used", "known_decisions", "model_used_share_known_pct"],
+                [
+                    [
+                        cat,
+                        int(ml_decision_by_category[cat].get("model_used", 0)),
+                        int(
+                            ml_decision_by_category[cat].get("model_used", 0)
+                            + ml_decision_by_category[cat].get("fallback", 0)
+                            + ml_decision_by_category[cat].get("disabled", 0)
+                        ),
+                        _pct(
+                            int(ml_decision_by_category[cat].get("model_used", 0)),
+                            int(
+                                ml_decision_by_category[cat].get("model_used", 0)
+                                + ml_decision_by_category[cat].get("fallback", 0)
+                                + ml_decision_by_category[cat].get("disabled", 0)
+                            ),
+                        ),
+                    ]
+                    for cat in sorted(ml_decision_by_category.keys())
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### HOLD reasons by category")
+        lines.append(
+            _md_table(
+                ["category", "hold_count", "top_hold_reasons"],
+                [
+                    [
+                        cat,
+                        int(ml_rollout_status_by_category[cat].get("HOLD", 0)),
+                        _top_reason_text(ml_hold_reason_by_category.get(cat, Counter())),
+                    ]
+                    for cat in sorted(ml_rollout_status_by_category.keys())
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### Stability gate failures by category")
+        lines.append(
+            _md_table(
+                ["category", "failure_count", "top_failures"],
+                [
+                    [
+                        cat,
+                        int(sum(ml_stability_failures_by_category.get(cat, Counter()).values())),
+                        _top_reason_text(ml_stability_failures_by_category.get(cat, Counter())),
+                    ]
+                    for cat in sorted(ml_rollout_status_by_category.keys())
+                ],
             )
         )
         lines.append("")
