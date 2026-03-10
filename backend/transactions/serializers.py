@@ -1,7 +1,9 @@
 from decimal import Decimal
 
 from rest_framework import serializers
-from .models import Transaction, TransactionItem, OwnedProduct
+
+from catalog.serializers import ProductSerializer
+from .models import OwnedProduct, Transaction, TransactionItem
 
 
 class TransactionItemSerializer(serializers.ModelSerializer):
@@ -39,13 +41,29 @@ class TransactionSerializer(serializers.ModelSerializer):
         txn.save(update_fields=["total_amount"])
         return txn
 
-from catalog.serializers import ProductSerializer
-from .models import OwnedProduct
-
 
 class OwnedProductSerializer(serializers.ModelSerializer):
     product = ProductSerializer(read_only=True)
 
     class Meta:
         model = OwnedProduct
-        fields = ["id", "product", "quantity_total", "is_active", "acquired_at", "last_acquired_at", "source"]
+        fields = [
+            "id",
+            "product",
+            "quantity_total",
+            "is_active",
+            "notes",
+            "opened_at",
+            "finish_date",
+            "acquired_at",
+            "last_acquired_at",
+            "source",
+        ]
+        read_only_fields = [
+            "id",
+            "product",
+            "quantity_total",
+            "acquired_at",
+            "last_acquired_at",
+            "source",
+        ]

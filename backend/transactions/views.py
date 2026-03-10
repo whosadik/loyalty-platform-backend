@@ -36,12 +36,26 @@ class OwnedProductViewSet(viewsets.ModelViewSet):
         obj = self.get_object()
         obj.is_active = False
         obj.save(update_fields=["is_active"])
-        return Response({"ok": True, "id": obj.id, "is_active": obj.is_active})
+        return Response(
+            {
+                "ok": True,
+                "id": obj.id,
+                "is_active": obj.is_active,
+                "owned_product": self.get_serializer(obj).data,
+            }
+        )
 
     @action(detail=True, methods=["post"])
     def activate(self, request, pk=None):
         obj = self.get_object()
         obj.is_active = True
         obj.save(update_fields=["is_active"])
-        return Response({"ok": True, "id": obj.id, "is_active": obj.is_active})
+        return Response(
+            {
+                "ok": True,
+                "id": obj.id,
+                "is_active": obj.is_active,
+                "owned_product": self.get_serializer(obj).data,
+            }
+        )
 

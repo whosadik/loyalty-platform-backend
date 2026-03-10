@@ -41,6 +41,9 @@ class OwnedProduct(models.Model):
     product = models.ForeignKey("catalog.Product", on_delete=models.PROTECT)
     quantity_total = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)  # если закончился/не использует
+    notes = models.TextField(blank=True, default="")
+    opened_at = models.DateField(null=True, blank=True)
+    finish_date = models.DateField(null=True, blank=True)
     last_acquired_at = models.DateTimeField(default=timezone.now)
 
     acquired_at = models.DateTimeField(default=timezone.now)
