@@ -915,6 +915,15 @@ class Command(BaseCommand):
         )
 
         trained_at = datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        runtime_guard = {
+            "metric": "ndcg_at_5",
+            "required_delta": 0.01,
+            "model_value": float(selected["metrics_test"]["ndcg_at_5"]),
+            "popularity_value": float(
+                (((dataset_baselines.get("splits") or {}).get("test") or {}).get("popularity") or {}).get("ndcg_at_5", 0.0)
+            ),
+        }
+        runtime_guard["passed"] = float(runtime_guard["model_value"]) >= float(runtime_guard["popularity_value"]) + 0.01
         artifact = {
             "task": "roadmap_nextstep_v4_ranking",
             "model": selected["bundle"]["model"],
@@ -937,6 +946,8 @@ class Command(BaseCommand):
         model_dir.mkdir(parents=True, exist_ok=True)
         model_path = model_dir / "model.pkl"
         joblib.dump(artifact, model_path)
+        model_eval_report_path = model_dir / "eval_report.json"
+        model_eval_report_md_path = model_dir / "eval_report.md"
 
         model_metadata = {
             "trained_at_utc": trained_at,
@@ -960,6 +971,13 @@ class Command(BaseCommand):
             "negative_samples_per_episode": int(max_negatives_per_episode),
             "selected_params": selected["params"],
             "candidate_types_by_category": dataset_meta.get("candidate_types_by_category") or {},
+            "metrics_train": selected["metrics_train"],
+            "metrics_val": selected["metrics_val"],
+            "metrics_test": selected["metrics_test"],
+            "dataset_baselines": dataset_baselines,
+            "baseline_comparison": baseline_comparison,
+            "runtime_guard": runtime_guard,
+            "eval_report_path": str(model_eval_report_path),
         }
         model_metadata_path = model_dir / "metadata.json"
         model_metadata_path.write_text(json.dumps(model_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1017,18 +1035,10 @@ class Command(BaseCommand):
                 "train_rows_after": int(len(sampled_train_df)),
                 "fit_rows_after_positive_filter": int(len(fit_train_df)),
             },
-            "runtime_guard": {
-                "metric": "ndcg_at_5",
-                "required_delta": 0.01,
-                "model_value": float(selected["metrics_test"]["ndcg_at_5"]),
-                "popularity_value": float(
-                    (((dataset_baselines.get("splits") or {}).get("test") or {}).get("popularity") or {}).get("ndcg_at_5", 0.0)
-                ),
-                "passed": float(selected["metrics_test"]["ndcg_at_5"]) >= float(
-                    (((dataset_baselines.get("splits") or {}).get("test") or {}).get("popularity") or {}).get("ndcg_at_5", 0.0)
-                ) + 0.01,
-            },
+            "runtime_guard": runtime_guard,
         }
+        model_eval_report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        model_eval_report_md_path.write_text(_build_eval_markdown(report), encoding="utf-8")
 
         reports_dir = (_repo_root() / "reports").resolve()
         reports_dir.mkdir(parents=True, exist_ok=True)
@@ -1042,6 +1052,7 @@ class Command(BaseCommand):
         self.stdout.write(f"[train_roadmap_nextstep_model_v4] selected_feature_set={selected_feature_set}")
         self.stdout.write(f"[train_roadmap_nextstep_model_v4] model={model_path}")
         self.stdout.write(f"[train_roadmap_nextstep_model_v4] metadata={model_metadata_path}")
+        self.stdout.write(f"[train_roadmap_nextstep_model_v4] model_eval_report={model_eval_report_path}")
         self.stdout.write(f"[train_roadmap_nextstep_model_v4] report_json={report_json_path}")
         self.stdout.write(f"[train_roadmap_nextstep_model_v4] report_md={report_md_path}")
         self.stdout.write(

@@ -16,6 +16,7 @@ from offers.models import OfferAssignment, OfferEvent
 from roadmap_app.ml_next_step import (
     v4_category_rollout_status,
     v4_category_uplift_guard_status_from_report,
+    v4_runtime_uplift_report_path,
 )
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 
@@ -42,6 +43,12 @@ def _to_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -128,6 +135,18 @@ def _freshness_labels(updated_at, *, now_utc, since):
     if updated_at < since:
         return []
     return labels
+
+
+def _step_index_bucket(step_index: int | None) -> str:
+    if step_index is None:
+        return "__unknown__"
+    if step_index <= 1:
+        return "step_1"
+    if step_index == 2:
+        return "step_2"
+    if step_index == 3:
+        return "step_3"
+    return "step_4_plus"
 
 
 def _source_from_expose_context(ctx: dict[str, Any]) -> str:
@@ -365,6 +384,14 @@ def _resolve_out_stem(*, out: str | None, days: int, category: str) -> Path:
     return Path("reports") / f"roadmap_ml_uplift_{days}d_{category}"
 
 
+def _runtime_window_label(days: int) -> str | None:
+    if int(days) == 7:
+        return "7d"
+    if int(days) == 30:
+        return "30d"
+    return None
+
+
 def _render_metric_row(metric_payload: dict[str, Any]) -> list[str]:
     model_rate = metric_payload["model"]["rate"]
     control_rate = metric_payload["control"]["rate"]
@@ -388,6 +415,7 @@ def _build_markdown(payload: dict[str, Any]) -> str:
     model = _safe_dict(cohorts.get("model_used"))
     control = _safe_dict(cohorts.get("control"))
     uplift = _safe_dict(payload.get("uplift"))
+    partial_makeup = _safe_dict(payload.get("partial_makeup_uplift"))
     runtime = _safe_dict(payload.get("runtime_observability"))
     rollout_reco = _safe_dict(payload.get("rollout_recommendation_by_category"))
     unattributed = _safe_dict(payload.get("unattributed_excluded"))
@@ -575,12 +603,92 @@ def _build_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append("")
 
-    lines.append("## 5) Runtime observability")
+    lines.append("## 5) Makeup partial canary vs non-model control")
+    partial_overall = _safe_dict(partial_makeup.get("overall"))
+    partial_overall_uplift = _safe_dict(partial_overall.get("uplift"))
+    partial_step = _safe_dict(partial_overall_uplift.get("step_funnel"))
+    partial_offer = _safe_dict(partial_overall_uplift.get("offer_funnel"))
+    lines.append(
+        _md_table(
+            ["metric", "canary", "control", "abs_lift", "rel_lift", "low_sample"],
+            [
+                _render_metric_row(_safe_dict(partial_step.get("step_ctr"))),
+                _render_metric_row(_safe_dict(partial_step.get("step_completion_rate"))),
+                _render_metric_row(_safe_dict(partial_offer.get("offer_ctr"))),
+                _render_metric_row(_safe_dict(partial_offer.get("offer_redeem_rate"))),
+            ],
+        )
+    )
+    lines.append("")
+    lines.append("### Makeup partial by product_type")
+    partial_pt_rows: list[list[Any]] = []
+    for pt, block in sorted(_safe_dict(partial_makeup.get("by_product_type")).items()):
+        metric = _safe_dict(_safe_dict(_safe_dict(block).get("uplift")).get("step_funnel")).get("step_completion_rate")
+        metric_payload = _safe_dict(metric)
+        partial_pt_rows.append(
+            [
+                pt,
+                _pct(_safe_dict(metric_payload.get("model")).get("rate")),
+                _pct(_safe_dict(metric_payload.get("control")).get("rate")),
+                _pct(metric_payload.get("abs_lift")),
+                "yes" if metric_payload.get("low_sample") else "no",
+            ]
+        )
+    lines.append(
+        _md_table(
+            [
+                "product_type",
+                "step_completion_model",
+                "step_completion_control",
+                "step_completion_abs_lift",
+                "low_sample",
+            ],
+            partial_pt_rows,
+        )
+    )
+    lines.append("")
+    lines.append("### Makeup partial by step_index")
+    partial_idx_rows: list[list[Any]] = []
+    for idx_bucket, block in sorted(_safe_dict(partial_makeup.get("by_step_index")).items()):
+        metric = _safe_dict(_safe_dict(_safe_dict(block).get("uplift")).get("step_funnel")).get("step_completion_rate")
+        metric_payload = _safe_dict(metric)
+        partial_idx_rows.append(
+            [
+                idx_bucket,
+                _pct(_safe_dict(metric_payload.get("model")).get("rate")),
+                _pct(_safe_dict(metric_payload.get("control")).get("rate")),
+                _pct(metric_payload.get("abs_lift")),
+                "yes" if metric_payload.get("low_sample") else "no",
+            ]
+        )
+    lines.append(
+        _md_table(
+            [
+                "step_index",
+                "step_completion_model",
+                "step_completion_control",
+                "step_completion_abs_lift",
+                "low_sample",
+            ],
+            partial_idx_rows,
+        )
+    )
+    lines.append("")
+
+    lines.append("## 6) Runtime observability")
     decisions = _safe_dict(runtime.get("decision_counts"))
     lines.append(
         _md_table(
             ["decision", "count"],
             [[k, int(decisions.get(k, 0))] for k in ["model_used", "fallback", "disabled", "missing_ml_meta"]],
+        )
+    )
+    lines.append("")
+    lines.append("### Rollout mode distribution")
+    lines.append(
+        _md_table(
+            ["rollout_mode", "count"],
+            [[k, v] for k, v in sorted(_safe_dict(runtime.get("rollout_mode_distribution")).items(), key=lambda kv: (-kv[1], kv[0]))],
         )
     )
     lines.append("")
@@ -617,7 +725,7 @@ def _build_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append("")
 
-    lines.append("## 6) Rollout recommendation by category")
+    lines.append("## 7) Rollout recommendation by category")
     lines.append(
         _md_table(
             [
@@ -647,7 +755,7 @@ def _build_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append("")
 
-    lines.append("## 7) Unattributed / excluded counts")
+    lines.append("## 8) Unattributed / excluded counts")
     lines.append(
         _md_table(
             ["bucket", "count"],
@@ -656,7 +764,7 @@ def _build_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append("")
 
-    lines.append("## 8) Notes / caveats")
+    lines.append("## 9) Notes / caveats")
     for note in _safe_list(payload.get("notes")):
         lines.append(f"- {note}")
     lines.append("")
@@ -690,6 +798,12 @@ class Command(BaseCommand):
         parser.add_argument("--cohort-mode", type=str, default="fresh", choices=COHORT_MODE_CHOICES)
         parser.add_argument("--control", type=str, default="non_model", choices=CONTROL_CHOICES)
         parser.add_argument("--min-plans", type=int, default=30)
+        parser.add_argument(
+            "--sync-runtime-artifact",
+            action="store_true",
+            default=False,
+            help="Write JSON payload to the model-owned runtime uplift artifact path for 7d/30d windows.",
+        )
 
     def handle(self, *args, **options):
         days = int(options["days"] or 7)
@@ -703,8 +817,19 @@ class Command(BaseCommand):
         cohort_mode = str(options["cohort_mode"] or "fresh").strip().lower()
         control = str(options["control"] or "non_model").strip().lower()
         min_plans = int(options["min_plans"] or 30)
+        sync_runtime_artifact = bool(options.get("sync_runtime_artifact"))
         if min_plans <= 0:
             raise CommandError("--min-plans must be > 0")
+        runtime_window = _runtime_window_label(days)
+        if sync_runtime_artifact:
+            if runtime_window is None:
+                raise CommandError("--sync-runtime-artifact requires --days 7 or --days 30")
+            if category != "all":
+                raise CommandError("--sync-runtime-artifact requires --category all")
+            if cohort_mode != "fresh":
+                raise CommandError("--sync-runtime-artifact requires --cohort-mode fresh")
+            if control != "non_model":
+                raise CommandError("--sync-runtime-artifact requires --control non_model")
 
         now_utc = timezone.now()
         since = now_utc - timedelta(days=days)
@@ -742,7 +867,11 @@ class Command(BaseCommand):
         disabled_reason_counts: Counter[str] = Counter()
         mode_counts: Counter[str] = Counter()
         model_path_counts: Counter[str] = Counter()
+        rollout_mode_counts: Counter[str] = Counter()
+        rollout_selected_counts: Counter[str] = Counter()
         plans_by_user_scope: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        plan_rollout_mode: dict[int, str] = {}
+        plan_rollout_selected: dict[int, bool] = {}
 
         for row in plan_rows:
             pid = int(row["id"])
@@ -766,11 +895,23 @@ class Command(BaseCommand):
             model_path = str(ml.get("model_path") or "__none__").strip() or "__none__"
             mode_counts[mode] += 1
             model_path_counts[model_path] += 1
+            rollout_mode = str(ml.get("rollout_mode") or "none").strip().lower() or "none"
+            if rollout_mode not in {"full", "partial", "none"}:
+                rollout_mode = "none"
+            rollout_selected = _as_bool(ml.get("rollout_selected"))
+            if rollout_mode == "full":
+                rollout_selected = True
+            elif rollout_mode == "none":
+                rollout_selected = False
+            rollout_mode_counts[rollout_mode] += 1
+            rollout_selected_counts["selected" if rollout_selected else "not_selected"] += 1
 
             plan_category[pid] = cat
             plan_user[pid] = user_id
             plan_updated[pid] = updated_at
             plan_decision[pid] = decision
+            plan_rollout_mode[pid] = rollout_mode
+            plan_rollout_selected[pid] = rollout_selected
             plans_by_user_scope[user_id].append(
                 {
                     "id": pid,
@@ -801,6 +942,21 @@ class Command(BaseCommand):
         control_plan_ids = {pid for pid, c in cohort_by_plan_id.items() if c == "control"}
         analysis_plan_ids = set(cohort_by_plan_id.keys())
         excluded_non_selected = len(cohort_scope_plan_ids - analysis_plan_ids)
+        makeup_cohort_scope_plan_ids = {
+            pid for pid in cohort_scope_plan_ids if str(plan_category.get(pid) or "") == "makeup"
+        }
+        partial_makeup_canary_plan_ids = {
+            pid
+            for pid in makeup_cohort_scope_plan_ids
+            if str(plan_rollout_mode.get(pid) or "none") == "partial" and bool(plan_rollout_selected.get(pid))
+        }
+        partial_makeup_control_plan_ids = {
+            pid
+            for pid in makeup_cohort_scope_plan_ids
+            if str(plan_decision.get(pid) or "") in {"fallback", "disabled"}
+            and pid not in partial_makeup_canary_plan_ids
+        }
+        partial_makeup_analysis_plan_ids = partial_makeup_canary_plan_ids | partial_makeup_control_plan_ids
 
         overall_buckets = {"model_used": _new_bucket(), "control": _new_bucket()}
         by_category_buckets: dict[str, dict[str, Any]] = defaultdict(
@@ -815,6 +971,8 @@ class Command(BaseCommand):
             "offers": {"model_used": _new_source_bucket(), "control": _new_source_bucket()},
             "roadmap_api": {"model_used": _new_source_bucket(), "control": _new_source_bucket()},
         }
+        plan_metrics: dict[int, Counter[str]] = defaultdict(Counter)
+        plan_exposed_step_ids: dict[int, set[int]] = defaultdict(set)
 
         for user_id, rows in plans_by_user_scope.items():
             rows.sort(key=lambda x: (x["updated_at"], x["id"]), reverse=True)
@@ -842,22 +1000,25 @@ class Command(BaseCommand):
                 bucket["category_counts"][cat] += 1
 
         plan_step_types: dict[int, set[str]] = defaultdict(set)
+        plan_step_index_buckets: dict[int, set[str]] = defaultdict(set)
         if all_scope_plan_ids:
             for row in (
                 RoadmapStep.objects.filter(plan_id__in=all_scope_plan_ids)
-                .values("plan_id", "product_type")
+                .values("plan_id", "product_type", "step_index")
                 .distinct()
             ):
                 pid = int(row["plan_id"])
                 pt = str(row["product_type"] or "").strip()
                 if pt:
                     plan_step_types[pid].add(pt)
+                idx_bucket = _step_index_bucket(_to_int(row.get("step_index")))
+                plan_step_index_buckets[pid].add(idx_bucket)
 
         plan_step_status_counts: dict[int, Counter[str]] = defaultdict(Counter)
         plan_steps_total: dict[int, int] = defaultdict(int)
-        if analysis_plan_ids:
+        if cohort_scope_plan_ids:
             for row in (
-                RoadmapStep.objects.filter(plan_id__in=analysis_plan_ids)
+                RoadmapStep.objects.filter(plan_id__in=cohort_scope_plan_ids)
                 .values("plan_id", "status")
                 .annotate(c=Count("id"))
             ):
@@ -882,7 +1043,7 @@ class Command(BaseCommand):
                 bucket["step_status"].update(status_counts)
 
         step_sources_by_cohort_step: dict[tuple[str, int], set[str]] = defaultdict(set)
-        if analysis_plan_ids:
+        if cohort_scope_plan_ids:
             exposed_qs = (
                 RoadmapEvent.objects.filter(
                     created_at__gte=since,
@@ -890,17 +1051,20 @@ class Command(BaseCommand):
                     event_type=RoadmapEvent.Type.STEP_EXPOSED,
                 )
                 .annotate(_effective_plan_id=Coalesce("plan_id", "step__plan_id"))
-                .filter(_effective_plan_id__in=analysis_plan_ids)
+                .filter(_effective_plan_id__in=cohort_scope_plan_ids)
             )
             if not include_ga:
                 exposed_qs = exposed_qs.exclude(user__username__startswith="ga_")
 
             for row in exposed_qs.values("step_id", "context", "_effective_plan_id"):
                 pid = int(row["_effective_plan_id"])
+                step_id = _to_int(row.get("step_id"))
+                plan_metrics[pid]["roadmap_step_exposed"] += 1
+                if step_id is not None:
+                    plan_exposed_step_ids[pid].add(step_id)
                 cohort = cohort_by_plan_id.get(pid)
                 if cohort not in {"model_used", "control"}:
                     continue
-                step_id = _to_int(row.get("step_id"))
                 source = _source_from_expose_context(_safe_dict(row.get("context")))
 
                 for section, key in plan_segments.get(pid, []):
@@ -933,7 +1097,7 @@ class Command(BaseCommand):
                     ],
                 )
                 .annotate(_effective_plan_id=Coalesce("plan_id", "step__plan_id"))
-                .filter(_effective_plan_id__in=analysis_plan_ids)
+                .filter(_effective_plan_id__in=cohort_scope_plan_ids)
             )
             if not include_ga:
                 interaction_qs = interaction_qs.exclude(user__username__startswith="ga_")
@@ -945,12 +1109,13 @@ class Command(BaseCommand):
             }
             for row in interaction_qs.values("step_id", "event_type", "_effective_plan_id"):
                 pid = int(row["_effective_plan_id"])
-                cohort = cohort_by_plan_id.get(pid)
-                if cohort not in {"model_used", "control"}:
-                    continue
                 step_id = _to_int(row.get("step_id"))
                 metric_key = event_type_map.get(str(row.get("event_type") or ""))
                 if not metric_key:
+                    continue
+                plan_metrics[pid][f"roadmap_step_{metric_key}"] += 1
+                cohort = cohort_by_plan_id.get(pid)
+                if cohort not in {"model_used", "control"}:
                     continue
 
                 for section, key in plan_segments.get(pid, []):
@@ -1056,12 +1221,19 @@ class Command(BaseCommand):
                     assignment_state[assignment_id] = {"state": "unattributed", "why": "ambiguous_or_no_match"}
                     continue
 
-            cohort = cohort_by_plan_id.get(int(attributed_plan_id))
+            attributed_plan_id_int = int(attributed_plan_id)
+            shortcut = _is_shortcut_target(target)
+            if attributed_plan_id_int in cohort_scope_plan_ids:
+                plan_metrics[attributed_plan_id_int]["offers_assigned_total"] += 1
+                if shortcut:
+                    plan_metrics[attributed_plan_id_int]["offers_with_roadmap_shortcut"] += 1
+
+            cohort = cohort_by_plan_id.get(attributed_plan_id_int)
             if cohort not in {"model_used", "control"}:
                 roadmap_assignment_excluded_non_cohort += 1
                 assignment_state[assignment_id] = {
                     "state": "non_cohort",
-                    "plan_id": int(attributed_plan_id),
+                    "plan_id": attributed_plan_id_int,
                     "attribution_kind": attribution_kind,
                 }
                 continue
@@ -1070,11 +1242,10 @@ class Command(BaseCommand):
             assignment_state[assignment_id] = {
                 "state": "cohort",
                 "cohort": cohort,
-                "plan_id": int(attributed_plan_id),
+                "plan_id": attributed_plan_id_int,
                 "attribution_kind": attribution_kind,
             }
-            shortcut = _is_shortcut_target(target)
-            for section, key in plan_segments.get(int(attributed_plan_id), []):
+            for section, key in plan_segments.get(attributed_plan_id_int, []):
                 if section == "overall":
                     bucket = overall_buckets[cohort]
                 elif section == "category":
@@ -1111,6 +1282,9 @@ class Command(BaseCommand):
             if not metric:
                 continue
             state = assignment_state.get(assignment_id) or {}
+            plan_id_for_metrics = _to_int(state.get("plan_id"))
+            if plan_id_for_metrics is not None and int(plan_id_for_metrics) in cohort_scope_plan_ids:
+                plan_metrics[int(plan_id_for_metrics)][f"offer_{metric}"] += 1
             if state.get("state") == "cohort":
                 cohort = str(state.get("cohort"))
                 plan_id = int(state.get("plan_id"))
@@ -1150,6 +1324,40 @@ class Command(BaseCommand):
             }
             for source in ["offers", "roadmap_api"]
         }
+
+        def _bucket_from_plan_ids(plan_ids: set[int]) -> dict[str, Any]:
+            bucket = _new_bucket()
+            for pid in sorted(plan_ids):
+                if pid not in cohort_scope_plan_ids:
+                    continue
+                uid = _to_int(plan_user.get(pid))
+                cat = str(plan_category.get(pid) or "__unknown__")
+                bucket["plans_total"] += 1
+                if uid is not None:
+                    bucket["user_ids"].add(uid)
+                bucket["category_counts"][cat] += 1
+                bucket["steps_total"] += int(plan_steps_total.get(pid, 0))
+                bucket["step_status"].update(plan_step_status_counts.get(pid, Counter()))
+
+                metrics = plan_metrics.get(pid, Counter())
+                exposed = int(metrics.get("roadmap_step_exposed", 0))
+                clicked = int(metrics.get("roadmap_step_clicked", 0))
+                completed = int(metrics.get("roadmap_step_completed", 0))
+                skipped = int(metrics.get("roadmap_step_skipped", 0))
+                bucket["step_events"]["exposed"] += exposed
+                bucket["step_events"]["clicked"] += clicked
+                bucket["step_events"]["completed"] += completed
+                bucket["step_events"]["skipped"] += skipped
+                if exposed > 0:
+                    bucket["exposed_plan_ids"].add(pid)
+                bucket["exposed_step_ids"].update(plan_exposed_step_ids.get(pid, set()))
+
+                bucket["offers"]["assigned_total"] += int(metrics.get("offers_assigned_total", 0))
+                bucket["offers"]["shortcut_total"] += int(metrics.get("offers_with_roadmap_shortcut", 0))
+                bucket["offers"]["exposed"] += int(metrics.get("offer_exposed", 0))
+                bucket["offers"]["clicked"] += int(metrics.get("offer_clicked", 0))
+                bucket["offers"]["redeemed"] += int(metrics.get("offer_redeemed", 0))
+            return bucket
 
         def _uplift_from_pair(model_block: dict[str, Any], control_block: dict[str, Any]) -> dict[str, Any]:
             model_plans = int(model_block.get("plans_total", 0))
@@ -1278,12 +1486,99 @@ class Command(BaseCommand):
                 },
             }
 
+        partial_makeup_canary_final = _finalize_bucket(
+            _bucket_from_plan_ids(partial_makeup_canary_plan_ids)
+        )
+        partial_makeup_control_final = _finalize_bucket(
+            _bucket_from_plan_ids(partial_makeup_control_plan_ids)
+        )
+        partial_makeup_overall_uplift = _uplift_from_pair(
+            partial_makeup_canary_final,
+            partial_makeup_control_final,
+        )
+        partial_makeup_product_types = sorted(
+            {
+                pt
+                for pid in partial_makeup_analysis_plan_ids
+                for pt in plan_step_types.get(pid, set())
+            }
+        )
+        partial_makeup_step_indexes = sorted(
+            {
+                idx
+                for pid in partial_makeup_analysis_plan_ids
+                for idx in plan_step_index_buckets.get(pid, set())
+            }
+        )
+
+        partial_makeup_by_product_type: dict[str, Any] = {}
+        for pt in partial_makeup_product_types:
+            canary_ids = {
+                pid
+                for pid in partial_makeup_canary_plan_ids
+                if pt in plan_step_types.get(pid, set())
+            }
+            control_ids = {
+                pid
+                for pid in partial_makeup_control_plan_ids
+                if pt in plan_step_types.get(pid, set())
+            }
+            canary_block = _finalize_bucket(_bucket_from_plan_ids(canary_ids))
+            control_block = _finalize_bucket(_bucket_from_plan_ids(control_ids))
+            partial_makeup_by_product_type[pt] = {
+                "canary": canary_block,
+                "control": control_block,
+                "uplift": _uplift_from_pair(canary_block, control_block),
+            }
+
+        partial_makeup_by_step_index: dict[str, Any] = {}
+        for idx_bucket in partial_makeup_step_indexes:
+            canary_ids = {
+                pid
+                for pid in partial_makeup_canary_plan_ids
+                if idx_bucket in plan_step_index_buckets.get(pid, set())
+            }
+            control_ids = {
+                pid
+                for pid in partial_makeup_control_plan_ids
+                if idx_bucket in plan_step_index_buckets.get(pid, set())
+            }
+            canary_block = _finalize_bucket(_bucket_from_plan_ids(canary_ids))
+            control_block = _finalize_bucket(_bucket_from_plan_ids(control_ids))
+            partial_makeup_by_step_index[idx_bucket] = {
+                "canary": canary_block,
+                "control": control_block,
+                "uplift": _uplift_from_pair(canary_block, control_block),
+            }
+
+        partial_makeup_uplift = {
+            "definition": {
+                "canary": "category=makeup and rollout_mode=partial and rollout_selected=true",
+                "control": "category=makeup and decision in {fallback,disabled} and not in canary",
+            },
+            "overall": {
+                "canary": partial_makeup_canary_final,
+                "control": partial_makeup_control_final,
+                "uplift": partial_makeup_overall_uplift,
+            },
+            "by_product_type": partial_makeup_by_product_type,
+            "by_step_index": partial_makeup_by_step_index,
+        }
+
         runtime_observability = {
             "decision_counts": {
                 "model_used": int(decision_counts.get("model_used", 0)),
                 "fallback": int(decision_counts.get("fallback", 0)),
                 "disabled": int(decision_counts.get("disabled", 0)),
                 "missing_ml_meta": int(decision_counts.get("missing_ml_meta", 0)),
+            },
+            "rollout_mode_distribution": {
+                str(k): int(v)
+                for k, v in sorted(rollout_mode_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            },
+            "rollout_selected_distribution": {
+                str(k): int(v)
+                for k, v in sorted(rollout_selected_counts.items(), key=lambda kv: (-kv[1], kv[0]))
             },
             "fallback_reasons": {
                 str(k): int(v)
@@ -1352,6 +1647,7 @@ class Command(BaseCommand):
                 "cohort_mode": cohort_mode,
                 "control": control,
                 "min_plans": min_plans,
+                "sync_runtime_artifact": sync_runtime_artifact,
             },
             "overall": {
                 "plans_total_in_scope": len(all_scope_plan_ids),
@@ -1370,6 +1666,7 @@ class Command(BaseCommand):
                 "by_freshness": by_freshness_uplift,
                 "by_expose_source": by_source_uplift,
             },
+            "partial_makeup_uplift": partial_makeup_uplift,
             "breakdowns": {
                 "by_category": by_category_final,
                 "by_freshness": by_freshness_final,
@@ -1390,7 +1687,7 @@ class Command(BaseCommand):
                 "roadmap_offer_events_unattributed_redeemed": int(offer_unattributed_event_counts.get("redeemed", 0)),
             },
             "notes": [
-                "Read-only report: no DB writes, no runtime logic changes.",
+                "Read-only wrt DB: no DB writes; file outputs happen only via --out or --sync-runtime-artifact.",
                 "By default cohort-mode=fresh excludes missing_ml_meta from active uplift comparison.",
                 "Historical tail is still visible in runtime_observability decision counts.",
                 "Offer attribution is conservative: explicit roadmap.plan_id first, fallback only when match is reliable.",
@@ -1426,6 +1723,12 @@ class Command(BaseCommand):
                 else:
                     self.stdout.write("\n---\n")
                     self.stdout.write(json_text)
+
+        if sync_runtime_artifact and runtime_window is not None:
+            runtime_json_path = v4_runtime_uplift_report_path(runtime_window)
+            runtime_json_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_json_path.write_text(json_text, encoding="utf-8")
+            self.stderr.write(f"[report_roadmap_ml_uplift] synced runtime artifact: {runtime_json_path}")
 
         for p in wrote_paths:
             self.stdout.write(f"[report_roadmap_ml_uplift] wrote: {p}")

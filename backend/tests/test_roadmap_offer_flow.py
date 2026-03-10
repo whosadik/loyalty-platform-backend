@@ -187,6 +187,7 @@ class RoadmapOfferFlowTests(APITestCase):
             rp = step.get("recommended_product")
             if not rp:
                 continue
+            self.assertEqual(step.get("recommended_product_id"), int(rp["id"]))
             rec_ids.append(int(rp["id"]))
             self.assertTrue(bool(rp.get("in_stock")))
         self.assertEqual(len(rec_ids), len(set(rec_ids)))

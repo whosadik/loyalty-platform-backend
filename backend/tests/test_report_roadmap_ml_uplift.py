@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
+from django.test.utils import override_settings
 
 from offers.models import CampaignBudget, Offer, OfferAssignment, OfferEvent
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
@@ -29,13 +32,24 @@ class ReportRoadmapMlUpliftTests(TestCase):
         User = get_user_model()
         return User.objects.create_user(username=username, password="pass12345")
 
-    def _plan(self, *, user, decision: str | None, category: str = "skincare", product_type: str = "serum"):
+    def _plan(
+        self,
+        *,
+        user,
+        decision: str | None,
+        category: str = "skincare",
+        product_type: str = "serum",
+        step_index: int = 1,
+        ml_overrides: dict | None = None,
+    ):
         ml_meta = {
             "mode": "v4_ranking",
             "model_path": "/tmp/model.pkl",
         }
         if decision is not None:
             ml_meta["decision"] = decision
+        if isinstance(ml_overrides, dict):
+            ml_meta.update(ml_overrides)
         plan = RoadmapPlan.objects.create(
             user=user,
             category=category,
@@ -44,7 +58,7 @@ class ReportRoadmapMlUpliftTests(TestCase):
         )
         step = RoadmapStep.objects.create(
             plan=plan,
-            step_index=1,
+            step_index=step_index,
             product_type=product_type,
             status=RoadmapStep.Status.RECOMMENDED,
         )
@@ -219,3 +233,128 @@ class ReportRoadmapMlUpliftTests(TestCase):
 
         self.assertEqual(without_ga["overall"]["plans_total_in_scope"], 1)
         self.assertEqual(with_ga["overall"]["plans_total_in_scope"], 2)
+
+    def test_partial_makeup_uplift_block_has_overall_and_slice_breakdowns(self):
+        u_canary = self._user("uplift_partial_canary")
+        u_ctrl = self._user("uplift_partial_ctrl")
+        u_ctrl_2 = self._user("uplift_partial_ctrl_2")
+
+        canary_plan, canary_step = self._plan(
+            user=u_canary,
+            decision="model_used",
+            category="makeup",
+            product_type="foundation",
+            step_index=1,
+            ml_overrides={
+                "rollout_mode": "partial",
+                "rollout_selected": True,
+                "rollout_reason": "selected",
+                "rollout_bucket": 12,
+                "rollout_percent": 30,
+                "partial_match_product_type": "foundation",
+                "partial_match_step_index": 1,
+            },
+        )
+        ctrl_plan, ctrl_step = self._plan(
+            user=u_ctrl,
+            decision="fallback",
+            category="makeup",
+            product_type="foundation",
+            step_index=1,
+            ml_overrides={
+                "rollout_mode": "partial",
+                "rollout_selected": False,
+                "rollout_reason": "bucket_out_of_range",
+                "fallback_reason": "partial_rollout_not_selected",
+            },
+        )
+        ctrl_plan_2, ctrl_step_2 = self._plan(
+            user=u_ctrl_2,
+            decision="disabled",
+            category="makeup",
+            product_type="mascara",
+            step_index=2,
+            ml_overrides={"rollout_mode": "none", "rollout_selected": False},
+        )
+
+        for _ in range(10):
+            RoadmapEvent.objects.create(
+                user=u_canary,
+                plan=canary_plan,
+                step=canary_step,
+                event_type=RoadmapEvent.Type.STEP_EXPOSED,
+                context={"sources": ["roadmap_api"]},
+            )
+            RoadmapEvent.objects.create(
+                user=u_ctrl,
+                plan=ctrl_plan,
+                step=ctrl_step,
+                event_type=RoadmapEvent.Type.STEP_EXPOSED,
+                context={"sources": ["roadmap_api"]},
+            )
+        for _ in range(8):
+            RoadmapEvent.objects.create(
+                user=u_canary,
+                plan=None,
+                step=canary_step,
+                event_type=RoadmapEvent.Type.STEP_COMPLETED,
+                context={},
+            )
+        for _ in range(4):
+            RoadmapEvent.objects.create(
+                user=u_ctrl,
+                plan=None,
+                step=ctrl_step,
+                event_type=RoadmapEvent.Type.STEP_COMPLETED,
+                context={},
+            )
+
+        for _ in range(5):
+            RoadmapEvent.objects.create(
+                user=u_ctrl_2,
+                plan=ctrl_plan_2,
+                step=ctrl_step_2,
+                event_type=RoadmapEvent.Type.STEP_EXPOSED,
+                context={"sources": ["roadmap_api"]},
+            )
+
+        payload = self._run_report_json(control="non_model", category="makeup", min_plans=1)
+
+        partial = payload["partial_makeup_uplift"]
+        self.assertEqual(partial["overall"]["canary"]["plans_total"], 1)
+        self.assertEqual(partial["overall"]["control"]["plans_total"], 2)
+        metric = partial["overall"]["uplift"]["step_funnel"]["step_completion_rate"]
+        self.assertGreater(float(metric["abs_lift"] or 0.0), 0.0)
+        self.assertIn("foundation", partial["by_product_type"])
+        self.assertIn("step_1", partial["by_step_index"])
+
+    def test_sync_runtime_artifact_writes_model_owned_json(self):
+        with TemporaryDirectory() as model_tmp:
+            model_dir = Path(model_tmp)
+            out = StringIO()
+            err = StringIO()
+            with override_settings(
+                ROADMAP_NEXTSTEP_V4_ENABLED=True,
+                ROADMAP_NEXTSTEP_V4_MODEL_PATH=str(model_dir / "model.pkl"),
+            ):
+                call_command(
+                    "report_roadmap_ml_uplift",
+                    days=7,
+                    category="all",
+                    format="json",
+                    cohort_mode="fresh",
+                    control="non_model",
+                    include_ga=True,
+                    sync_runtime_artifact=True,
+                    stdout=out,
+                    stderr=err,
+                )
+
+            payload = json.loads(out.getvalue())
+            runtime_path = model_dir / "uplift_report_7d.json"
+            self.assertTrue(runtime_path.exists())
+            self.assertTrue("synced runtime artifact" in err.getvalue())
+            runtime_payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+            self.assertTrue(bool(runtime_payload["params"]["sync_runtime_artifact"]))
+            self.assertEqual(runtime_payload["params"]["days"], 7)
+            self.assertEqual(payload["params"]["days"], 7)

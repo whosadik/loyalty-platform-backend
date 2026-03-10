@@ -133,6 +133,58 @@ class RoadmapTelemetryTests(APITestCase):
             ).exists()
         )
 
+    def test_refresh_endpoint_emits_generation_events_without_fake_exposure(self):
+        response = self.client.post(
+            "/api/me/roadmap/refresh",
+            {"category": "haircare"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        plan = RoadmapPlan.objects.get(user=self.user, category="haircare", is_active=True)
+        next_step = (
+            RoadmapStep.objects.filter(
+                plan=plan,
+                status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED],
+            )
+            .order_by("step_index")
+            .first()
+        )
+        self.assertIsNotNone(next_step)
+
+        plan_event = RoadmapEvent.objects.filter(
+            user=self.user,
+            plan=plan,
+            event_type=RoadmapEvent.Type.PLAN_REFRESHED,
+        ).order_by("-id").first()
+        self.assertIsNotNone(plan_event)
+        self.assertEqual(int((plan_event.context or {}).get("plan_id")), int(plan.id))
+        self.assertEqual(str((plan_event.context or {}).get("category")), "haircare")
+        self.assertEqual(int((plan_event.context or {}).get("steps_total")), int(plan.steps.count()))
+        self.assertEqual(int((plan_event.context or {}).get("next_step_id")), int(next_step.id))
+        self.assertTrue(str(((plan_event.context or {}).get("ml") or {}).get("decision") or "").strip())
+
+        generated_events = RoadmapEvent.objects.filter(
+            user=self.user,
+            plan=plan,
+            event_type=RoadmapEvent.Type.STEP_GENERATED,
+        ).order_by("step__step_index", "id")
+        self.assertEqual(generated_events.count(), plan.steps.count())
+        generated = generated_events.first()
+        self.assertIsNotNone(generated)
+        self.assertEqual(int((generated.context or {}).get("plan_id")), int(plan.id))
+        self.assertEqual(int((generated.context or {}).get("step_id")), int(generated.step_id))
+        self.assertIn(str((generated.context or {}).get("source") or ""), {"rules", "ml_next_step", ""})
+        self.assertIn("ml", generated.context or {})
+
+        self.assertFalse(
+            RoadmapEvent.objects.filter(
+                user=self.user,
+                plan=plan,
+                event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            ).exists()
+        )
+
     def test_checkout_logs_roadmap_step_completed(self):
         first = self._checkout(self.p_shampoo.id)
         self.assertEqual(first.status_code, 201)
@@ -154,6 +206,41 @@ class RoadmapTelemetryTests(APITestCase):
         self.assertIsNotNone(event)
         self.assertEqual(int(event.context.get("transaction_id")), txn_id)
         self.assertIn(event.context.get("matched_by"), {"product_type", "recommended_product_id"})
+        latest_generated_same_step = RoadmapEvent.objects.filter(
+            user=self.user,
+            step_id=step_id,
+            event_type=RoadmapEvent.Type.STEP_GENERATED,
+        ).order_by("-id").first()
+        self.assertIsNotNone(latest_generated_same_step)
+        self.assertLess(int(event.id), int(latest_generated_same_step.id))
+
+    def test_checkout_path_emits_generation_events_before_any_exposure(self):
+        response = self._checkout(self.p_shampoo.id)
+        self.assertEqual(response.status_code, 201)
+
+        plan = RoadmapPlan.objects.get(user=self.user, category="haircare", is_active=True)
+        self.assertTrue(
+            RoadmapEvent.objects.filter(
+                user=self.user,
+                plan=plan,
+                event_type=RoadmapEvent.Type.PLAN_REFRESHED,
+            ).exists()
+        )
+        self.assertEqual(
+            RoadmapEvent.objects.filter(
+                user=self.user,
+                plan=plan,
+                event_type=RoadmapEvent.Type.STEP_GENERATED,
+            ).count(),
+            plan.steps.count(),
+        )
+        self.assertFalse(
+            RoadmapEvent.objects.filter(
+                user=self.user,
+                plan=plan,
+                event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            ).exists()
+        )
 
     def test_roadmap_exposed_daily_dedup_on_get(self):
         first = self._checkout(self.p_shampoo.id)

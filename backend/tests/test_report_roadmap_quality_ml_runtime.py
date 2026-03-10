@@ -184,6 +184,79 @@ class ReportRoadmapQualityMlRuntimeTests(TestCase):
         self.assertIn("### HOLD reasons by category", text)
         self.assertIn("### Stability gate failures by category", text)
 
+    def test_report_counts_partial_rollout_modes_and_reasons(self):
+        self._create_plan(
+            username="rq_partial_selected",
+            category="makeup",
+            meta={
+                "source": "roadmap_v1",
+                "category": "makeup",
+                "ml": {
+                    "decision": "model_used",
+                    "mode": "v4_ranking",
+                    "model_path": "/tmp/model.pkl",
+                    "rollout_mode": "partial",
+                    "rollout_selected": True,
+                    "rollout_reason": "selected",
+                    "rollout_bucket": 17,
+                    "rollout_percent": 30,
+                    "partial_match_product_type": "foundation",
+                    "partial_match_step_index": 1,
+                },
+            },
+        )
+        self._create_plan(
+            username="rq_partial_not_selected",
+            category="makeup",
+            meta={
+                "source": "roadmap_v1",
+                "category": "makeup",
+                "ml": {
+                    "decision": "fallback",
+                    "mode": "v4_ranking",
+                    "model_path": "/tmp/model.pkl",
+                    "fallback_reason": "partial_rollout_not_selected",
+                    "rollout_mode": "partial",
+                    "rollout_selected": False,
+                    "rollout_reason": "bucket_out_of_range",
+                    "rollout_bucket": 83,
+                    "rollout_percent": 30,
+                    "partial_match_product_type": "foundation",
+                    "partial_match_step_index": 1,
+                },
+            },
+        )
+        self._create_plan(
+            username="rq_full_model",
+            category="haircare",
+            meta={
+                "source": "roadmap_v1",
+                "category": "haircare",
+                "ml": {
+                    "decision": "model_used",
+                    "mode": "v4_ranking",
+                    "model_path": "/tmp/model.pkl",
+                    "rollout_mode": "full",
+                    "rollout_selected": True,
+                    "rollout_reason": "category_enabled",
+                },
+            },
+        )
+
+        out = StringIO()
+        call_command("report_roadmap_quality", days=7, include_ga=True, stdout=out)
+        text = out.getvalue()
+
+        self.assertIn("### Rollout mode distribution", text)
+        self.assertIn("| partial | 2 |", text)
+        self.assertIn("| full | 1 |", text)
+        self.assertIn("### Model-used split (full vs partial)", text)
+        self.assertIn("| full | 1 |", text)
+        self.assertIn("| partial | 1 |", text)
+        self.assertIn("| partial_rollout_not_selected | 1 |", text)
+        self.assertIn("### Partial rollout by category", text)
+        self.assertIn("| makeup | 2 | 1 |", text)
+
     def test_runtime_paths_always_write_meta_ml_decision(self):
         User = get_user_model()
         user = User.objects.create_user(username="rq_runtime_u1", password="pass12345")
@@ -224,6 +297,8 @@ class ReportRoadmapQualityMlRuntimeTests(TestCase):
         self.assertTrue(str(ml_meta.get("mode") or "").strip())
         self.assertTrue(str(ml_meta.get("model_path") or "").strip())
         self.assertIn(str(ml_meta.get("decision")), {"model_used", "fallback", "disabled"})
+        self.assertIn(str(ml_meta.get("rollout_mode")), {"full", "partial", "none"})
+        self.assertIn(bool(ml_meta.get("rollout_selected")), {True, False})
         if str(ml_meta.get("decision")) == "disabled":
             self.assertTrue(str(ml_meta.get("disabled_reason") or "").strip())
 
@@ -242,6 +317,8 @@ class ReportRoadmapQualityMlRuntimeTests(TestCase):
         self.assertTrue(str(ml_meta_updated.get("mode") or "").strip())
         self.assertTrue(str(ml_meta_updated.get("model_path") or "").strip())
         self.assertIn(str(ml_meta_updated.get("decision")), {"model_used", "fallback", "disabled"})
+        self.assertIn(str(ml_meta_updated.get("rollout_mode")), {"full", "partial", "none"})
+        self.assertIn(bool(ml_meta_updated.get("rollout_selected")), {True, False})
         if str(ml_meta_updated.get("decision")) == "disabled":
             self.assertTrue(str(ml_meta_updated.get("disabled_reason") or "").strip())
 

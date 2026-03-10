@@ -45,7 +45,7 @@ class SimulatorThrottleDisableTests(TestCase):
             "transactions": 0,
             "transaction_items": 0,
             "owned_products": 0,
-            "roadmap_exposed": 0,
+            "roadmap_step_exposed": 0,
             "roadmap_clicked": 0,
             "roadmap_skipped": 0,
             "roadmap_completed": 0,

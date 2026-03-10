@@ -189,6 +189,24 @@ class Command(BaseCommand):
         parser.add_argument("--p-step-skip", type=float, default=0.05)
         parser.add_argument("--p-complete-next-step", type=float, default=0.35)
         parser.add_argument("--p-redeem-offer", type=float, default=0.12)
+        parser.add_argument(
+            "--p-return-after-step1-exposure",
+            type=float,
+            default=0.35,
+            help="Probability of a follow-up roadmap read after step_1 exposure without completion.",
+        )
+        parser.add_argument(
+            "--p-return-after-step1-completion",
+            type=float,
+            default=0.80,
+            help="Probability of a follow-up roadmap read after step_1 completion.",
+        )
+        parser.add_argument(
+            "--p-followup-checkout-after-repeat",
+            type=float,
+            default=0.75,
+            help="Probability of a follow-up checkout attempt after repeat-read reveals the next step.",
+        )
 
         parser.add_argument("--batch-users", type=int, default=200)
         parser.add_argument("--progress-every", type=int, default=100)
@@ -205,6 +223,12 @@ class Command(BaseCommand):
             dest="disable_throttle",
             action="store_false",
             help="Keep normal DRF throttling (opposite of --disable-throttle).",
+        )
+        parser.add_argument(
+            "--fresh-users-only",
+            action="store_true",
+            default=False,
+            help="Create a fresh batch of simulator users for this run instead of reusing existing users.",
         )
         parser.add_argument(
             "--max-errors",
@@ -256,6 +280,7 @@ class Command(BaseCommand):
         include_ga = bool(options["include_ga"])
         dry_run = bool(options["dry_run"])
         disable_throttle = bool(options["disable_throttle"])
+        fresh_users_only = bool(options["fresh_users_only"])
         max_errors = int(options["max_errors"])
         stop_on_fatal = bool(options["stop_on_fatal"])
         if max_errors <= 0:
@@ -273,11 +298,18 @@ class Command(BaseCommand):
         p_step_skip = clamp_prob(options["p_step_skip"])
         p_complete_next_step = clamp_prob(options["p_complete_next_step"])
         p_redeem_offer = clamp_prob(options["p_redeem_offer"])
+        p_return_after_step1_exposure = clamp_prob(options["p_return_after_step1_exposure"])
+        p_return_after_step1_completion = clamp_prob(options["p_return_after_step1_completion"])
+        p_followup_checkout_after_repeat = clamp_prob(options["p_followup_checkout_after_repeat"])
 
         self.stdout.write(
             "simulate_roadmap_sessions config: "
             f"days={days}, start_date={start_date.isoformat()}, users={users_n}, include_ga={include_ga}, "
-            f"seed={int(options['seed'])}, avg_sessions={avg_sessions}, disable_throttle={disable_throttle}"
+            f"seed={int(options['seed'])}, avg_sessions={avg_sessions}, disable_throttle={disable_throttle}, "
+            f"fresh_users_only={fresh_users_only}, "
+            f"p_return_after_step1_exposure={p_return_after_step1_exposure}, "
+            f"p_return_after_step1_completion={p_return_after_step1_completion}, "
+            f"p_followup_checkout_after_repeat={p_followup_checkout_after_repeat}"
         )
         self._soft_fix_ownedproduct_sequence()
 
@@ -286,10 +318,12 @@ class Command(BaseCommand):
         for line in coverage:
             self.stdout.write(line)
 
+        self._fresh_user_token = datetime.now(tz=timezone.utc).strftime("%Y%m%d%H%M%S%f")
         users = self._select_or_create_users(
             users_n=users_n,
             include_ga=include_ga,
             batch_size=batch_users,
+            fresh_users_only=fresh_users_only,
         )
         user_ids = [int(u.id) for u in users]
         self._ensure_profiles_and_loyalty(user_ids=user_ids, rng=rng)
@@ -357,6 +391,9 @@ class Command(BaseCommand):
                                 p_step_skip=p_step_skip,
                                 p_complete_next_step=p_complete_next_step,
                                 p_redeem_offer=p_redeem_offer,
+                                p_return_after_step1_exposure=p_return_after_step1_exposure,
+                                p_return_after_step1_completion=p_return_after_step1_completion,
+                                p_followup_checkout_after_repeat=p_followup_checkout_after_repeat,
                                 counters=counters,
                                 warnings=warnings,
                                 product_cache=product_cache,
@@ -372,7 +409,9 @@ class Command(BaseCommand):
                                 self.stdout.write(
                                     f"Progress {processed_users}/{len(users)} users, {elapsed:.1f}s | "
                                     f"tx_created={counters['tx_created']}, offer_exposed={counters['offer_exposed']}, "
-                                    f"roadmap_exposed={counters['roadmap_exposed']}, roadmap_clicked={counters['roadmap_clicked']}, "
+                                    f"roadmap_get_ok={counters['roadmap_get_ok']}, "
+                                    f"roadmap_step_exposed_persisted={counters['roadmap_step_exposed_persisted']}, "
+                                    f"roadmap_clicked={counters['roadmap_clicked']}, "
                                     f"roadmap_skipped={counters['roadmap_skipped']}, roadmap_completed={completed_delta}"
                                 )
                         close_old_connections()
@@ -386,9 +425,25 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS("Simulation complete."))
         self.stdout.write(
+            "Run counters: "
+            f"roadmap_get_ok={counters['roadmap_get_ok']}, "
+            f"roadmap_step_exposed_persisted={counters['roadmap_step_exposed_persisted']}, "
+            f"roadmap_clicked={counters['roadmap_clicked']}, roadmap_skipped={counters['roadmap_skipped']}, "
+            f"offer_exposed={counters['offer_exposed']}, offer_clicked={counters['offer_clicked']}, "
+            f"step_1_exposed={counters['step_1_exposed']}, step_1_completed={counters['step_1_completed']}, "
+            f"step_2_exposed={counters['step_2_exposed']}, step_2_completed={counters['step_2_completed']}, "
+            f"checkout_targeted_next_step={counters['checkout_targeted_next_step']}, "
+            f"checkout_targeted_recommended_product={counters['checkout_targeted_recommended_product']}, "
+            f"followup_checkout_attempts={counters['followup_checkout_attempts']}, "
+            f"followup_checkout_success={counters['followup_checkout_success']}, "
+            f"followup_step_completed={counters['followup_step_completed']}, "
+            f"returned_after_step_1_exposure={counters['returned_after_step_1_exposure']}, "
+            f"returned_after_step_1_completion={counters['returned_after_step_1_completion']}"
+        )
+        self.stdout.write(
             "Added counts: "
             f"transactions={deltas['transactions']}, transaction_items={deltas['transaction_items']}, "
-            f"owned_products={deltas['owned_products']}, roadmap_step_exposed={deltas['roadmap_exposed']}, "
+            f"owned_products={deltas['owned_products']}, roadmap_step_exposed={deltas['roadmap_step_exposed']}, "
             f"roadmap_step_clicked={deltas['roadmap_clicked']}, roadmap_step_skipped={deltas['roadmap_skipped']}, "
             f"roadmap_step_completed={added_completed}, offer_exposed={deltas['offer_exposed']}, "
             f"offer_clicked={deltas['offer_clicked']}, offer_redeemed={deltas['offer_redeemed']}"
@@ -642,6 +697,134 @@ class Command(BaseCommand):
         today_utc = dj_timezone.now().date()
         return today_utc - timedelta(days=max(1, days))
 
+    def _utc_day_bounds(self, *, ref_dt: datetime) -> tuple[datetime, datetime]:
+        ref_utc = ref_dt.astimezone(timezone.utc)
+        start = datetime.combine(ref_utc.date(), dt_time.min, tzinfo=timezone.utc)
+        end = start + timedelta(days=1)
+        return start, end
+
+    def _count_user_step_exposed_for_utc_day(self, *, user_id: int, ref_dt: datetime) -> int:
+        start, end = self._utc_day_bounds(ref_dt=ref_dt)
+        return int(
+            RoadmapEvent.objects.filter(
+                user_id=int(user_id),
+                event_type=RoadmapEvent.Type.STEP_EXPOSED,
+                created_at__gte=start,
+                created_at__lt=end,
+            ).count()
+        )
+
+    def _count_user_specific_step_event_for_utc_day(
+        self,
+        *,
+        user_id: int,
+        step_id: int | None,
+        event_type: str,
+        ref_dt: datetime,
+    ) -> int:
+        if step_id is None:
+            return 0
+        start, end = self._utc_day_bounds(ref_dt=ref_dt)
+        return int(
+            RoadmapEvent.objects.filter(
+                user_id=int(user_id),
+                step_id=int(step_id),
+                event_type=str(event_type),
+                created_at__gte=start,
+                created_at__lt=end,
+            ).count()
+        )
+
+    def _record_step_stage_counter(
+        self,
+        *,
+        counters: Counter[str],
+        step_index: int | None,
+        stage: str,
+        amount: int = 1,
+    ) -> None:
+        if amount <= 0:
+            return
+        try:
+            idx = int(step_index) if step_index is not None else None
+        except Exception:
+            idx = None
+        if idx not in {1, 2}:
+            return
+        counters[f"step_{idx}_{stage}"] += int(amount)
+
+    def _roadmap_get_and_track(
+        self,
+        *,
+        client: APIClient,
+        category: str,
+        sim_now: datetime,
+        request_id: str,
+        user_id: int,
+        counters: Counter[str],
+        warnings: list[str],
+    ) -> dict[str, Any]:
+        exposed_before = self._count_user_step_exposed_for_utc_day(
+            user_id=int(user_id),
+            ref_dt=sim_now,
+        )
+        roadmap_resp = self._api_get(
+            client=client,
+            path="/api/me/roadmap",
+            params={"category": category},
+            sim_now=sim_now,
+            request_id=request_id,
+            user_id=user_id,
+        )
+        if roadmap_resp.status_code != 200:
+            self._warn(warnings, f"roadmap/get status={roadmap_resp.status_code} user_id={user_id}")
+            return {
+                "ok": False,
+                "status_code": int(roadmap_resp.status_code),
+                "next_step": {},
+                "next_step_row": {},
+                "persisted_exposure_delta": 0,
+                "step_index": None,
+            }
+
+        counters["roadmap_get_ok"] += 1
+        exposed_after = self._count_user_step_exposed_for_utc_day(
+            user_id=int(user_id),
+            ref_dt=sim_now,
+        )
+        exposure_delta = max(0, int(exposed_after - exposed_before))
+        if exposure_delta > 0:
+            counters["roadmap_step_exposed_persisted"] += int(exposure_delta)
+
+        payload = _safe_json(roadmap_resp)
+        summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+        next_step = summary.get("next_step") if isinstance(summary.get("next_step"), dict) else {}
+        steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+        next_step_row: dict[str, Any] = {}
+        if next_step:
+            sid = _safe_int(next_step.get("id"))
+            if sid is not None:
+                next_step_row = next(
+                    (x for x in steps if _safe_int((x or {}).get("id")) == sid),
+                    {},
+                )
+        step_index = _safe_int((next_step_row or next_step).get("step_index"))
+        if exposure_delta > 0:
+            self._record_step_stage_counter(
+                counters=counters,
+                step_index=step_index,
+                stage="exposed",
+                amount=exposure_delta,
+            )
+        return {
+            "ok": True,
+            "status_code": 200,
+            "next_step": next_step,
+            "next_step_row": next_step_row,
+            "persisted_exposure_delta": int(exposure_delta),
+            "step_index": step_index,
+        }
+
     def _soft_fix_ownedproduct_sequence(self) -> None:
         if connection.vendor != "postgresql":
             return
@@ -698,27 +881,51 @@ class Command(BaseCommand):
         )
         return out
 
-    def _select_or_create_users(self, *, users_n: int, include_ga: bool, batch_size: int):
+    def _fresh_user_prefix(self, *, include_ga: bool) -> str:
+        token = str(getattr(self, "_fresh_user_token", "") or datetime.now(tz=timezone.utc).strftime("%Y%m%d%H%M%S%f"))
+        base = "ga_fresh_" if include_ga else "sim_fresh_"
+        return f"{base}{token}_"
+
+    def _select_or_create_users(self, *, users_n: int, include_ga: bool, batch_size: int, fresh_users_only: bool = False):
         User = get_user_model()
         selected = []
-        if include_ga:
+        if fresh_users_only:
+            selected = self._ensure_named_users(
+                prefix=self._fresh_user_prefix(include_ga=include_ga),
+                count=users_n,
+                batch_size=batch_size,
+                reuse_existing=False,
+            )
+        elif include_ga:
             selected = list(User.objects.filter(username__startswith="ga_").order_by("id")[:users_n])
             if len(selected) < users_n:
                 need = users_n - len(selected)
-                created = self._ensure_named_users(prefix="ga_sim_", count=need, batch_size=batch_size)
+                created = self._ensure_named_users(
+                    prefix="ga_sim_",
+                    count=need,
+                    batch_size=batch_size,
+                    reuse_existing=True,
+                )
                 selected.extend(created)
         else:
-            selected = self._ensure_named_users(prefix="sim_", count=users_n, batch_size=batch_size)
+            selected = self._ensure_named_users(
+                prefix="sim_",
+                count=users_n,
+                batch_size=batch_size,
+                reuse_existing=True,
+            )
         selected = selected[:users_n]
         if len(selected) != users_n:
             raise CommandError(f"Could not prepare {users_n} users (got {len(selected)}).")
         self.stdout.write(f"Simulation users prepared: {len(selected)}")
         return selected
 
-    def _ensure_named_users(self, *, prefix: str, count: int, batch_size: int):
+    def _ensure_named_users(self, *, prefix: str, count: int, batch_size: int, reuse_existing: bool = True):
         User = get_user_model()
-        existing = list(User.objects.filter(username__startswith=prefix).order_by("username", "id")[:count])
-        if len(existing) >= count:
+        existing: list[Any] = []
+        if reuse_existing:
+            existing = list(User.objects.filter(username__startswith=prefix).order_by("username", "id")[:count])
+        if reuse_existing and len(existing) >= count:
             return existing[:count]
 
         existing_names = set(
@@ -745,7 +952,7 @@ class Command(BaseCommand):
         created = list(
             User.objects.filter(username__in=[u.username for u in to_create]).order_by("username", "id")
         )
-        rows = (existing + created)[:count]
+        rows = created[:count] if not reuse_existing else (existing + created)[:count]
         return rows
 
     def _reset_pk_sequence_if_needed(self, model_cls):
@@ -961,6 +1168,9 @@ class Command(BaseCommand):
         p_step_skip: float,
         p_complete_next_step: float,
         p_redeem_offer: float,
+        p_return_after_step1_exposure: float,
+        p_return_after_step1_completion: float,
+        p_followup_checkout_after_repeat: float,
         counters: Counter[str],
         warnings: list[str],
         product_cache: "ProductPoolCache",
@@ -1000,6 +1210,9 @@ class Command(BaseCommand):
                     p_step_skip=p_step_skip,
                     p_complete_next_step=p_complete_next_step,
                     p_redeem_offer=p_redeem_offer,
+                    p_return_after_step1_exposure=p_return_after_step1_exposure,
+                    p_return_after_step1_completion=p_return_after_step1_completion,
+                    p_followup_checkout_after_repeat=p_followup_checkout_after_repeat,
                     counters=counters,
                     warnings=warnings,
                     product_cache=product_cache,
@@ -1026,6 +1239,9 @@ class Command(BaseCommand):
         p_step_skip: float,
         p_complete_next_step: float,
         p_redeem_offer: float,
+        p_return_after_step1_exposure: float,
+        p_return_after_step1_completion: float,
+        p_followup_checkout_after_repeat: float,
         counters: Counter[str],
         warnings: list[str],
         product_cache: "ProductPoolCache",
@@ -1052,6 +1268,10 @@ class Command(BaseCommand):
         assignment_id: int | None = None
         assignment_target: dict[str, Any] = {}
         step_skipped = False
+        initial_step_index: int | None = None
+        initial_step_exposed_persisted = False
+        returned_after_step_1_completion = False
+        completed_step_1_in_session = False
 
         if rng.random() < 0.05:
             refresh_resp = self._api_post(
@@ -1066,29 +1286,20 @@ class Command(BaseCommand):
                 self._warn(warnings, f"roadmap/refresh status={refresh_resp.status_code} user_id={user_id}")
 
         if rng.random() < p_roadmap_get:
-            roadmap_resp = self._api_get(
+            roadmap_read = self._roadmap_get_and_track(
                 client=client,
-                path="/api/me/roadmap",
-                params={"category": category},
+                category=category,
                 sim_now=sim_now + timedelta(seconds=20),
                 request_id=rid("roadmap"),
                 user_id=user_id,
+                counters=counters,
+                warnings=warnings,
             )
-            if roadmap_resp.status_code == 200:
-                counters["roadmap_exposed"] += 1
-                payload = _safe_json(roadmap_resp)
-                summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-                next_step = summary.get("next_step") if isinstance(summary.get("next_step"), dict) else {}
-                steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
-                if next_step:
-                    sid = _safe_int(next_step.get("id"))
-                    if sid is not None:
-                        next_step_row = next(
-                            (x for x in steps if _safe_int((x or {}).get("id")) == sid),
-                            {},
-                        )
-            else:
-                self._warn(warnings, f"roadmap/get status={roadmap_resp.status_code} user_id={user_id}")
+            if roadmap_read.get("ok"):
+                next_step = roadmap_read.get("next_step") or {}
+                next_step_row = roadmap_read.get("next_step_row") or {}
+                initial_step_index = _safe_int(roadmap_read.get("step_index"))
+                initial_step_exposed_persisted = int(roadmap_read.get("persisted_exposure_delta") or 0) > 0
 
         if rng.random() < p_next_offer_get:
             next_offer_resp = self._api_get(
@@ -1174,6 +1385,20 @@ class Command(BaseCommand):
 
         order_prob = clamp_prob(state.segment.order_prob)
         if rng.random() > order_prob:
+            if initial_step_exposed_persisted and initial_step_index == 1:
+                repeat_exposure_prob = clamp_prob(p_return_after_step1_exposure * state.segment.sessions_mult)
+                if rng.random() < repeat_exposure_prob:
+                    repeat_read = self._roadmap_get_and_track(
+                        client=client,
+                        category=category,
+                        sim_now=sim_now + timedelta(minutes=35),
+                        request_id=rid("roadmapreturnexp"),
+                        user_id=user_id,
+                        counters=counters,
+                        warnings=warnings,
+                    )
+                    if repeat_read.get("ok"):
+                        counters["returned_after_step_1_exposure"] += 1
             return idem_counter
 
         orders_count = 1
@@ -1182,6 +1407,8 @@ class Command(BaseCommand):
 
         for order_idx in range(orders_count):
             next_step_pt = str((next_step_row or next_step).get("product_type") or "").strip()
+            current_step_id = _safe_int((next_step_row or next_step).get("id"))
+            current_step_index = _safe_int((next_step_row or next_step).get("step_index"))
             can_complete = bool(next_step_pt and not step_skipped)
             complete_prob = clamp_prob(p_complete_next_step * state.segment.complete_mult)
             should_complete = can_complete and (rng.random() < complete_prob)
@@ -1234,6 +1461,21 @@ class Command(BaseCommand):
                 rng=rng,
                 product_cache=product_cache,
             )
+            if should_complete and next_step_pt:
+                payload_has_step_target, payload_has_recommended = self._payload_matches_next_step(
+                    items=body.get("items") if isinstance(body.get("items"), list) else [],
+                    category=category,
+                    step_product_type=next_step_pt,
+                    recommended_product_id=self._recommended_product_id_from_step(
+                        next_step=next_step,
+                        next_step_row=next_step_row,
+                    ),
+                    product_cache=product_cache,
+                )
+                if payload_has_step_target:
+                    counters["checkout_targeted_next_step"] += 1
+                if payload_has_recommended:
+                    counters["checkout_targeted_recommended_product"] += 1
             apply_assignment_id = (
                 int(body.get("apply_assignment_id"))
                 if body.get("apply_assignment_id") is not None
@@ -1242,11 +1484,18 @@ class Command(BaseCommand):
             if apply_candidate_id and not apply_assignment_used:
                 counters["offer_apply_skipped_no_eligible"] += 1
 
+            checkout_dt = sim_now + timedelta(minutes=1, seconds=order_idx * 8)
+            completed_before = self._count_user_specific_step_event_for_utc_day(
+                user_id=int(user_id),
+                step_id=current_step_id,
+                event_type=RoadmapEvent.Type.STEP_COMPLETED,
+                ref_dt=checkout_dt,
+            )
             checkout_resp = self._api_post(
                 client=client,
                 path="/api/checkout",
                 body=body,
-                sim_now=sim_now + timedelta(minutes=1, seconds=order_idx * 8),
+                sim_now=checkout_dt,
                 request_id=checkout_request_id,
                 user_id=user_id,
             )
@@ -1282,6 +1531,159 @@ class Command(BaseCommand):
 
             if should_complete and target_product_id:
                 counters["roadmap_complete_attempts"] += 1
+            completed_after = self._count_user_specific_step_event_for_utc_day(
+                user_id=int(user_id),
+                step_id=current_step_id,
+                event_type=RoadmapEvent.Type.STEP_COMPLETED,
+                ref_dt=checkout_dt,
+            )
+            completed_delta = max(0, int(completed_after - completed_before))
+            if completed_delta > 0:
+                self._record_step_stage_counter(
+                    counters=counters,
+                    step_index=current_step_index,
+                    stage="completed",
+                    amount=completed_delta,
+                )
+                if current_step_index == 1:
+                    completed_step_1_in_session = True
+
+            if (
+                completed_delta > 0
+                and current_step_index == 1
+                and not returned_after_step_1_completion
+            ):
+                repeat_completion_prob = clamp_prob(p_return_after_step1_completion * state.segment.complete_mult)
+                if rng.random() < repeat_completion_prob:
+                    repeat_read = self._roadmap_get_and_track(
+                        client=client,
+                        category=category,
+                        sim_now=checkout_dt + timedelta(minutes=3),
+                        request_id=rid("roadmapreturncmp"),
+                        user_id=user_id,
+                        counters=counters,
+                        warnings=warnings,
+                    )
+                    if repeat_read.get("ok"):
+                        counters["returned_after_step_1_completion"] += 1
+                        returned_after_step_1_completion = True
+                        next_step = repeat_read.get("next_step") or {}
+                        next_step_row = repeat_read.get("next_step_row") or {}
+                        step_skipped = False
+                        followup_step_id = _safe_int((next_step_row or next_step).get("id"))
+                        followup_step_index = _safe_int((next_step_row or next_step).get("step_index"))
+                        followup_step_pt = str((next_step_row or next_step).get("product_type") or "").strip()
+                        followup_prob = clamp_prob(p_followup_checkout_after_repeat * state.segment.complete_mult)
+                        if followup_step_id is not None and followup_step_pt and rng.random() < followup_prob:
+                            counters["followup_checkout_attempts"] += 1
+                            followup_items, followup_product_ids, followup_target_pid = self._build_checkout_items(
+                                category=category,
+                                next_step=next_step,
+                                next_step_row=next_step_row,
+                                should_complete=True,
+                                max_items=max_items,
+                                basket_bonus=state.segment.basket_bonus,
+                                rng=rng,
+                                product_cache=product_cache,
+                            )
+                            followup_items = self._sanitize_checkout_items(
+                                followup_items,
+                                product_cache=product_cache,
+                            )
+                            if followup_items:
+                                idem_counter += 1
+                                followup_request_id = rid("checkoutfollowup")
+                                followup_key = (
+                                    f"sim-followup-{run_nonce}-{day_index}-{user_id}-{session_index}-{idem_counter}"
+                                )[:64]
+                                followup_body, _ = self._build_checkout_payload(
+                                    user_id=user_id,
+                                    category=category,
+                                    base_items=followup_items,
+                                    base_product_ids=followup_product_ids,
+                                    max_items=max_items,
+                                    assignment_id=None,
+                                    assignment_target={},
+                                    idempotency_key=followup_key,
+                                    request_id=followup_request_id,
+                                    warnings=warnings,
+                                    rng=rng,
+                                    product_cache=product_cache,
+                                )
+                                payload_has_step_target, payload_has_recommended = self._payload_matches_next_step(
+                                    items=followup_body.get("items") if isinstance(followup_body.get("items"), list) else [],
+                                    category=category,
+                                    step_product_type=followup_step_pt,
+                                    recommended_product_id=self._recommended_product_id_from_step(
+                                        next_step=next_step,
+                                        next_step_row=next_step_row,
+                                    ),
+                                    product_cache=product_cache,
+                                )
+                                if payload_has_step_target:
+                                    counters["checkout_targeted_next_step"] += 1
+                                if payload_has_recommended:
+                                    counters["checkout_targeted_recommended_product"] += 1
+                                followup_dt = checkout_dt + timedelta(minutes=6)
+                                completed_before_followup = self._count_user_specific_step_event_for_utc_day(
+                                    user_id=int(user_id),
+                                    step_id=followup_step_id,
+                                    event_type=RoadmapEvent.Type.STEP_COMPLETED,
+                                    ref_dt=followup_dt,
+                                )
+                                followup_resp = self._api_post(
+                                    client=client,
+                                    path="/api/checkout",
+                                    body=followup_body,
+                                    sim_now=followup_dt,
+                                    request_id=followup_request_id,
+                                    user_id=user_id,
+                                )
+                                if followup_resp.status_code == 201:
+                                    counters["tx_created"] += 1
+                                    counters["followup_checkout_success"] += 1
+                                    if followup_target_pid:
+                                        counters["roadmap_complete_attempts"] += 1
+                                    completed_after_followup = self._count_user_specific_step_event_for_utc_day(
+                                        user_id=int(user_id),
+                                        step_id=followup_step_id,
+                                        event_type=RoadmapEvent.Type.STEP_COMPLETED,
+                                        ref_dt=followup_dt,
+                                    )
+                                    completed_followup_delta = max(
+                                        0,
+                                        int(completed_after_followup - completed_before_followup),
+                                    )
+                                    if completed_followup_delta > 0:
+                                        self._record_step_stage_counter(
+                                            counters=counters,
+                                            step_index=followup_step_index,
+                                            stage="completed",
+                                            amount=completed_followup_delta,
+                                        )
+                                        counters["followup_step_completed"] += int(completed_followup_delta)
+                                else:
+                                    counters["checkout_failed"] += 1
+                                    self._warn(
+                                        warnings,
+                                        "followup checkout status="
+                                        f"{followup_resp.status_code} user_id={user_id} body_items={len(followup_items)}",
+                                    )
+
+        if initial_step_exposed_persisted and initial_step_index == 1 and not completed_step_1_in_session:
+            repeat_exposure_prob = clamp_prob(p_return_after_step1_exposure * state.segment.sessions_mult)
+            if rng.random() < repeat_exposure_prob:
+                repeat_read = self._roadmap_get_and_track(
+                    client=client,
+                    category=category,
+                    sim_now=sim_now + timedelta(minutes=35),
+                    request_id=rid("roadmapreturnexp"),
+                    user_id=user_id,
+                    counters=counters,
+                    warnings=warnings,
+                )
+                if repeat_read.get("ok"):
+                    counters["returned_after_step_1_exposure"] += 1
 
         return idem_counter
 
@@ -1633,6 +2035,59 @@ class Command(BaseCommand):
             payload["apply_assignment_id"] = int(assignment_id)
         return payload, bool(apply_assignment)
 
+    def _payload_matches_next_step(
+        self,
+        *,
+        items: list[dict[str, int]],
+        category: str,
+        step_product_type: str,
+        recommended_product_id: int | None,
+        product_cache: "ProductPoolCache",
+    ) -> tuple[bool, bool]:
+        has_step_target = False
+        has_recommended = False
+        wanted_category = str(category or "").strip().lower()
+        wanted_type = str(step_product_type or "").strip().lower()
+        wanted_recommended = _safe_int(recommended_product_id)
+
+        for row in items or []:
+            pid = _safe_int((row or {}).get("product"))
+            if pid is None:
+                continue
+            if wanted_recommended is not None and int(pid) == int(wanted_recommended):
+                has_recommended = True
+            meta = product_cache.product_meta(int(pid))
+            if not meta or not bool(meta.get("in_stock")):
+                continue
+            if str(meta.get("category") or "").strip().lower() != wanted_category:
+                continue
+            if wanted_category == "fragrance" and wanted_type in SLOTS:
+                if str(meta.get("slot") or "").strip().lower() == wanted_type:
+                    has_step_target = True
+            elif str(meta.get("product_type") or "").strip().lower() == wanted_type:
+                has_step_target = True
+
+        return has_step_target, has_recommended
+
+    def _recommended_product_id_from_step(
+        self,
+        *,
+        next_step: dict[str, Any],
+        next_step_row: dict[str, Any],
+    ) -> int | None:
+        row = next_step_row if isinstance(next_step_row, dict) else {}
+        summary = next_step if isinstance(next_step, dict) else {}
+        for source in (row, summary):
+            rec_pid = _safe_int(source.get("recommended_product_id"))
+            if rec_pid is not None:
+                return int(rec_pid)
+            rec = source.get("recommended_product")
+            if isinstance(rec, dict):
+                rec_pid = _safe_int(rec.get("id"))
+                if rec_pid is not None:
+                    return int(rec_pid)
+        return None
+
     def _pick_product_for_next_step(
         self,
         *,
@@ -1643,7 +2098,10 @@ class Command(BaseCommand):
         rng: random.Random,
         product_cache: "ProductPoolCache",
     ) -> int | None:
-        rec_pid = _safe_int((next_step_row or next_step).get("recommended_product_id"))
+        rec_pid = self._recommended_product_id_from_step(
+            next_step=next_step,
+            next_step_row=next_step_row,
+        )
         if rec_pid is not None:
             meta = product_cache.product_meta(rec_pid)
             if meta and meta["in_stock"] and str(meta["category"]) == category:
@@ -1848,7 +2306,7 @@ class Command(BaseCommand):
             "transactions": int(Transaction.objects.count()),
             "transaction_items": int(TransactionItem.objects.count()),
             "owned_products": int(OwnedProduct.objects.count()),
-            "roadmap_exposed": int(
+            "roadmap_step_exposed": int(
                 RoadmapEvent.objects.filter(event_type=RoadmapEvent.Type.STEP_EXPOSED).count()
             ),
             "roadmap_clicked": int(

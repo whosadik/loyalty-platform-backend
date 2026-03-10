@@ -83,6 +83,8 @@ class RoadmapStep(models.Model):
 
 class RoadmapEvent(models.Model):
     class Type(models.TextChoices):
+        PLAN_REFRESHED = "roadmap_plan_refreshed", "Roadmap plan refreshed"
+        STEP_GENERATED = "roadmap_step_generated", "Roadmap step generated"
         STEP_EXPOSED = "roadmap_step_exposed", "Roadmap step exposed"
         STEP_CLICKED = "roadmap_step_clicked", "Roadmap step clicked"
         STEP_SKIPPED = "roadmap_step_skipped", "Roadmap step skipped"

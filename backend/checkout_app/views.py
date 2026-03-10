@@ -303,19 +303,15 @@ class CheckoutView(APIView):
                 "product_types": purchased_types,
                 "product_ids": purchased_ids,
             }
+            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
             completed_matches = []
             try:
                 completed_matches = match_completed_steps_for_purchase(request.user, post_ctx)
             except Exception:
                 completed_matches = []
-            roadmap_ctx = None
-            try:
-                roadmap_result = update_roadmap_from_purchase(request.user, post_ctx)
-                roadmap_ctx = (roadmap_result or {}).get("roadmap_ctx")
-            except Exception:
-                roadmap_ctx = None
-
-            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+            # Record STEP_COMPLETED before roadmap refresh. Refresh reuses the same step rows and
+            # emits STEP_GENERATED, so completing after refresh would break generation->exposure
+            # attribution windows for the just-finished step.
             for match in completed_matches:
                 step = match.get("step")
                 plan = match.get("plan")
@@ -339,6 +335,13 @@ class CheckoutView(APIView):
                     )
                 except Exception:
                     pass
+
+            roadmap_ctx = None
+            try:
+                roadmap_result = update_roadmap_from_purchase(request.user, post_ctx)
+                roadmap_ctx = (roadmap_result or {}).get("roadmap_ctx")
+            except Exception:
+                roadmap_ctx = None
 
             # Auto-assign next offer after successful checkout
             next_assignment = get_or_assign_next_offer(

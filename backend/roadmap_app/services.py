@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections import defaultdict
 from typing import Any
 
@@ -11,6 +12,7 @@ from django.utils import timezone
 from catalog.models import Product
 from ml_logic.recommender import recommend as rec_recommend
 from offers.services import _build_rec_profile, _cooccurrence_90d, _load_products_for_recs
+from roadmap_app.events import emit_plan_refresh_events
 from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
 from roadmap_app.ml_next_step import (
     predict_next_product_types,
@@ -81,6 +83,161 @@ def _unique(values: list[str]) -> list[str]:
     return out
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _to_int_or_none(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except Exception:
+        return None
+
+
+def _normalized_token_set(value: Any) -> set[str]:
+    out: set[str] = set()
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = []
+    for raw in values:
+        token = str(raw or "").strip().lower()
+        if token:
+            out.add(token)
+    return out
+
+
+def _normalized_int_set(value: Any) -> set[int]:
+    out: set[int] = set()
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = []
+    for raw in values:
+        val = _to_int_or_none(raw)
+        if val is None:
+            continue
+        if int(val) <= 0:
+            continue
+        out.add(int(val))
+    return out
+
+
+def _default_rollout_meta() -> dict[str, Any]:
+    return {
+        "rollout_mode": "none",
+        "rollout_selected": False,
+        "rollout_reason": "not_applicable",
+        "rollout_bucket": None,
+        "rollout_percent": None,
+        "partial_match_product_type": None,
+        "partial_match_step_index": None,
+    }
+
+
+def _stable_rollout_bucket(user, *, category: str, salt: str) -> int:
+    user_key = getattr(user, "pk", None)
+    if user_key in (None, ""):
+        user_key = getattr(user, "id", None)
+    if user_key in (None, ""):
+        user_key = getattr(user, "username", "anon")
+    raw = f"{str(salt)}:{str(category)}:{str(user_key)}".encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()[:8]
+    return int(digest, 16) % 100
+
+
+def _makeup_partial_rollout_state(
+    *,
+    user,
+    category: str,
+    chain: list[str],
+    purchased_types: list[str],
+) -> dict[str, Any]:
+    state = _default_rollout_meta()
+    if str(category or "").strip().lower() != "makeup":
+        return state
+
+    enabled_categories = _normalized_token_set(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES", [])
+    )
+    if "makeup" not in enabled_categories:
+        state["rollout_reason"] = "partial_disabled_for_category"
+        return state
+
+    state["rollout_mode"] = "partial"
+    percent = max(
+        0,
+        min(
+            100,
+            int(getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT", 0) or 0),
+        ),
+    )
+    salt = str(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_SALT", "roadmap_nextstep_v4_partial_v1")
+        or "roadmap_nextstep_v4_partial_v1"
+    ).strip()
+    state["rollout_percent"] = percent
+    state["rollout_bucket"] = _stable_rollout_bucket(
+        user,
+        category="makeup",
+        salt=salt,
+    )
+
+    allow_product_types = _normalized_token_set(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_PRODUCT_TYPES", [])
+    )
+    allow_step_indexes = _normalized_int_set(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_STEP_INDEXES", [])
+    )
+
+    if chain:
+        anchor = min(len(chain), max(0, len(purchased_types)))
+        step_index = min(max(1, anchor + 1), len(chain))
+        step_product_type = str(chain[step_index - 1] or "").strip().lower()
+    else:
+        step_index = None
+        step_product_type = ""
+
+    if allow_product_types and step_product_type and step_product_type in allow_product_types:
+        state["partial_match_product_type"] = step_product_type
+    if allow_step_indexes and step_index is not None and int(step_index) in allow_step_indexes:
+        state["partial_match_step_index"] = int(step_index)
+
+    if allow_product_types and allow_step_indexes:
+        allowlist_passed = bool(
+            state["partial_match_product_type"] or state["partial_match_step_index"] is not None
+        )
+    elif allow_product_types:
+        allowlist_passed = bool(state["partial_match_product_type"])
+    elif allow_step_indexes:
+        allowlist_passed = bool(state["partial_match_step_index"] is not None)
+    else:
+        allowlist_passed = False
+
+    if not allowlist_passed:
+        if not allow_product_types and not allow_step_indexes:
+            state["rollout_reason"] = "allowlist_empty"
+        else:
+            state["rollout_reason"] = "allowlist_no_match"
+        return state
+
+    if int(state["rollout_bucket"]) >= int(percent):
+        state["rollout_reason"] = "bucket_out_of_range"
+        return state
+
+    state["rollout_selected"] = True
+    state["rollout_reason"] = "selected"
+    return state
+
+
 def _default_ml_mode_and_path() -> tuple[str, str]:
     use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
@@ -145,6 +302,36 @@ def _normalize_plan_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     else:
         ml_out["disabled_reason"] = None
         ml_out["fallback_reason"] = None
+
+    rollout_mode = str(ml_out.get("rollout_mode") or "").strip().lower()
+    if rollout_mode not in {"full", "partial", "none"}:
+        rollout_mode = "none"
+    ml_out["rollout_mode"] = rollout_mode
+    rollout_selected = _as_bool(ml_out.get("rollout_selected"))
+    if rollout_mode == "full":
+        rollout_selected = True
+    elif rollout_mode == "none":
+        rollout_selected = False
+    ml_out["rollout_selected"] = rollout_selected
+    rollout_reason = str(ml_out.get("rollout_reason") or "").strip()
+    ml_out["rollout_reason"] = rollout_reason or "not_applicable"
+
+    rollout_bucket = _to_int_or_none(ml_out.get("rollout_bucket"))
+    if rollout_bucket is None or rollout_bucket < 0 or rollout_bucket >= 100:
+        rollout_bucket = None
+    ml_out["rollout_bucket"] = rollout_bucket
+
+    rollout_percent = _to_int_or_none(ml_out.get("rollout_percent"))
+    if rollout_percent is not None:
+        rollout_percent = max(0, min(100, int(rollout_percent)))
+    ml_out["rollout_percent"] = rollout_percent
+
+    partial_match_product_type = str(ml_out.get("partial_match_product_type") or "").strip().lower()
+    ml_out["partial_match_product_type"] = partial_match_product_type or None
+    partial_match_step_index = _to_int_or_none(ml_out.get("partial_match_step_index"))
+    if partial_match_step_index is not None and partial_match_step_index <= 0:
+        partial_match_step_index = None
+    ml_out["partial_match_step_index"] = partial_match_step_index
 
     out["ml"] = ml_out
     return out
@@ -313,6 +500,7 @@ def _build_chain(
 
     source_by_type: dict[str, dict[str, Any]] = {pt: {"source": "rules", "score": None} for pt in chain}
     ml_predictions: list[dict[str, Any]] = []
+    default_rollout_meta = _default_rollout_meta()
     if not chain:
         return chain, source_by_type, ml_predictions, {
             "decision": "disabled",
@@ -320,6 +508,7 @@ def _build_chain(
             "disabled_reason": "no_candidate_types",
             "guard": None,
             "category_guard": None,
+            **default_rollout_meta,
         }
 
     use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
@@ -330,6 +519,7 @@ def _build_chain(
         "disabled_reason": "ml_disabled",
         "guard": None,
         "category_guard": None,
+        **default_rollout_meta,
     }
     if not use_v4 and not use_v3:
         return chain, source_by_type, ml_predictions, ml_runtime
@@ -389,28 +579,68 @@ def _build_chain(
             "guard_7d": staged.get("guard_7d"),
             "guard_30d": staged.get("guard_30d"),
         }
+        rollout_meta = _default_rollout_meta()
+        if str(category) == "makeup":
+            rollout_meta = _makeup_partial_rollout_state(
+                user=user,
+                category=category,
+                chain=chain,
+                purchased_types=purchased_types,
+            )
 
         if final_status == "DISABLE":
             rollout_reason = str(staged.get("reason") or rollout.get("reason") or "category_disabled")
             disabled_reason = "ml_disabled" if rollout_reason == "ml_disabled" else "category_disabled"
             category_guard["passed"] = False
             category_guard["reason"] = rollout_reason
+            rollout_meta_disabled = {**rollout_meta, "rollout_selected": False}
+            if str(rollout_meta_disabled.get("rollout_mode") or "") == "partial":
+                rollout_meta_disabled["rollout_reason"] = rollout_reason
             ml_runtime = {
                 "decision": "disabled",
                 "fallback_reason": None,
                 "disabled_reason": disabled_reason,
                 "guard": None,
                 "category_guard": category_guard,
+                **rollout_meta_disabled,
             }
             return chain, source_by_type, ml_predictions, ml_runtime
 
-        if final_status != "ENABLE":
+        partial_selected = bool(rollout_meta.get("rollout_selected"))
+        partial_active = str(rollout_meta.get("rollout_mode") or "") == "partial"
+        if final_status == "ENABLE":
+            rollout_meta = {
+                **_default_rollout_meta(),
+                "rollout_mode": "full",
+                "rollout_selected": True,
+                "rollout_reason": "category_enabled",
+                "rollout_percent": 100,
+            }
+        elif partial_active and partial_selected:
+            rollout_meta = {
+                **rollout_meta,
+                "rollout_mode": "partial",
+                "rollout_selected": True,
+                "rollout_reason": str(rollout_meta.get("rollout_reason") or "selected"),
+            }
+        elif partial_active and not partial_selected:
+            ml_runtime = {
+                "decision": "fallback",
+                "fallback_reason": "partial_rollout_not_selected",
+                "disabled_reason": None,
+                "guard": None,
+                "category_guard": category_guard,
+                **rollout_meta,
+            }
+            return chain, source_by_type, ml_predictions, ml_runtime
+        elif final_status != "ENABLE":
             ml_runtime = {
                 "decision": "fallback",
                 "fallback_reason": "category_guard_failed",
                 "disabled_reason": None,
                 "guard": None,
                 "category_guard": category_guard,
+                **rollout_meta,
             }
             return chain, source_by_type, ml_predictions, ml_runtime
 
@@ -421,6 +651,7 @@ def _build_chain(
             "disabled_reason": None,
             "guard": guard,
             "category_guard": category_guard,
+            **rollout_meta,
         }
         if not bool(guard.get("passed")):
             ml_runtime["fallback_reason"] = str(guard.get("reason") or "min_lift_guard_blocked")
@@ -470,6 +701,7 @@ def _build_chain(
         "disabled_reason": None,
         "guard": None,
         "category_guard": None,
+        **_default_rollout_meta(),
     }
     ml_predictions = predict_next_product_types(
         user,
@@ -815,6 +1047,13 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "disabled_reason": ml_runtime.get("disabled_reason"),
             "guard": ml_runtime.get("guard"),
             "category_guard": ml_runtime.get("category_guard"),
+            "rollout_mode": str(ml_runtime.get("rollout_mode") or "none"),
+            "rollout_selected": bool(ml_runtime.get("rollout_selected")),
+            "rollout_reason": str(ml_runtime.get("rollout_reason") or "not_applicable"),
+            "rollout_bucket": ml_runtime.get("rollout_bucket"),
+            "rollout_percent": ml_runtime.get("rollout_percent"),
+            "partial_match_product_type": ml_runtime.get("partial_match_product_type"),
+            "partial_match_step_index": ml_runtime.get("partial_match_step_index"),
             "mode": ml_mode,
             "model_path": model_path,
         },
@@ -832,7 +1071,9 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         },
     }
 
-    return _upsert_plan_with_steps(user=user, category=category, meta=meta, step_payloads=step_payloads)
+    plan = _upsert_plan_with_steps(user=user, category=category, meta=meta, step_payloads=step_payloads)
+    emit_plan_refresh_events(user=user, plan=plan, request_id=None)
+    return plan
 
 
 def get_active_plan(user, category: str) -> RoadmapPlan | None:
@@ -907,6 +1148,8 @@ def update_roadmap_from_purchase(user, post_ctx: dict[str, Any] | None) -> dict[
         "plan_id": selected_plan.id,
     }
     if next_step:
+        roadmap_ctx["step_id"] = int(next_step.id)
+        roadmap_ctx["step_index"] = int(next_step.step_index)
         roadmap_ctx["next_product_type"] = next_step.product_type
         if next_step.recommended_product_id:
             roadmap_ctx["next_product_id"] = int(next_step.recommended_product_id)

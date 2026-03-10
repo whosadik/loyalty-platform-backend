@@ -25,6 +25,7 @@ class RoadmapStepPatchRequestSerializer(serializers.Serializer):
 
 
 class RoadmapStepReadSerializer(serializers.ModelSerializer):
+    recommended_product_id = serializers.IntegerField(read_only=True)
     recommended_product = serializers.SerializerMethodField()
 
     class Meta:
@@ -34,6 +35,7 @@ class RoadmapStepReadSerializer(serializers.ModelSerializer):
             "step_index",
             "product_type",
             "status",
+            "recommended_product_id",
             "recommended_product",
             "suggestions",
             "score",

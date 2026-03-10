@@ -1223,6 +1223,8 @@ def get_or_assign_next_offer(
                     "category": roadmap_ctx.get("category"),
                     "next_product_type": roadmap_ctx.get("next_product_type"),
                     "plan_id": roadmap_ctx.get("plan_id"),
+                    "step_id": roadmap_ctx.get("step_id"),
+                    "step_index": roadmap_ctx.get("step_index"),
                 },
             }
 

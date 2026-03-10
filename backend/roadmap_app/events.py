@@ -7,6 +7,14 @@ from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 from django.utils import timezone
 
 
+def _safe_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _safe_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
 def build_step_event_context(
     *,
     category: str | None,
@@ -28,6 +36,70 @@ def build_step_event_context(
     return ctx
 
 
+def _generated_step_source(step: RoadmapStep | None) -> str | None:
+    why_items = [str(item).strip().lower() for item in _safe_list(getattr(step, "why", [])) if str(item).strip()]
+    for item in why_items:
+        if "picked via ml next_step" in item:
+            return "ml_next_step"
+        if "picked via rules" in item:
+            return "rules"
+    return None
+
+
+def build_plan_refresh_context(*, plan: RoadmapPlan, next_step: RoadmapStep | None) -> dict[str, Any]:
+    steps = sorted(list(plan.steps.all()), key=lambda step: (int(step.step_index), int(step.id)))
+    missing_steps_count = sum(
+        1
+        for step in steps
+        if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+    )
+    ml = _safe_dict(_safe_dict(plan.meta).get("ml"))
+    ctx: dict[str, Any] = {
+        "plan_id": int(plan.id),
+        "category": str(plan.category),
+        "steps_total": int(len(steps)),
+        "missing_steps_count": int(missing_steps_count),
+        "next_step_id": int(next_step.id) if next_step else None,
+        "next_step_index": int(next_step.step_index) if next_step else None,
+        "next_product_type": str(next_step.product_type) if next_step else None,
+        "ml": {
+            "decision": str(ml.get("decision") or ""),
+            "mode": str(ml.get("mode") or ""),
+            "rollout_mode": str(ml.get("rollout_mode") or "none"),
+            "rollout_selected": bool(ml.get("rollout_selected")),
+            "fallback_reason": ml.get("fallback_reason"),
+            "disabled_reason": ml.get("disabled_reason"),
+        },
+    }
+    refresh_caller = _safe_dict(plan.meta).get("context")
+    if isinstance(refresh_caller, dict) and str(refresh_caller.get("refresh_caller") or "").strip():
+        ctx["refresh_caller"] = str(refresh_caller.get("refresh_caller"))
+    return ctx
+
+
+def build_step_generated_context(*, plan: RoadmapPlan, step: RoadmapStep) -> dict[str, Any]:
+    ml = _safe_dict(_safe_dict(plan.meta).get("ml"))
+    ctx: dict[str, Any] = {
+        "plan_id": int(plan.id),
+        "step_id": int(step.id),
+        "step_index": int(step.step_index),
+        "category": str(plan.category),
+        "product_type": str(step.product_type),
+        "status": str(step.status),
+        "recommended_product_id": int(step.recommended_product_id) if step.recommended_product_id else None,
+        "has_recommendation": bool(step.recommended_product_id),
+        "source": _generated_step_source(step),
+        "why": _safe_list(step.why),
+        "confidence": float(step.confidence) if step.confidence is not None else None,
+        "cadence": str(step.cadence or ""),
+        "ml": {
+            "decision": str(ml.get("decision") or ""),
+            "rollout_mode": str(ml.get("rollout_mode") or "none"),
+        },
+    }
+    return ctx
+
+
 def record_roadmap_event(
     *,
     user,
@@ -45,6 +117,39 @@ def record_roadmap_event(
         request_id=request_id,
         context=context or {},
     )
+
+
+def emit_plan_refresh_events(*, user, plan: RoadmapPlan, request_id: str | None = None) -> dict[str, int]:
+    steps = sorted(list(plan.steps.all()), key=lambda step: (int(step.step_index), int(step.id)))
+    next_step = next(
+        (
+            step
+            for step in steps
+            if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+        ),
+        None,
+    )
+    record_roadmap_event(
+        user=user,
+        event_type=RoadmapEvent.Type.PLAN_REFRESHED,
+        plan=plan,
+        step=None,
+        request_id=request_id,
+        context=build_plan_refresh_context(plan=plan, next_step=next_step),
+    )
+    for step in steps:
+        record_roadmap_event(
+            user=user,
+            event_type=RoadmapEvent.Type.STEP_GENERATED,
+            plan=plan,
+            step=step,
+            request_id=request_id,
+            context=build_step_generated_context(plan=plan, step=step),
+        )
+    return {
+        "plan_events": 1,
+        "step_events": int(len(steps)),
+    }
 
 
 def _utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
@@ -136,6 +241,14 @@ def record_exposed_from_offer_assignment(*, assignment, request_id: str | None =
     reason = assignment.reason if isinstance(assignment.reason, dict) else {}
     roadmap_reason = reason.get("roadmap") if isinstance(reason.get("roadmap"), dict) else {}
 
+    def _to_int(value: Any) -> int | None:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except Exception:
+            return None
+
     plan = None
     plan_id_raw = roadmap_reason.get("plan_id")
     try:
@@ -160,11 +273,20 @@ def record_exposed_from_offer_assignment(*, assignment, request_id: str | None =
         if not plan:
             return None, False
 
-    next_step = (
-        plan.steps.filter(status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED])
-        .order_by("step_index")
-        .first()
-    )
+    next_step = None
+    step_id = _to_int(roadmap_reason.get("step_id") or target.get("step_id"))
+    if step_id is not None:
+        next_step = plan.steps.filter(id=step_id).first()
+    if next_step is None:
+        step_index = _to_int(roadmap_reason.get("step_index") or target.get("step_index"))
+        if step_index is not None:
+            next_step = plan.steps.filter(step_index=step_index).order_by("id").first()
+    if next_step is None:
+        next_step = (
+            plan.steps.filter(status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED])
+            .order_by("step_index")
+            .first()
+        )
     if not next_step:
         return None, False
 

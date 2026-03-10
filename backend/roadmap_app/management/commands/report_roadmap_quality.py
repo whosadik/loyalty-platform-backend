@@ -42,6 +42,12 @@ def _to_int(value: Any) -> int | None:
         return None
 
 
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _safe_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
@@ -67,7 +73,13 @@ def _why_to_text(why: Any) -> str:
 
 def _fallback_reason_bucket(reason: Any) -> str:
     normalized = str(reason or "").strip().lower()
-    if normalized in {"no_predictions", "low_confidence", "top_outside_guardrails", "category_guard_failed"}:
+    if normalized in {
+        "no_predictions",
+        "low_confidence",
+        "top_outside_guardrails",
+        "category_guard_failed",
+        "partial_rollout_not_selected",
+    }:
         return normalized
     return "other"
 
@@ -157,12 +169,34 @@ class Command(BaseCommand):
         ml_rollout_status_by_category: dict[str, Counter[str]] = defaultdict(Counter)
         ml_hold_reason_by_category: dict[str, Counter[str]] = defaultdict(Counter)
         ml_stability_failures_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        ml_rollout_mode_counts: Counter[str] = Counter()
+        ml_rollout_mode_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        ml_rollout_reason_counts: Counter[str] = Counter()
+        ml_rollout_reason_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        ml_model_used_by_rollout_mode: Counter[str] = Counter()
+        ml_partial_selected_by_category: dict[str, Counter[str]] = defaultdict(Counter)
         decision_order = ["model_used", "fallback", "disabled", "missing_ml_meta"]
         for row in plan_qs.values("category", "meta").iterator():
             category_key = str(row.get("category") or "").strip() or "__unknown__"
             meta = row.get("meta")
             meta_dict = _safe_dict(meta)
             ml_meta = _safe_dict(meta_dict.get("ml"))
+            rollout_mode = str(ml_meta.get("rollout_mode") or "").strip().lower()
+            if rollout_mode not in {"full", "partial", "none"}:
+                rollout_mode = "none"
+            rollout_selected = _as_bool(ml_meta.get("rollout_selected"))
+            if rollout_mode == "full":
+                rollout_selected = True
+            elif rollout_mode == "none":
+                rollout_selected = False
+            rollout_reason = str(ml_meta.get("rollout_reason") or "").strip() or "__missing_reason__"
+            ml_rollout_mode_counts[rollout_mode] += 1
+            ml_rollout_mode_by_category[category_key][rollout_mode] += 1
+            ml_rollout_reason_counts[rollout_reason] += 1
+            ml_rollout_reason_by_category[category_key][rollout_reason] += 1
+            if rollout_mode == "partial":
+                bucket_key = "selected" if rollout_selected else "not_selected"
+                ml_partial_selected_by_category[category_key][bucket_key] += 1
             category_guard = _safe_dict(ml_meta.get("category_guard"))
             category_guard_reason = str(category_guard.get("reason") or "").strip() or "__missing_reason__"
             if category_guard:
@@ -188,6 +222,8 @@ class Command(BaseCommand):
                 decision = "missing_ml_meta"
             ml_decision_counts[decision] += 1
             ml_decision_by_category[category_key][decision] += 1
+            if decision == "model_used":
+                ml_model_used_by_rollout_mode[rollout_mode] += 1
             if not category_guard:
                 derived_rollout_status = "__unknown__"
                 if decision == "model_used":
@@ -221,6 +257,14 @@ class Command(BaseCommand):
         fallback_share = _pct(fallback_plans, plans_updated_total)
         disabled_share = _pct(disabled_plans, plans_updated_total)
         missing_ml_meta_share = _pct(missing_ml_meta_plans, plans_updated_total)
+        partial_rollout_plans = int(ml_rollout_mode_counts.get("partial", 0))
+        partial_rollout_selected_plans = int(
+            sum(counter.get("selected", 0) for counter in ml_partial_selected_by_category.values())
+        )
+        partial_rollout_share = _pct(partial_rollout_selected_plans, plans_updated_total)
+        model_used_full_plans = int(ml_model_used_by_rollout_mode.get("full", 0))
+        model_used_partial_plans = int(ml_model_used_by_rollout_mode.get("partial", 0))
+        model_used_none_plans = int(ml_model_used_by_rollout_mode.get("none", 0))
 
         shortcut_qs = offer_qs.filter(target__picked_via__startswith="roadmap_shortcut")
         offers_with_roadmap_shortcut_total = shortcut_qs.count()
@@ -586,6 +630,14 @@ class Command(BaseCommand):
             f"**disabled={disabled_plans}/{plans_updated_total} ({disabled_share}%)**, "
             f"**missing_ml_meta={missing_ml_meta_plans}/{plans_updated_total} ({missing_ml_meta_share}%)**"
         )
+        lines.append(
+            f"- partial rollout share: **selected={partial_rollout_selected_plans}/{plans_updated_total} "
+            f"({partial_rollout_share}%)**, **partial_mode_total={partial_rollout_plans}**"
+        )
+        lines.append(
+            f"- model_used split by rollout_mode: **full={model_used_full_plans}**, "
+            f"**partial={model_used_partial_plans}**, **none={model_used_none_plans}**"
+        )
         lines.append(f"- steps_updated: **{steps_updated_total}**")
         lines.append(f"- offers_assigned: **{offers_assigned_total}**")
         lines.append(f"- offers_with_roadmap_shortcut: **{offers_with_roadmap_shortcut_total}**")
@@ -674,6 +726,60 @@ class Command(BaseCommand):
             )
         )
         lines.append("")
+        lines.append("### Rollout mode distribution")
+        lines.append(
+            _md_table(
+                ["rollout_mode", "count"],
+                [
+                    [mode, int(ml_rollout_mode_counts.get(mode, 0))]
+                    for mode in ["full", "partial", "none"]
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### Model-used split (full vs partial)")
+        lines.append(
+            _md_table(
+                ["rollout_mode", "model_used_count"],
+                [
+                    [mode, int(ml_model_used_by_rollout_mode.get(mode, 0))]
+                    for mode in ["full", "partial", "none"]
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### Partial rollout by category")
+        lines.append(
+            _md_table(
+                ["category", "partial_total", "partial_selected", "partial_selected_share_in_category_pct"],
+                [
+                    [
+                        cat,
+                        int(ml_rollout_mode_by_category[cat].get("partial", 0)),
+                        int(ml_partial_selected_by_category[cat].get("selected", 0)),
+                        _pct(
+                            int(ml_partial_selected_by_category[cat].get("selected", 0)),
+                            int(ml_decision_by_category[cat].get("model_used", 0))
+                            + int(ml_decision_by_category[cat].get("fallback", 0))
+                            + int(ml_decision_by_category[cat].get("disabled", 0)),
+                        ),
+                    ]
+                    for cat in sorted(ml_decision_by_category.keys())
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### Rollout reasons (raw)")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [
+                    [k, v]
+                    for k, v in sorted(ml_rollout_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                ],
+            )
+        )
+        lines.append("")
         lines.append("### ML fallback reasons")
         lines.append(
             _md_table(
@@ -685,6 +791,7 @@ class Command(BaseCommand):
                         "low_confidence",
                         "top_outside_guardrails",
                         "category_guard_failed",
+                        "partial_rollout_not_selected",
                         "other",
                     ]
                 ],

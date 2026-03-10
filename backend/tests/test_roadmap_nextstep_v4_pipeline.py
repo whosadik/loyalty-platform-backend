@@ -22,8 +22,10 @@ from roadmap_app.ml_next_step import (
     v4_category_rollout_status,
     v4_category_staged_rollout_status_from_reports,
     v4_category_uplift_guard_status_from_report,
+    v4_min_lift_guard_status,
 )
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
+from roadmap_app.services import refresh_roadmap
 from transactions.models import Transaction, TransactionItem
 
 try:
@@ -202,6 +204,80 @@ class RoadmapNextStepV4AdapterTests(TestCase):
         self.assertEqual([row["candidate_type"] for row in rows], ["cleanser", "serum"])
         self.assertEqual(len(rows), len({row["candidate_type"] for row in rows}))
         self.assertGreaterEqual(float(rows[0]["score"]), float(rows[1]["score"]))
+
+
+class RoadmapNextStepV4EvalSourceTests(TestCase):
+    def _write_eval_report(self, path: Path, *, model_value: float, baseline_value: float) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "metrics_test": {"ndcg_at_5": model_value},
+                    "dataset_baselines": {
+                        "splits": {
+                            "test": {
+                                "popularity": {
+                                    "ndcg_at_5": baseline_value,
+                                }
+                            }
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_min_lift_guard_prefers_model_dir_eval_sidecar(self):
+        with TemporaryDirectory() as model_tmp, TemporaryDirectory() as report_tmp:
+            model_dir = Path(model_tmp)
+            fallback_report = Path(report_tmp) / "fallback_eval.json"
+            sidecar_report = model_dir / "eval_report.json"
+            self._write_eval_report(sidecar_report, model_value=0.48, baseline_value=0.12)
+            self._write_eval_report(fallback_report, model_value=0.12, baseline_value=0.11)
+
+            with override_settings(
+                ROADMAP_NEXTSTEP_V4_ENABLED=True,
+                ROADMAP_NEXTSTEP_V4_MODEL_PATH=str(model_dir / "model.pkl"),
+                ROADMAP_NEXTSTEP_V4_EVAL_PATH=str(fallback_report),
+                ROADMAP_NEXTSTEP_V4_MIN_LIFT_DELTA=0.05,
+            ):
+                status = v4_min_lift_guard_status()
+
+        self.assertTrue(bool(status.get("passed")))
+        self.assertEqual(str(status.get("eval_path")), str(sidecar_report))
+
+    def test_min_lift_guard_can_use_embedded_metadata_snapshot(self):
+        with TemporaryDirectory() as model_tmp, TemporaryDirectory() as report_tmp:
+            model_dir = Path(model_tmp)
+            metadata_path = model_dir / "metadata.json"
+            metadata_path.write_text(
+                json.dumps(
+                    {
+                        "metrics_test": {"ndcg_at_5": 0.41},
+                        "dataset_baselines": {
+                            "splits": {
+                                "test": {
+                                    "popularity": {
+                                        "ndcg_at_5": 0.12,
+                                    }
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            missing_report = Path(report_tmp) / "missing_eval.json"
+
+            with override_settings(
+                ROADMAP_NEXTSTEP_V4_ENABLED=True,
+                ROADMAP_NEXTSTEP_V4_MODEL_PATH=str(model_dir / "model.pkl"),
+                ROADMAP_NEXTSTEP_V4_EVAL_PATH=str(missing_report),
+                ROADMAP_NEXTSTEP_V4_MIN_LIFT_DELTA=0.05,
+            ):
+                status = v4_min_lift_guard_status()
+
+        self.assertTrue(bool(status.get("passed")))
+        self.assertIn("#embedded_eval", str(status.get("eval_path")))
 
 
 class RoadmapNextStepV4CategoryGuardTests(TestCase):
@@ -454,6 +530,213 @@ class RoadmapNextStepV4CategoryGuardTests(TestCase):
         self.assertEqual(str(status.get("reason")), "category_disabled")
 
 
+class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
+    def _create_makeup_products(self, suffix: str) -> None:
+        Product.objects.create(
+            name=f"Makeup Foundation {suffix}",
+            brand="B",
+            category="makeup",
+            product_type="foundation",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name=f"Makeup Mascara {suffix}",
+            brand="B",
+            category="makeup",
+            product_type="mascara",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name=f"Makeup Blush {suffix}",
+            brand="B",
+            category="makeup",
+            product_type="blush",
+            in_stock=True,
+        )
+
+    def _create_skincare_products(self, suffix: str) -> None:
+        Product.objects.create(
+            name=f"Skincare Cleanser {suffix}",
+            brand="B",
+            category="skincare",
+            product_type="cleanser",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name=f"Skincare Serum {suffix}",
+            brand="B",
+            category="skincare",
+            product_type="serum",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name=f"Skincare Moisturizer {suffix}",
+            brand="B",
+            category="skincare",
+            product_type="moisturizer",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name=f"Skincare SPF {suffix}",
+            brand="B",
+            category="skincare",
+            product_type="spf",
+            in_stock=True,
+        )
+
+    def _hold_status(self, category: str) -> dict[str, object]:
+        return {
+            "passed": False,
+            "final_status": "HOLD",
+            "current_decision": "HOLD",
+            "reason": "7d_unstable",
+            "hold_reason": "severe_negative_offer_ctr_lift",
+            "category": category,
+            "recommendation_7d": "HOLD",
+            "recommendation_30d": "ENABLE",
+            "stability_gate_failures": ["7d:severe_negative_offer_ctr_lift"],
+            "guard_7d": {"passed": False, "reason": "severe_negative_offer_ctr_lift"},
+            "guard_30d": {"passed": True, "reason": "passed"},
+        }
+
+    def test_partial_rollout_selection_is_deterministic_for_same_user_hash(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_det_u1", password="pass12345")
+        self._create_makeup_products("det")
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["makeup"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_PRODUCT_TYPES=["foundation"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_det_test",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+            return_value=[{"candidate_type": "foundation", "score": 0.92}],
+        ):
+            plan_first = refresh_roadmap(user, category="makeup", post_ctx=None)
+            plan_second = refresh_roadmap(user, category="makeup", post_ctx=None)
+
+        ml_first = (plan_first.meta or {}).get("ml") if isinstance(plan_first.meta, dict) else {}
+        ml_second = (plan_second.meta or {}).get("ml") if isinstance(plan_second.meta, dict) else {}
+        self.assertEqual(str(ml_first.get("rollout_mode")), "partial")
+        self.assertTrue(bool(ml_first.get("rollout_selected")))
+        self.assertEqual(ml_first.get("rollout_bucket"), ml_second.get("rollout_bucket"))
+        self.assertEqual(ml_first.get("rollout_selected"), ml_second.get("rollout_selected"))
+
+    def test_non_selected_makeup_users_fallback_with_partial_reason(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_no_u1", password="pass12345")
+        self._create_makeup_products("no")
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["makeup"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_PRODUCT_TYPES=["foundation"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=0,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_no_test",
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+        ) as predict_mock:
+            plan = refresh_roadmap(user, category="makeup", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "fallback")
+        self.assertEqual(str(ml_meta.get("fallback_reason")), "partial_rollout_not_selected")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
+        self.assertFalse(bool(ml_meta.get("rollout_selected")))
+        predict_mock.assert_not_called()
+
+    def test_selected_makeup_users_can_reach_model_used(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_yes_u1", password="pass12345")
+        self._create_makeup_products("yes")
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["makeup"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_PRODUCT_TYPES=["foundation"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_yes_test",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+            return_value=[{"candidate_type": "foundation", "score": 0.97}],
+        ) as predict_mock:
+            plan = refresh_roadmap(user, category="makeup", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "model_used")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
+        self.assertTrue(bool(ml_meta.get("rollout_selected")))
+        self.assertIsNone(ml_meta.get("fallback_reason"))
+        predict_mock.assert_called_once()
+
+    def test_non_makeup_category_is_unaffected_by_partial_makeup_rollout(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_sk_u1", password="pass12345")
+        self._create_skincare_products("no-touch")
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["makeup"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_PRODUCT_TYPES=["foundation"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_skincare_test",
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+        ) as predict_mock:
+            plan = refresh_roadmap(user, category="skincare", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "fallback")
+        self.assertEqual(str(ml_meta.get("fallback_reason")), "category_guard_failed")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "none")
+        self.assertFalse(bool(ml_meta.get("rollout_selected")))
+        predict_mock.assert_not_called()
+
+
 class RoadmapNextStepV4TrainingTests(TestCase):
     def _write_train_fixture(self, out_dir: Path) -> None:
         rows: list[dict[str, object]] = []
@@ -645,6 +928,11 @@ class RoadmapNextStepV4TrainingTests(TestCase):
             metadata = json.loads((model_dir / "metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(str(metadata.get("estimator")), "lightgbm")
             self.assertIn(str(metadata.get("selected_feature_set")), {"baseline_only", "full"})
+            model_report_path = model_dir / "eval_report.json"
+            self.assertTrue(model_report_path.exists())
+            model_report = json.loads(model_report_path.read_text(encoding="utf-8"))
+            self.assertEqual(int(model_report.get("test_rows", 0)), int(metadata.get("test_rows", 0)))
+            self.assertEqual(str(metadata.get("eval_report_path")), str(model_report_path))
 
             report_path = Path(__file__).resolve().parents[2] / "reports" / "roadmap_nextstep_v4_eval.json"
             report = json.loads(report_path.read_text(encoding="utf-8"))
