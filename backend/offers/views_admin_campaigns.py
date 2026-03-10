@@ -159,3 +159,35 @@ class AdminCampaignDetailView(APIView):
             c = s.save()
 
         return Response({"ok": True, "campaign": CampaignSerializer(c).data})
+
+
+class AdminCampaignPublishView(APIView):
+    """
+    POST: requires manage_campaigns
+    """
+
+    permission_classes = [HasStaffPermission.with_perm("manage_campaigns")]
+
+    @extend_schema(
+        tags=["Admin"],
+        description="Publish campaign by activating it.",
+        responses={200: CampaignDetailResponseSerializer},
+    )
+    def post(self, request, pk: int):
+        with db_tx.atomic():
+            campaign = CampaignBudget.objects.select_for_update().get(pk=pk)
+
+            update_fields = []
+            if not campaign.is_active:
+                campaign.is_active = True
+                update_fields.append("is_active")
+
+            if hasattr(campaign, "week_start_date") and campaign.week_start_date is None:
+                now = timezone.now()
+                campaign.week_start_date = (now - timezone.timedelta(days=now.weekday())).date()
+                update_fields.append("week_start_date")
+
+            if update_fields:
+                campaign.save(update_fields=update_fields)
+
+        return Response({"ok": True, "campaign": CampaignSerializer(campaign).data})

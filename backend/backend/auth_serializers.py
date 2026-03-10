@@ -8,7 +8,7 @@ User = get_user_model()
 class AuthUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ["id", "username"]
+        fields = ["id", "username", "is_staff", "is_superuser"]
 
 
 class AuthCsrfResponseSerializer(serializers.Serializer):

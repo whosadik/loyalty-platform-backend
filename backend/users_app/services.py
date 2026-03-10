@@ -8,6 +8,7 @@ from django.db.models import Count, Max, Sum
 from django.utils import timezone
 
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
+from transactions.models import Transaction
 from transactions.models import TransactionItem
 from users_app.models import CustomerProfile
 
@@ -63,6 +64,14 @@ def favorite_category_snapshot(user, now=None, *, max_signals: int = 5) -> dict:
         )
         .order_by("-total_qty", "-line_count", "-last_at", "product__category")
     )
+    window_items_qs = TransactionItem.objects.filter(
+        transaction__user=user,
+        transaction__created_at__gte=since,
+    )
+    transactions_qs = Transaction.objects.filter(
+        user=user,
+        created_at__gte=since,
+    )
 
     signals = [
         {
@@ -75,9 +84,20 @@ def favorite_category_snapshot(user, now=None, *, max_signals: int = 5) -> dict:
     ]
 
     top = rows[0] if rows else None
+    # products_bought is a quantity-based aggregate across transaction items in the window.
+    products_bought = int(window_items_qs.aggregate(total=Sum("quantity"))["total"] or 0)
+    total_spent = transactions_qs.aggregate(total=Sum("total_amount"))["total"]
+    currency = (
+        window_items_qs.exclude(product__currency="")
+        .values_list("product__currency", flat=True)
+        .first()
+    )
     return {
         "favorite_category": top["product__category"] if top else None,
         "window_days": int(window_days),
+        "products_bought": products_bought,
+        "total_spent": str(total_spent) if total_spent is not None else "0",
+        "currency": currency or None,
         "history_items_considered": int(sum(int(r["line_count"] or 0) for r in rows)),
         "window_start": since.isoformat(),
         "window_end": now.isoformat(),

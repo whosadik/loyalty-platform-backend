@@ -60,6 +60,9 @@ class MeFavoriteCategoryView(APIView):
                 "ok": True,
                 "favorite_category": snap["favorite_category"],
                 "window_days": snap["window_days"],
+                "products_bought": snap.get("products_bought", 0),
+                "total_spent": snap.get("total_spent", "0"),
+                "currency": snap.get("currency"),
                 "profile_complete": is_profile_complete(profile),
                 "explain": {
                     "window_start": snap["window_start"],

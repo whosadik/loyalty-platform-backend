@@ -14,6 +14,9 @@ class HasStaffPermission(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
+        # Superuser is allowed to access all staff-protected endpoints.
+        if user.is_superuser:
+            return True
         if not user.is_staff:
             return False
 

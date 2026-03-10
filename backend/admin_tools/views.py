@@ -4,7 +4,7 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
-from django.db.models import Count, Sum
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, Sum
 from django.utils import timezone
 
 from drf_spectacular.types import OpenApiTypes
@@ -21,7 +21,7 @@ from offers.admin_metrics import offers_events_kpis, offers_promo_efficiency_30d
 from offers.models import OfferAssignment, OfferEvent
 from recs_analytics.admin_metrics import recs_experiments_metrics, recs_metrics_30d
 from recs_analytics.models import RecommendationEvent
-from transactions.models import Transaction
+from transactions.models import Transaction, TransactionItem
 
 
 class AdminHealthView(APIView):
@@ -159,6 +159,123 @@ def _recs_block(since):
     }
 
 
+def _top_categories_30d(*, now):
+    since_30 = now - timedelta(days=30)
+    prev_since_30 = now - timedelta(days=60)
+    price_expr = ExpressionWrapper(
+        F("quantity") * F("unit_price"),
+        output_field=DecimalField(max_digits=14, decimal_places=2),
+    )
+
+    current_rows = (
+        TransactionItem.objects.filter(transaction__created_at__gte=since_30)
+        .values("product__category")
+        .annotate(revenue=Sum(price_expr))
+        .order_by("-revenue")
+    )
+    previous_rows = (
+        TransactionItem.objects.filter(
+            transaction__created_at__gte=prev_since_30,
+            transaction__created_at__lt=since_30,
+        )
+        .values("product__category")
+        .annotate(revenue=Sum(price_expr))
+    )
+    previous_map = {
+        row["product__category"] or "unknown": float(row["revenue"] or 0)
+        for row in previous_rows
+    }
+
+    out = []
+    for row in current_rows[:5]:
+        category = row["product__category"] or "unknown"
+        current_revenue = float(row["revenue"] or 0)
+        previous_revenue = previous_map.get(category, 0.0)
+        growth = None
+        if previous_revenue > 0:
+            growth = round(((current_revenue - previous_revenue) / previous_revenue) * 100, 2)
+
+        out.append(
+            {
+                "name": category,
+                "revenue": round(current_revenue, 2),
+                "growth": growth,
+            }
+        )
+    return out
+
+
+def _overview_alerts_and_actions(*, tx30, recs30, offers30):
+    alerts = []
+    actions = []
+
+    buyers_30d = int((tx30 or {}).get("unique_buyers") or 0)
+    recs_ctr_30d = float((recs30 or {}).get("ctr") or 0.0)
+    offer_redemption_30d = float((offers30 or {}).get("redemption_rate_exposed") or 0.0)
+
+    if buyers_30d == 0:
+        alerts.append(
+            {
+                "id": "buyers-zero-30d",
+                "level": "error",
+                "title": "Нет уникальных покупателей за 30 дней",
+                "detail": "Транзакции за окно 30d отсутствуют.",
+                "action": {"label": "Проверить метрики", "href": "/admin/metrics"},
+            }
+        )
+        actions.append(
+            {
+                "id": "buyers-zero-30d-action",
+                "priority": "high",
+                "title": "Проверить источники транзакций",
+                "reason": "В окне 30d нет уникальных покупателей.",
+                "href": "/admin/metrics",
+            }
+        )
+
+    if recs_ctr_30d > 0 and recs_ctr_30d < 0.02:
+        alerts.append(
+            {
+                "id": "recs-ctr-low-30d",
+                "level": "warning",
+                "title": "Низкий CTR рекомендаций (30d)",
+                "detail": f"CTR={recs_ctr_30d:.2%}, проверьте качество выдачи.",
+                "action": {"label": "Открыть Recs Experiments", "href": "/admin/experiments"},
+            }
+        )
+        actions.append(
+            {
+                "id": "recs-ctr-low-30d-action",
+                "priority": "medium",
+                "title": "Проверить алгоритмы рекомендаций",
+                "reason": f"CTR рекомендаций за 30d = {recs_ctr_30d:.2%}.",
+                "href": "/admin/experiments",
+            }
+        )
+
+    if offer_redemption_30d > 0 and offer_redemption_30d < 0.01:
+        alerts.append(
+            {
+                "id": "offers-redemption-low-30d",
+                "level": "info",
+                "title": "Низкая доля погашений офферов (30d)",
+                "detail": f"Redemption={offer_redemption_30d:.2%}, нужна проверка офферов.",
+                "action": {"label": "Открыть Campaigns", "href": "/admin/campaigns"},
+            }
+        )
+        actions.append(
+            {
+                "id": "offers-redemption-low-30d-action",
+                "priority": "low",
+                "title": "Проверить активные кампании",
+                "reason": f"Доля погашений офферов за 30d = {offer_redemption_30d:.2%}.",
+                "href": "/admin/campaigns",
+            }
+        )
+
+    return alerts[:5], actions[:5]
+
+
 class AdminRecsExperimentsQuerySerializer(serializers.Serializer):
     days = serializers.IntegerField(required=False, min_value=1, max_value=365, default=30)
     experiment_id = serializers.CharField(required=False, allow_blank=True)
@@ -185,31 +302,41 @@ class AdminOverviewView(APIView):
         since7 = now - timedelta(days=7)
         since30 = now - timedelta(days=30)
         recs_details = recs_metrics_30d()
+        tx_7d = _txn_block(since7)
+        tx_30d = _txn_block(since30)
+        offers_7d = _offers_lifecycle_block(since7)
+        offers_30d = _offers_lifecycle_block(since30)
+        recs_7d = _recs_block(since7)
+        recs_30d = _recs_block(since30)
+        alerts, actions = _overview_alerts_and_actions(tx30=tx_30d, recs30=recs_30d, offers30=offers_30d)
 
         payload = {
             "ok": True,
             "generated_at": now.isoformat(),
             "transactions": {
-                "7d": _txn_block(since7),
-                "30d": _txn_block(since30),
+                "7d": tx_7d,
+                "30d": tx_30d,
             },
             "points": {
                 "7d": _points_block(since7),
                 "30d": _points_block(since30),
             },
             "offers": {
-                "7d": _offers_lifecycle_block(since7),
-                "30d": _offers_lifecycle_block(since30),
+                "7d": offers_7d,
+                "30d": offers_30d,
                 "events_kpis": offers_events_kpis(),
                 "promo_efficiency_30d": offers_promo_efficiency_30d(),
             },
             "retention": _repeat_purchase_block(now),
             "recs": {
-                "7d": _recs_block(since7),
-                "30d": _recs_block(since30),
+                "7d": recs_7d,
+                "30d": recs_30d,
                 "details_30d": recs_details,
                 "experiments_30d": recs_details.get("by_experiment", {}),
             },
+            "alerts": alerts,
+            "recommended_actions": actions,
+            "top_categories": _top_categories_30d(now=now),
         }
         if ttl > 0:
             cache.set(cache_key, payload, timeout=ttl)
