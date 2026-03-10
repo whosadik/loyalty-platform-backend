@@ -54,3 +54,39 @@ class OwnedProduct(models.Model):
 
     def __str__(self) -> str:
         return f"Owned(user={self.user_id}, product={self.product_id})"
+
+
+class WishlistItem(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="wishlist_items")
+    product = models.ForeignKey("catalog.Product", on_delete=models.CASCADE, related_name="wishlisted_by")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "product"],
+                name="uniq_wishlist_user_product",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"Wishlist(user={self.user_id}, product={self.product_id})"
+
+
+class CartItem(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="cart_items")
+    product = models.ForeignKey("catalog.Product", on_delete=models.CASCADE, related_name="in_carts")
+    quantity = models.PositiveIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "product"],
+                name="uniq_cart_user_product",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"Cart(user={self.user_id}, product={self.product_id}, qty={self.quantity})"
