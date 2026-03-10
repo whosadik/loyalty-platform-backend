@@ -1,4 +1,5 @@
 from rest_framework import viewsets
+from django.db.models import Q
 from rest_framework.permissions import IsAdminUser, IsAuthenticated, SAFE_METHODS
 
 from .models import Product
@@ -31,5 +32,14 @@ class ProductViewSet(viewsets.ModelViewSet):
         in_stock = self.request.query_params.get("in_stock")
         if in_stock in {"true", "false"}:
             qs = qs.filter(in_stock=(in_stock == "true"))
+
+        search = (self.request.query_params.get("search") or "").strip()
+        if search:
+            qs = qs.filter(
+                Q(name__icontains=search)
+                | Q(brand__icontains=search)
+                | Q(product_type__icontains=search)
+                | Q(source_product_id__icontains=search)
+            )
 
         return qs

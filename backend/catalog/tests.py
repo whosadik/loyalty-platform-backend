@@ -5,7 +5,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from django.core.management import call_command
+from django.contrib.auth import get_user_model
 from django.test import TestCase
+from rest_framework.test import APITestCase
 
 from catalog.models import Product
 
@@ -115,3 +117,64 @@ class ImportProductsXlsxTests(TestCase):
         self.assertEqual(p.supported_skin_types, [])
         self.assertEqual(p.image_url, "https://example.com/img.jpg")
         self.assertEqual(p.description, "Product description")
+
+
+class ProductSearchApiTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(username="catalog_search_u1", password="pass12345")
+        self.client.force_authenticate(self.user)
+
+        Product.objects.create(
+            name="Ultra Hydration Cream",
+            brand="DermaLab",
+            price=Decimal("100.00"),
+            category=Product.Category.SKINCARE,
+            product_type="cream",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Color Pop Lipstick",
+            brand="Glowify",
+            price=Decimal("120.00"),
+            category=Product.Category.MAKEUP,
+            product_type="lipstick",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Ocean Breeze Perfume",
+            brand="Aurum",
+            price=Decimal("220.00"),
+            category=Product.Category.FRAGRANCE,
+            product_type="edp",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+
+    def test_search_filters_products_by_name_or_brand(self):
+        resp = self.client.get("/api/products/?search=lip")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["name"], "Color Pop Lipstick")
+
+        resp = self.client.get("/api/products/?search=dermalab")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["brand"], "DermaLab")
