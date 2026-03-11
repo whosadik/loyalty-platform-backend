@@ -116,6 +116,22 @@ CHAIN_TRANSITION_NUMERIC_FEATURES = [
     "candidate_reverses_last_transition_direction",
 ]
 
+NEXTSTEP_PLAN_STATE_CATEGORICAL_FEATURES = [
+    "planned_target_product_type",
+]
+
+NEXTSTEP_PLAN_STATE_NUMERIC_FEATURES = [
+    "planned_target_step_index",
+    "planned_target_position_in_chain",
+    "candidate_matches_planned_target",
+    "candidate_distance_from_planned_target",
+    "candidate_abs_distance_from_planned_target",
+    "candidate_is_after_planned_target",
+    "candidate_is_before_planned_target",
+    "candidate_is_immediate_followup_to_planned_target",
+    "candidate_is_immediate_predecessor_to_planned_target",
+]
+
 ALL_CATEGORICAL_FEATURES = [*BASE_CATEGORICAL_FEATURES, *CANDIDATE_CATEGORICAL_FEATURES]
 ALL_NUMERIC_FEATURES = [*BASE_NUMERIC_FEATURES, *CANDIDATE_NUMERIC_FEATURES]
 
@@ -600,4 +616,41 @@ def build_chain_transition_features(
         out["candidate_reverses_last_transition_direction"] = 1
     elif last_progression < 0 and dist_last1 > 0:
         out["candidate_reverses_last_transition_direction"] = 1
+    return out
+
+
+def build_nextstep_plan_state_features(
+    *,
+    rules_chain: list[str] | tuple[str, ...] | None,
+    candidate_type: str | None,
+    planned_target_product_type: str | None,
+    planned_target_step_index: int | None = None,
+) -> dict[str, Any]:
+    chain = [slug_token(item, default="") for item in (rules_chain or []) if slug_token(item, default="")]
+    pos_map = {token: idx for idx, token in enumerate(chain)}
+
+    candidate = slug_token(candidate_type, default="")
+    planned_target = slug_token(planned_target_product_type, default="")
+
+    candidate_pos = int(pos_map.get(candidate, -1)) if candidate else -1
+    target_pos = int(pos_map.get(planned_target, -1)) if planned_target else -1
+
+    if target_pos >= 0 and candidate_pos >= 0:
+        dist = int(candidate_pos - target_pos)
+    else:
+        dist = -99
+
+    out = {col: "__none__" for col in NEXTSTEP_PLAN_STATE_CATEGORICAL_FEATURES}
+    out.update({col: 0 for col in NEXTSTEP_PLAN_STATE_NUMERIC_FEATURES})
+
+    out["planned_target_product_type"] = planned_target or "__none__"
+    out["planned_target_step_index"] = int(planned_target_step_index or 0)
+    out["planned_target_position_in_chain"] = int(target_pos)
+    out["candidate_matches_planned_target"] = int(dist == 0)
+    out["candidate_distance_from_planned_target"] = int(dist)
+    out["candidate_abs_distance_from_planned_target"] = int(abs(dist)) if dist != -99 else 99
+    out["candidate_is_after_planned_target"] = int(dist > 0)
+    out["candidate_is_before_planned_target"] = int(dist < 0 and dist != -99)
+    out["candidate_is_immediate_followup_to_planned_target"] = int(dist == 1)
+    out["candidate_is_immediate_predecessor_to_planned_target"] = int(dist == -1)
     return out

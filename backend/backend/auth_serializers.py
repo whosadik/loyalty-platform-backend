@@ -21,6 +21,12 @@ class AuthLoginRequestSerializer(serializers.Serializer):
     password = serializers.CharField(trim_whitespace=False, write_only=True)
 
 
+class AuthRegisterRequestSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    password = serializers.CharField(trim_whitespace=False, write_only=True)
+    password_confirm = serializers.CharField(trim_whitespace=False, write_only=True)
+
+
 class AuthLoginResponseSerializer(serializers.Serializer):
     ok = serializers.BooleanField()
     user = AuthUserSerializer()

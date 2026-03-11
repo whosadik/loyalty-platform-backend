@@ -28,6 +28,21 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         call_command("report_roadmap_ml_diagnostics", stdout=out, **params)
         return json.loads(out.getvalue())
 
+    def _run_report_md(self, **kwargs) -> str:
+        out = StringIO()
+        params = {
+            "days": 30,
+            "format": "md",
+            "cohort_mode": "fresh",
+            "control": "non_model",
+            "include_ga": True,
+            "categories": "skincare,makeup",
+            "min_sample": 30,
+        }
+        params.update(kwargs)
+        call_command("report_roadmap_ml_diagnostics", stdout=out, **params)
+        return out.getvalue()
+
     def _user(self, username: str):
         User = get_user_model()
         return User.objects.create_user(username=username, password="pass12345")
@@ -135,6 +150,31 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
             if row.get("policy") == policy:
                 return row
         self.fail(f"policy row not found: {policy}")
+
+    def _shadow_outcome_by_top1_row(self, payload: dict, *, category: str, shadow_top1: str) -> dict:
+        rows = payload["runtime_observability"]["shadow"].get("outcome_by_shadow_top1", [])
+        for row in rows:
+            if row.get("category") == category and row.get("shadow_top1") == shadow_top1:
+                return row
+        self.fail(f"shadow outcome by top1 row not found: {category}/{shadow_top1}")
+
+    def _shadow_outcome_by_pair_row(
+        self,
+        payload: dict,
+        *,
+        category: str,
+        active_top1: str,
+        shadow_top1: str,
+    ) -> dict:
+        rows = payload["runtime_observability"]["shadow"].get("outcome_by_swap_pair", [])
+        for row in rows:
+            if (
+                row.get("category") == category
+                and row.get("active_top1") == active_top1
+                and row.get("shadow_top1") == shadow_top1
+            ):
+                return row
+        self.fail(f"shadow outcome by pair row not found: {category}/{active_top1}->{shadow_top1}")
 
     def test_cohort_split_model_vs_non_model_is_correct(self):
         u_model = self._user("diag_cohort_model")
@@ -482,3 +522,55 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         self.assertEqual(haircare["eligible_plans"], 2)
         self.assertEqual(haircare["active_only_hits"], 1)
         self.assertEqual(haircare["shadow_only_hits"], 1)
+        by_top1 = self._shadow_outcome_by_top1_row(payload, category="haircare", shadow_top1="conditioner")
+        self.assertEqual(by_top1["eligible_plans"], 2)
+        self.assertEqual(by_top1["active_hits"], 1)
+        self.assertEqual(by_top1["shadow_hits"], 1)
+        self.assertEqual(by_top1["top_actual_outcomes"][0]["product_type"], "conditioner")
+        self.assertEqual(by_top1["top_actual_outcomes"][1]["product_type"], "serum")
+        self.assertEqual(by_top1["top_actual_outcomes_text"], "conditioner:1, serum:1")
+        pair_active = self._shadow_outcome_by_pair_row(
+            payload,
+            category="haircare",
+            active_top1="serum",
+            shadow_top1="conditioner",
+        )
+        self.assertEqual(pair_active["eligible_plans"], 1)
+        self.assertEqual(pair_active["active_only_hits"], 1)
+        self.assertEqual(pair_active["shadow_only_hits"], 0)
+        self.assertAlmostEqual(float(pair_active["shadow_delta_vs_active"]), -1.0, places=6)
+        pair_shadow = self._shadow_outcome_by_pair_row(
+            payload,
+            category="haircare",
+            active_top1="shampoo",
+            shadow_top1="conditioner",
+        )
+        self.assertEqual(pair_shadow["eligible_plans"], 1)
+        self.assertEqual(pair_shadow["active_only_hits"], 0)
+        self.assertEqual(pair_shadow["shadow_only_hits"], 1)
+        self.assertAlmostEqual(float(pair_shadow["shadow_delta_vs_active"]), 1.0, places=6)
+
+    def test_report_markdown_includes_shadow_pair_outcome_sections(self):
+        user = self._user("diag_shadow_md")
+        plan, steps = self._plan(
+            user=user,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "conditioner")],
+            ml_extra={
+                "predictions": [{"candidate_type": "shampoo", "score": 0.61}],
+                "shadow": {
+                    "enabled": True,
+                    "reason": "ok",
+                    "model_version": "shadow_semantic_v1",
+                    "predictions": [{"candidate_type": "conditioner", "score": 0.84}],
+                },
+            },
+        )
+        self._emit_step_events(user=user, plan=plan, step=steps[0], completed=1)
+
+        markdown = self._run_report_md(control="disabled", categories="haircare", min_sample=1)
+
+        self.assertIn("### shadow outcome by predicted top1", markdown)
+        self.assertIn("### shadow outcome by swap pair", markdown)
+        self.assertIn("haircare | shampoo | conditioner", markdown)

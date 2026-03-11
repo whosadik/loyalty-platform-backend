@@ -23,10 +23,13 @@ from roadmap_app.content_features import (
     ALL_CATEGORICAL_FEATURES,
     ALL_NUMERIC_FEATURES,
     CHAIN_TRANSITION_NUMERIC_FEATURES,
+    NEXTSTEP_PLAN_STATE_CATEGORICAL_FEATURES,
+    NEXTSTEP_PLAN_STATE_NUMERIC_FEATURES,
     build_base_content_features,
     build_candidate_catalog_summaries,
     build_candidate_content_features,
     build_chain_transition_features,
+    build_nextstep_plan_state_features,
     product_signature,
     profile_signature,
 )
@@ -437,6 +440,8 @@ class Command(BaseCommand):
             "created_at",
             "context",
             "step__plan__category",
+            "step__product_type",
+            "step__step_index",
         ).iterator(chunk_size=5000):
             raw_exposed_total += 1
             user_id = int(row["user_id"])
@@ -455,6 +460,10 @@ class Command(BaseCommand):
                     "category": category,
                     "t0": created_at,
                     "day_key": day_key,
+                    "planned_target_product_type": str(
+                        row.get("step__product_type") or context.get("product_type") or ""
+                    ).strip().lower(),
+                    "planned_target_step_index": int(row.get("step__step_index") or 0),
                 }
 
         if not first_episode_by_key:
@@ -814,6 +823,10 @@ class Command(BaseCommand):
                     "label_event_step_id": int(label_event_step_id),
                     "split": split_name,
                     "candidate_types": list(candidate_types_by_category.get(category) or []),
+                    "planned_target_product_type": str(
+                        seed_row.get("planned_target_product_type") or "__none__"
+                    ),
+                    "planned_target_step_index": int(seed_row.get("planned_target_step_index") or 0),
                     **feature_base,
                 }
             )
@@ -885,6 +898,8 @@ class Command(BaseCommand):
             )
             last1_chain_token = recent_candidate_tokens[0] if recent_candidate_tokens else ""
             last2_chain_token = recent_candidate_tokens[1] if len(recent_candidate_tokens) > 1 else ""
+            planned_target_product_type = str(ep.get("planned_target_product_type") or "__none__")
+            planned_target_step_index = int(ep.get("planned_target_step_index") or 0)
             if label != "__none__" and label not in set(candidates):
                 label_outside_candidates += 1
             pos_map = {token: idx for idx, token in enumerate(RULE_CHAIN_BY_CATEGORY.get(category) or [])}
@@ -936,6 +951,14 @@ class Command(BaseCommand):
                         anchor_product_type=anchor_chain_token,
                         last1_product_type=last1_chain_token,
                         last2_product_type=last2_chain_token,
+                    )
+                )
+                row.update(
+                    build_nextstep_plan_state_features(
+                        rules_chain=RULE_CHAIN_BY_CATEGORY.get(category) or [],
+                        candidate_type=str(candidate),
+                        planned_target_product_type=planned_target_product_type,
+                        planned_target_step_index=planned_target_step_index,
                     )
                 )
                 for key, value in ep.items():
@@ -1006,6 +1029,7 @@ class Command(BaseCommand):
             "last3_category",
             "last4_category",
             "last5_category",
+            *NEXTSTEP_PLAN_STATE_CATEGORICAL_FEATURES,
             *ALL_CATEGORICAL_FEATURES,
         ]
         numeric_features = [
@@ -1028,6 +1052,7 @@ class Command(BaseCommand):
             "candidate_seen_90d_count_in_category",
             "candidate_days_since_last_seen_in_category",
             *CHAIN_TRANSITION_NUMERIC_FEATURES,
+            *NEXTSTEP_PLAN_STATE_NUMERIC_FEATURES,
             *owned_feature_columns,
             *ALL_NUMERIC_FEATURES,
         ]

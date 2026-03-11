@@ -25,6 +25,7 @@ from roadmap_app.content_features import (
     build_candidate_catalog_summaries,
     build_candidate_content_features,
     build_chain_transition_features,
+    build_nextstep_plan_state_features,
     product_signature,
     profile_signature,
 )
@@ -939,6 +940,8 @@ def _predict_with_v4_artifact(
     user_id: int,
     category: str,
     context_product_ids: list[int] | None,
+    planned_target_product_type: str | None,
+    planned_target_step_index: int | None,
     candidate_types: list[str] | None,
 ) -> list[dict[str, Any]]:
     if pd is None:
@@ -1147,6 +1150,8 @@ def _predict_with_v4_artifact(
             }
         )
     has_context_anchor = bool(context_products_for_category)
+    planned_target_type_norm = str(planned_target_product_type or "").strip().lower()
+    planned_target_index_int = int(planned_target_step_index or 0)
 
     base: dict[str, Any] = {
         "category": category,
@@ -1257,6 +1262,14 @@ def _predict_with_v4_artifact(
             )
         )
         row.update(
+            build_nextstep_plan_state_features(
+                rules_chain=rules_chain,
+                candidate_type=candidate,
+                planned_target_product_type=planned_target_type_norm,
+                planned_target_step_index=planned_target_index_int,
+            )
+        )
+        row.update(
             build_chain_transition_features(
                 rules_chain=rules_chain,
                 candidate_type=candidate,
@@ -1356,6 +1369,8 @@ def predict_next_product_types(
     user,
     context_product_ids: list[int],
     category: str,
+    planned_target_product_type: str | None = None,
+    planned_target_step_index: int | None = None,
     candidate_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     return predict_next_product_types_for_model_path(
@@ -1363,6 +1378,8 @@ def predict_next_product_types(
         user=user,
         context_product_ids=context_product_ids,
         category=category,
+        planned_target_product_type=planned_target_product_type,
+        planned_target_step_index=planned_target_step_index,
         candidate_types=candidate_types,
     )
 
@@ -1372,6 +1389,8 @@ def predict_next_product_types_for_model_path(
     user,
     context_product_ids: list[int],
     category: str,
+    planned_target_product_type: str | None = None,
+    planned_target_step_index: int | None = None,
     candidate_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -1392,6 +1411,8 @@ def predict_next_product_types_for_model_path(
             user_id=user_id,
             category=category,
             context_product_ids=context_ids,
+            planned_target_product_type=planned_target_product_type,
+            planned_target_step_index=planned_target_step_index,
             candidate_types=candidate_types,
         )
         return _normalize_predictions(raw_rows)

@@ -2,6 +2,9 @@ import yaml
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient, APITestCase
 
+from loyalty.models import LoyaltyAccount
+from users_app.models import CustomerProfile
+
 
 class AuthApiFlowTests(APITestCase):
     def setUp(self):
@@ -72,6 +75,49 @@ class AuthApiFlowTests(APITestCase):
         me_after_logout = self.client.get("/api/auth/me")
         self.assertIn(me_after_logout.status_code, {401, 403})
 
+    def test_register_creates_session_profile_and_loyalty(self):
+        csrf = self._fetch_csrf()
+        register_resp = self.client.post(
+            "/api/auth/register",
+            {
+                "username": "fresh_user",
+                "password": "pass12345!",
+                "password_confirm": "pass12345!",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf,
+        )
+        self.assertEqual(register_resp.status_code, 200)
+        self.assertTrue(register_resp.data["ok"])
+        self.assertEqual(register_resp.data["user"]["username"], "fresh_user")
+        self.assertIn("sessionid", self.client.cookies)
+
+        me_resp = self.client.get("/api/auth/me")
+        self.assertEqual(me_resp.status_code, 200)
+        self.assertEqual(me_resp.data["user"]["username"], "fresh_user")
+
+        User = get_user_model()
+        created_user = User.objects.get(username="fresh_user")
+        self.assertTrue(CustomerProfile.objects.filter(user=created_user).exists())
+        self.assertTrue(LoyaltyAccount.objects.filter(user=created_user).exists())
+
+    def test_register_duplicate_username_returns_validation_error(self):
+        csrf = self._fetch_csrf()
+        resp = self.client.post(
+            "/api/auth/register",
+            {
+                "username": "auth_u1",
+                "password": "pass12345!",
+                "password_confirm": "pass12345!",
+            },
+            format="json",
+            HTTP_X_CSRFTOKEN=csrf,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.data["ok"])
+        self.assertEqual(resp.data["code"], "validation_error")
+        self.assertIn("username", resp.data["details"])
+
 
 class CatalogWritePermissionTests(APITestCase):
     def setUp(self):
@@ -123,6 +169,7 @@ class SchemaAndOwnedProductsContractTests(APITestCase):
         paths = schema.get("paths", {})
         self.assertIn("/api/auth/csrf", paths)
         self.assertIn("/api/auth/login", paths)
+        self.assertIn("/api/auth/register", paths)
         self.assertIn("/api/auth/logout", paths)
         self.assertIn("/api/auth/me", paths)
 

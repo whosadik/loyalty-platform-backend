@@ -1,8 +1,11 @@
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, get_user_model, login, logout
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.middleware.csrf import get_token, rotate_token
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework.authentication import CSRFCheck
 from rest_framework.exceptions import APIException, PermissionDenied
+from rest_framework import serializers
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -14,8 +17,11 @@ from backend.auth_serializers import (
     AuthLoginResponseSerializer,
     AuthLogoutResponseSerializer,
     AuthMeResponseSerializer,
+    AuthRegisterRequestSerializer,
     AuthUserSerializer,
 )
+
+User = get_user_model()
 
 
 class InvalidCredentials(APIException):
@@ -71,6 +77,50 @@ class AuthLoginView(APIView):
         if user is None:
             raise InvalidCredentials()
 
+        login(request, user)
+        rotate_token(request)
+        get_token(request)
+        return Response({"ok": True, "user": AuthUserSerializer(user).data})
+
+
+class AuthRegisterView(APIView):
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        tags=["Auth"],
+        request=AuthRegisterRequestSerializer,
+        responses={
+            200: AuthLoginResponseSerializer,
+            400: OpenApiResponse(response=ApiErrorSerializer, description="Validation error"),
+            403: OpenApiResponse(response=ApiErrorSerializer, description="CSRF failed"),
+        },
+    )
+    def post(self, request):
+        enforce_csrf(request)
+        serializer = AuthRegisterRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        username = serializer.validated_data["username"].strip()
+        password = serializer.validated_data["password"]
+        password_confirm = serializer.validated_data["password_confirm"]
+
+        details = {}
+
+        if User.objects.filter(username__iexact=username).exists():
+            details["username"] = ["A user with this username already exists."]
+
+        if password != password_confirm:
+            details["password_confirm"] = ["Passwords do not match."]
+
+        try:
+            validate_password(password)
+        except DjangoValidationError as error:
+            details["password"] = list(error.messages)
+
+        if details:
+            raise serializers.ValidationError(details)
+
+        user = User.objects.create_user(username=username, password=password)
         login(request, user)
         rotate_token(request)
         get_token(request)

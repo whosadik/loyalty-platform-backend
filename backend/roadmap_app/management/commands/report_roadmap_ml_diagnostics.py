@@ -322,6 +322,43 @@ def _shadow_outcome_summary(counter: Counter[str]) -> dict[str, Any]:
     }
 
 
+def _top_counter_rows(counter: Counter[str], *, limit: int = 3) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for token, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0])):
+        label = str(token or "").strip().lower()
+        if not label:
+            continue
+        rows.append(
+            {
+                "product_type": label,
+                "plans": int(count),
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _shadow_outcome_detail(
+    counter: Counter[str],
+    *,
+    actual_outcomes: Counter[str] | None = None,
+) -> dict[str, Any]:
+    summary = _shadow_outcome_summary(counter)
+    top_actual_outcomes = _top_counter_rows(actual_outcomes or Counter())
+    summary["top_actual_outcomes"] = top_actual_outcomes
+    summary["top_actual_outcomes_text"] = ", ".join(
+        f"{row['product_type']}:{row['plans']}" for row in top_actual_outcomes
+    )
+    if top_actual_outcomes:
+        summary["dominant_actual_outcome"] = str(top_actual_outcomes[0]["product_type"])
+        summary["dominant_actual_outcome_plans"] = int(top_actual_outcomes[0]["plans"])
+    else:
+        summary["dominant_actual_outcome"] = ""
+        summary["dominant_actual_outcome_plans"] = 0
+    return summary
+
+
 def _build_markdown(payload: dict[str, Any]) -> str:
     params = _safe_dict(payload.get("params"))
     executive = _safe_dict(payload.get("executive_summary"))
@@ -654,6 +691,68 @@ def _build_markdown(payload: dict[str, Any]) -> str:
                     f"{_safe_number(row.get('shadow_delta_vs_active')) * 100.0:.2f}",
                 ]
                 for cat, row in sorted(_safe_dict(shadow_outcome.get("by_category")).items())
+            ],
+        )
+    )
+    lines.append("### shadow outcome by predicted top1")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "shadow_top1",
+                "eligible_plans",
+                "dominant_actual_outcome",
+                "top_actual_outcomes",
+                "active_hit_rate_pct",
+                "shadow_hit_rate_pct",
+                "shadow_delta_vs_active_pp",
+            ],
+            [
+                [
+                    row.get("category"),
+                    row.get("shadow_top1"),
+                    row.get("eligible_plans", 0),
+                    row.get("dominant_actual_outcome") or "-",
+                    row.get("top_actual_outcomes_text") or "-",
+                    f"{_safe_number(row.get('active_hit_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('shadow_hit_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('shadow_delta_vs_active')) * 100.0:.2f}",
+                ]
+                for row in _safe_list(shadow.get("outcome_by_shadow_top1"))[:15]
+            ],
+        )
+    )
+    lines.append("### shadow outcome by swap pair")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "active_top1",
+                "shadow_top1",
+                "eligible_plans",
+                "dominant_actual_outcome",
+                "top_actual_outcomes",
+                "active_only_hits",
+                "shadow_only_hits",
+                "active_hit_rate_pct",
+                "shadow_hit_rate_pct",
+                "shadow_delta_vs_active_pp",
+            ],
+            [
+                [
+                    row.get("category"),
+                    row.get("active_top1"),
+                    row.get("shadow_top1"),
+                    row.get("eligible_plans", 0),
+                    row.get("dominant_actual_outcome") or "-",
+                    row.get("top_actual_outcomes_text") or "-",
+                    row.get("active_only_hits", 0),
+                    row.get("shadow_only_hits", 0),
+                    f"{_safe_number(row.get('active_hit_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('shadow_hit_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('shadow_delta_vs_active')) * 100.0:.2f}",
+                ]
+                for row in _safe_list(shadow.get("outcome_by_swap_pair"))[:15]
             ],
         )
     )
@@ -1679,6 +1778,10 @@ class Command(BaseCommand):
         ]
         shadow_outcome_counts: Counter[str] = Counter()
         shadow_outcome_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        shadow_outcome_by_shadow_top1: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+        shadow_outcome_actuals_by_shadow_top1: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+        shadow_outcome_by_swap_pair: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
+        shadow_outcome_actuals_by_swap_pair: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
         for pid in analysis_plan_ids:
             if not bool(shadow_enabled_by_plan.get(pid)):
                 continue
@@ -1705,31 +1808,85 @@ class Command(BaseCommand):
             cat = str(plan_category.get(pid) or "__unknown__")
             shadow_outcome_counts["eligible_plans"] += 1
             shadow_outcome_by_category[cat]["eligible_plans"] += 1
+            shadow_key = (cat, shadow_top1)
+            shadow_outcome_by_shadow_top1[shadow_key]["eligible_plans"] += 1
+            shadow_outcome_actuals_by_shadow_top1[shadow_key][actual_outcome] += 1
             active_hit = active_top1 == actual_outcome
             shadow_hit = shadow_top1 == actual_outcome
             if active_hit:
                 shadow_outcome_counts["active_hits"] += 1
                 shadow_outcome_by_category[cat]["active_hits"] += 1
+                shadow_outcome_by_shadow_top1[shadow_key]["active_hits"] += 1
             if shadow_hit:
                 shadow_outcome_counts["shadow_hits"] += 1
                 shadow_outcome_by_category[cat]["shadow_hits"] += 1
+                shadow_outcome_by_shadow_top1[shadow_key]["shadow_hits"] += 1
             if active_hit and shadow_hit:
                 shadow_outcome_counts["both_hits"] += 1
                 shadow_outcome_by_category[cat]["both_hits"] += 1
+                shadow_outcome_by_shadow_top1[shadow_key]["both_hits"] += 1
             elif active_hit and not shadow_hit:
                 shadow_outcome_counts["active_only_hits"] += 1
                 shadow_outcome_by_category[cat]["active_only_hits"] += 1
+                shadow_outcome_by_shadow_top1[shadow_key]["active_only_hits"] += 1
             elif shadow_hit and not active_hit:
                 shadow_outcome_counts["shadow_only_hits"] += 1
                 shadow_outcome_by_category[cat]["shadow_only_hits"] += 1
+                shadow_outcome_by_shadow_top1[shadow_key]["shadow_only_hits"] += 1
             else:
                 shadow_outcome_counts["neither_hits"] += 1
                 shadow_outcome_by_category[cat]["neither_hits"] += 1
-        shadow_outcome_summary = _shadow_outcome_summary(shadow_outcome_counts)
+                shadow_outcome_by_shadow_top1[shadow_key]["neither_hits"] += 1
+            if active_top1 != shadow_top1:
+                pair_key = (cat, active_top1, shadow_top1)
+                shadow_outcome_by_swap_pair[pair_key]["eligible_plans"] += 1
+                shadow_outcome_actuals_by_swap_pair[pair_key][actual_outcome] += 1
+                if active_hit:
+                    shadow_outcome_by_swap_pair[pair_key]["active_hits"] += 1
+                if shadow_hit:
+                    shadow_outcome_by_swap_pair[pair_key]["shadow_hits"] += 1
+                if active_hit and shadow_hit:
+                    shadow_outcome_by_swap_pair[pair_key]["both_hits"] += 1
+                elif active_hit and not shadow_hit:
+                    shadow_outcome_by_swap_pair[pair_key]["active_only_hits"] += 1
+                elif shadow_hit and not active_hit:
+                    shadow_outcome_by_swap_pair[pair_key]["shadow_only_hits"] += 1
+                else:
+                    shadow_outcome_by_swap_pair[pair_key]["neither_hits"] += 1
+        shadow_outcome_summary = _shadow_outcome_detail(shadow_outcome_counts)
         shadow_outcome_summary["by_category"] = {
-            str(cat): _shadow_outcome_summary(counter)
+            str(cat): _shadow_outcome_detail(counter)
             for cat, counter in sorted(shadow_outcome_by_category.items(), key=lambda kv: kv[0])
         }
+        shadow_outcome_by_shadow_top1_rows = [
+            {
+                "category": str(category),
+                "shadow_top1": str(shadow_top1),
+                **_shadow_outcome_detail(
+                    counter,
+                    actual_outcomes=shadow_outcome_actuals_by_shadow_top1.get((category, shadow_top1)),
+                ),
+            }
+            for (category, shadow_top1), counter in sorted(
+                shadow_outcome_by_shadow_top1.items(),
+                key=lambda kv: (-int(kv[1].get("eligible_plans", 0)), kv[0][0], kv[0][1]),
+            )
+        ]
+        shadow_outcome_by_swap_pair_rows = [
+            {
+                "category": str(category),
+                "active_top1": str(active_top1),
+                "shadow_top1": str(shadow_top1),
+                **_shadow_outcome_detail(
+                    counter,
+                    actual_outcomes=shadow_outcome_actuals_by_swap_pair.get((category, active_top1, shadow_top1)),
+                ),
+            }
+            for (category, active_top1, shadow_top1), counter in sorted(
+                shadow_outcome_by_swap_pair.items(),
+                key=lambda kv: (-int(kv[1].get("eligible_plans", 0)), kv[0][0], kv[0][1], kv[0][2]),
+            )
+        ]
 
         payload: dict[str, Any] = {
             "generated_at_utc": now_utc.isoformat(),
@@ -1794,6 +1951,8 @@ class Command(BaseCommand):
                     "by_category": shadow_by_category_summary,
                     "top_swaps": shadow_top_swaps[:25],
                     "outcome_comparison": shadow_outcome_summary,
+                    "outcome_by_shadow_top1": shadow_outcome_by_shadow_top1_rows[:25],
+                    "outcome_by_swap_pair": shadow_outcome_by_swap_pair_rows[:25],
                 },
             },
             "artifacts": {

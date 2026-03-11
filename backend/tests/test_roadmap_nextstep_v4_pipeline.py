@@ -305,6 +305,44 @@ class RoadmapNextStepV4DatasetTests(TestCase):
                 list(metadata.get("numeric_features") or []),
             )
 
+    def test_v4_dataset_includes_planned_target_features(self):
+        t0 = timezone.now() - timedelta(days=21)
+        self._create_exposed(t0)
+        self._create_tx(self.p_cleanser, t0 - timedelta(days=1), "v4-planned-1")
+        self._create_tx(self.p_serum, t0 + timedelta(days=1), "v4-planned-2")
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            serum_row = frame[frame["candidate_type"].astype(str) == "serum"].iloc[0]
+            cleanser_row = frame[frame["candidate_type"].astype(str) == "cleanser"].iloc[0]
+
+            self.assertIn("planned_target_product_type", frame.columns)
+            self.assertIn("candidate_matches_planned_target", frame.columns)
+            self.assertEqual(str(serum_row["planned_target_product_type"]), "serum")
+            self.assertEqual(int(serum_row["planned_target_step_index"]), 1)
+            self.assertEqual(int(serum_row["candidate_matches_planned_target"]), 1)
+            self.assertEqual(int(serum_row["candidate_distance_from_planned_target"]), 0)
+            self.assertEqual(int(cleanser_row["candidate_distance_from_planned_target"]), -1)
+
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertIn(
+                "planned_target_product_type",
+                list(metadata.get("categorical_features") or []),
+            )
+            self.assertIn(
+                "candidate_matches_planned_target",
+                list(metadata.get("numeric_features") or []),
+            )
+
     def test_v4_dataset_prefers_step_completed_semantic_label_over_transaction_fallback(self):
         t0 = timezone.now() - timedelta(days=18)
         self._create_exposed(t0)
@@ -512,6 +550,99 @@ class RoadmapNextStepV4AdapterTests(TestCase):
         self.assertEqual(int(serum_row["candidate_distance_from_anchor"]), 1)
         self.assertEqual(int(serum_row["candidate_is_immediate_followup_to_anchor"]), 1)
         self.assertGreater(float(serum_row["candidate_profile_goal_match_rate"]), 0.0)
+
+    def test_v4_artifact_runtime_uses_planned_target_features(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_planned_target_u1", password="pass12345")
+        cleanser = Product.objects.create(
+            name="Planned Cleanser",
+            brand="B",
+            price=Decimal("11.00"),
+            category="skincare",
+            product_type="cleanser",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Planned Serum",
+            brand="B",
+            price=Decimal("15.00"),
+            category="skincare",
+            product_type="serum",
+            in_stock=True,
+        )
+        tx = Transaction.objects.create(
+            user=user,
+            total_amount=Decimal("11.00"),
+            channel="web",
+            idempotency_key="artifact-planned-target-1",
+        )
+        TransactionItem.objects.create(
+            transaction=tx,
+            product=cleanser,
+            quantity=1,
+            unit_price=Decimal("11.00"),
+        )
+
+        class DummyArtifactModel:
+            def __init__(self):
+                self.seen = None
+
+            def predict(self, X):
+                self.seen = X.copy()
+                score = pd.to_numeric(X["candidate_matches_planned_target"], errors="coerce").fillna(0.0)
+                return score.to_numpy()
+
+        dummy = DummyArtifactModel()
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": dummy,
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+                "planned_target_step_index",
+                "candidate_matches_planned_target",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [
+                "planned_target_step_index",
+                "candidate_matches_planned_target",
+            ],
+            "candidate_types_by_category": {"skincare": ["cleanser", "serum"]},
+            "rules_chain_by_category": {"skincare": ["cleanser", "serum"]},
+            "candidate_popularity_in_train_by_category": {
+                "skincare": {"cleanser": 0.5, "serum": 0.5}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+            rows = predict_next_product_types(
+                user=user,
+                context_product_ids=[],
+                category="skincare",
+                planned_target_product_type="serum",
+                planned_target_step_index=1,
+                candidate_types=["cleanser", "serum"],
+            )
+
+        self.assertEqual([row["candidate_type"] for row in rows], ["serum", "cleanser"])
+        self.assertIsNotNone(dummy.seen)
+        self.assertEqual(set(dummy.seen["planned_target_product_type"].astype(str).tolist()), {"serum"})
+        serum_row = dummy.seen[dummy.seen["candidate_type"].astype(str) == "serum"].iloc[0]
+        self.assertEqual(int(serum_row["planned_target_step_index"]), 1)
+        self.assertEqual(int(serum_row["candidate_matches_planned_target"]), 1)
 
     def test_v4_artifact_runtime_uses_context_product_ids_as_anchor(self):
         if pd is None:
@@ -1062,6 +1193,29 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
             in_stock=True,
         )
 
+    def _create_haircare_products(self, suffix: str) -> None:
+        Product.objects.create(
+            name=f"Haircare Shampoo {suffix}",
+            brand="B",
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name=f"Haircare Conditioner {suffix}",
+            brand="B",
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name=f"Haircare Mask {suffix}",
+            brand="B",
+            category="haircare",
+            product_type="hair_mask",
+            in_stock=True,
+        )
+
     def _hold_status(self, category: str) -> dict[str, object]:
         return {
             "passed": False,
@@ -1181,6 +1335,44 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         self.assertEqual(str(ml_meta.get("decision")), "model_used")
         self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
         self.assertTrue(bool(ml_meta.get("rollout_selected")))
+        self.assertIsNone(ml_meta.get("fallback_reason"))
+        predict_mock.assert_called_once()
+
+    def test_selected_haircare_users_can_reach_model_used_via_generic_partial_rollout(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_hair_yes_u1", password="pass12345")
+        self._create_haircare_products("yes")
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["shampoo"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_yes_test",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+            return_value=[{"candidate_type": "shampoo", "score": 0.93}],
+        ) as predict_mock:
+            plan = refresh_roadmap(user, category="haircare", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "model_used")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
+        self.assertTrue(bool(ml_meta.get("rollout_selected")))
+        self.assertEqual(str(ml_meta.get("partial_match_product_type")), "shampoo")
+        self.assertEqual(int(ml_meta.get("partial_match_step_index")), 1)
         self.assertIsNone(ml_meta.get("fallback_reason"))
         predict_mock.assert_called_once()
 

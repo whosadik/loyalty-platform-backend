@@ -7,6 +7,10 @@ from .routine_builder import Profile, _fits_profile
 from .routine_rules import detect_conflicts
 
 
+def _matches_step(product: dict[str, Any], step: str) -> bool:
+    return product.get("product_type") == step or product.get("step") == step
+
+
 def validate_routine(
     profile: Profile,
     products: list[dict[str, Any]],
@@ -55,7 +59,7 @@ def validate_routine(
             if step not in {"serum", "toner", "mask"}:
                 continue
 
-            candidates = [p for p in products if p.get("step") == step and _fits_profile(p, profile)]
+            candidates = [p for p in products if _matches_step(p, step) and _fits_profile(p, profile)]
             candidates.sort(key=lambda x: (x.get("price") is None, x.get("price", 0)))
 
             # убираем кандидатов, которые сохраняют конфликт (упрощённо: убираем те же активы)

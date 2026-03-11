@@ -159,7 +159,18 @@ def _stable_rollout_bucket(user, *, category: str, salt: str) -> int:
     return int(digest, 16) % 100
 
 
-def _makeup_partial_rollout_state(
+def _partial_rollout_allowlists(category: str) -> tuple[set[str], set[int]]:
+    category_norm = str(category or "").strip().lower()
+    if not category_norm:
+        return set(), set()
+    product_setting = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_PRODUCT_TYPES"
+    step_setting = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_STEP_INDEXES"
+    allow_product_types = _normalized_token_set(getattr(settings, product_setting, []))
+    allow_step_indexes = _normalized_int_set(getattr(settings, step_setting, []))
+    return allow_product_types, allow_step_indexes
+
+
+def _category_partial_rollout_state(
     *,
     user,
     category: str,
@@ -167,13 +178,14 @@ def _makeup_partial_rollout_state(
     purchased_types: list[str],
 ) -> dict[str, Any]:
     state = _default_rollout_meta()
-    if str(category or "").strip().lower() != "makeup":
+    category_norm = str(category or "").strip().lower()
+    if not category_norm:
         return state
 
     enabled_categories = _normalized_token_set(
         getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES", [])
     )
-    if "makeup" not in enabled_categories:
+    if category_norm not in enabled_categories:
         state["rollout_reason"] = "partial_disabled_for_category"
         return state
 
@@ -192,16 +204,11 @@ def _makeup_partial_rollout_state(
     state["rollout_percent"] = percent
     state["rollout_bucket"] = _stable_rollout_bucket(
         user,
-        category="makeup",
+        category=category_norm,
         salt=salt,
     )
 
-    allow_product_types = _normalized_token_set(
-        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_PRODUCT_TYPES", [])
-    )
-    allow_step_indexes = _normalized_int_set(
-        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_MAKEUP_STEP_INDEXES", [])
-    )
+    allow_product_types, allow_step_indexes = _partial_rollout_allowlists(category_norm)
 
     if chain:
         anchor = min(len(chain), max(0, len(purchased_types)))
@@ -710,6 +717,10 @@ def _build_chain(
             **default_rollout_meta,
         }
 
+    anchor = min(len(chain), max(0, len(purchased_types)))
+    planned_target_product_type = str(chain[anchor]) if anchor < len(chain) else ""
+    planned_target_step_index = int(anchor + 1) if anchor < len(chain) else 0
+
     use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
     ml_runtime: dict[str, Any] = {
@@ -779,13 +790,12 @@ def _build_chain(
             "guard_30d": staged.get("guard_30d"),
         }
         rollout_meta = _default_rollout_meta()
-        if str(category) == "makeup":
-            rollout_meta = _makeup_partial_rollout_state(
-                user=user,
-                category=category,
-                chain=chain,
-                purchased_types=purchased_types,
-            )
+        rollout_meta = _category_partial_rollout_state(
+            user=user,
+            category=category,
+            chain=chain,
+            purchased_types=purchased_types,
+        )
 
         if final_status == "DISABLE":
             rollout_reason = str(staged.get("reason") or rollout.get("reason") or "category_disabled")
@@ -850,6 +860,8 @@ def _build_chain(
             "disabled_reason": None,
             "guard": guard,
             "category_guard": category_guard,
+            "planned_target_product_type": planned_target_product_type,
+            "planned_target_step_index": planned_target_step_index,
             **rollout_meta,
         }
         if not bool(guard.get("passed")):
@@ -859,6 +871,8 @@ def _build_chain(
             user,
             context_product_ids,
             category,
+            planned_target_product_type=planned_target_product_type,
+            planned_target_step_index=planned_target_step_index,
             candidate_types=chain,
         )
         if not ml_predictions:
@@ -880,7 +894,6 @@ def _build_chain(
 
         top_pt = str(top["product_type"])
         top_score = float(top["score"])
-        anchor = min(len(chain), max(0, len(purchased_types)))
         if top_pt in chain:
             old_idx = int(chain.index(top_pt))
             if old_idx >= anchor and old_idx != anchor:
@@ -900,12 +913,16 @@ def _build_chain(
         "disabled_reason": None,
         "guard": None,
         "category_guard": None,
+        "planned_target_product_type": planned_target_product_type,
+        "planned_target_step_index": planned_target_step_index,
         **_default_rollout_meta(),
     }
     ml_predictions = predict_next_product_types(
         user,
         context_product_ids,
         category,
+        planned_target_product_type=planned_target_product_type,
+        planned_target_step_index=planned_target_step_index,
         candidate_types=chain,
     )
     if not ml_predictions:
@@ -928,7 +945,6 @@ def _build_chain(
         ml_runtime["fallback_reason"] = "low_confidence"
         return chain, source_by_type, ml_predictions, ml_runtime
 
-    anchor = min(len(chain), max(0, len(purchased_types)))
     prefix = list(chain[:anchor])
     suffix = list(chain[anchor:])
     suffix_pos = {pt: idx for idx, pt in enumerate(suffix)}
@@ -1288,6 +1304,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     shadow_reason = "disabled"
     shadow_predictions: list[dict[str, Any]] = []
     shadow_artifact = None
+    shadow_planned_target_product_type = str(ml_runtime.get("planned_target_product_type") or "")
+    shadow_planned_target_step_index = int(ml_runtime.get("planned_target_step_index") or 0)
     if shadow_enabled:
         shadow_reason = "ok"
         shadow_artifact = nextstep_model_artifact_summary(shadow_model_path)
@@ -1296,6 +1314,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             user=user,
             context_product_ids=context_product_ids,
             category=category,
+            planned_target_product_type=shadow_planned_target_product_type,
+            planned_target_step_index=shadow_planned_target_step_index,
             candidate_types=chain,
         )
         if not shadow_predictions:
@@ -1344,12 +1364,16 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "model_path": model_path,
             "model_version": str((nextstep_artifact or {}).get("model_version") or ""),
             "selected_feature_set": str((nextstep_artifact or {}).get("selected_feature_set") or ""),
+            "planned_target_product_type": shadow_planned_target_product_type,
+            "planned_target_step_index": shadow_planned_target_step_index,
             "shadow": {
                 "enabled": bool(shadow_enabled),
                 "reason": shadow_reason,
                 "model_path": shadow_model_path,
                 "model_version": str((shadow_artifact or {}).get("model_version") or ""),
                 "selected_feature_set": str((shadow_artifact or {}).get("selected_feature_set") or ""),
+                "planned_target_product_type": shadow_planned_target_product_type,
+                "planned_target_step_index": shadow_planned_target_step_index,
                 "predictions": shadow_predictions[:10],
             },
         },

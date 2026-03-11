@@ -113,19 +113,38 @@ class Command(BaseCommand):
         plan_rows = list(qs.values("id", "user_id", "category", "meta"))
         plan_ids = [int(row["id"]) for row in plan_rows]
         step_types_by_plan: dict[int, list[str]] = defaultdict(list)
+        planned_target_by_plan: dict[int, dict[str, Any]] = {}
         seen_by_plan: dict[int, set[str]] = defaultdict(set)
         if plan_ids:
             step_rows = RoadmapStep.objects.filter(plan_id__in=plan_ids).order_by("plan_id", "step_index", "id").values(
                 "plan_id",
                 "product_type",
+                "step_index",
+                "status",
             )
             for row in step_rows:
                 plan_id = int(row["plan_id"])
                 product_type = str(row.get("product_type") or "").strip().lower()
+                step_index = int(row.get("step_index") or 0)
+                status = str(row.get("status") or "").strip()
+                target = planned_target_by_plan.get(plan_id)
+                if target is None and product_type and status in {
+                    RoadmapStep.Status.MISSING,
+                    RoadmapStep.Status.RECOMMENDED,
+                }:
+                    planned_target_by_plan[plan_id] = {
+                        "product_type": product_type,
+                        "step_index": step_index,
+                    }
                 if not product_type or product_type in seen_by_plan[plan_id]:
                     continue
                 seen_by_plan[plan_id].add(product_type)
                 step_types_by_plan[plan_id].append(product_type)
+                if plan_id not in planned_target_by_plan and product_type:
+                    planned_target_by_plan[plan_id] = {
+                        "product_type": product_type,
+                        "step_index": step_index,
+                    }
 
         scanned = 0
         skipped_counts: Counter[str] = Counter()
@@ -152,6 +171,17 @@ class Command(BaseCommand):
             active_model_path = str(ml.get("model_path") or "").strip()
             context = _safe_dict(original_meta.get("context"))
             context_product_ids = _normalize_product_ids(context.get("post_ctx_product_ids"))
+            planned_target = planned_target_by_plan.get(plan_id) or {}
+            planned_target_product_type = str(
+                planned_target.get("product_type")
+                or ml.get("planned_target_product_type")
+                or ""
+            ).strip().lower()
+            planned_target_step_index = int(
+                planned_target.get("step_index")
+                or ml.get("planned_target_step_index")
+                or 0
+            )
 
             if active_model_path and Path(active_model_path).expanduser() == Path(model_path).expanduser():
                 projected_shadow = {
@@ -160,6 +190,8 @@ class Command(BaseCommand):
                     "model_path": model_path,
                     "model_version": str(shadow_artifact.get("model_version") or ""),
                     "selected_feature_set": str(shadow_artifact.get("selected_feature_set") or ""),
+                    "planned_target_product_type": planned_target_product_type,
+                    "planned_target_step_index": planned_target_step_index,
                     "predictions": [],
                 }
             else:
@@ -168,6 +200,8 @@ class Command(BaseCommand):
                     user=user_id,
                     context_product_ids=context_product_ids,
                     category=category_key,
+                    planned_target_product_type=planned_target_product_type,
+                    planned_target_step_index=planned_target_step_index,
                     candidate_types=candidate_types,
                 )
                 projected_shadow = {
@@ -176,6 +210,8 @@ class Command(BaseCommand):
                     "model_path": model_path,
                     "model_version": str(shadow_artifact.get("model_version") or ""),
                     "selected_feature_set": str(shadow_artifact.get("selected_feature_set") or ""),
+                    "planned_target_product_type": planned_target_product_type,
+                    "planned_target_step_index": planned_target_step_index,
                     "predictions": list(predictions[:10]),
                 }
 
