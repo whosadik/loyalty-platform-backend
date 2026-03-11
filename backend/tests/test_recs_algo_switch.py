@@ -30,6 +30,8 @@ class RecsAlgoSwitchTests(APITestCase):
             supported_skin_types=[],
             strength="low",
             in_stock=True,
+            image_url="https://example.com/owned.jpg",
+            raw_meta={"rating": "4.4", "reviews_count": 15},
         )
         self.candidate = Product.objects.create(
             name="Candidate Mascara",
@@ -44,6 +46,8 @@ class RecsAlgoSwitchTests(APITestCase):
             supported_skin_types=[],
             strength="low",
             in_stock=True,
+            image_url="https://example.com/candidate.jpg",
+            raw_meta={"discount": 20, "original_price": "13.74"},
         )
         OwnedProduct.objects.create(
             user=self.user,
@@ -76,6 +80,11 @@ class RecsAlgoSwitchTests(APITestCase):
         self.assertIn("query", r.data)
         self.assertEqual(r.data["query"]["algo_requested"], "reranker")
         self.assertTrue(str(r.data["query"]["algo_used"]).startswith("cooc_fallback"))
+        if r.data["results"]:
+            product = r.data["results"][0]["product"]
+            self.assertIn("image_url", product)
+            self.assertIn("points_earned", product)
+            self.assertIn("brand_slug", product)
 
     @override_settings(
         RECS_RERANKER_MODEL_PATH="Z:/not_existing/model.pkl",

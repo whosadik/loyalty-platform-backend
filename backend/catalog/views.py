@@ -1,10 +1,14 @@
+from rest_framework.exceptions import NotFound
+from rest_framework.response import Response
 from rest_framework import viewsets
 from django.db.models import Q
 from rest_framework.permissions import IsAdminUser, IsAuthenticated, SAFE_METHODS
+from rest_framework.views import APIView
 
+from .brand_payloads import get_brand_detail_payload, list_brand_summary_payloads
 from .models import Product
 from .sale_fields import product_has_discount
-from .serializers import ProductSerializer
+from .serializers import BrandDetailSerializer, BrandSummarySerializer, ProductSerializer
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -53,3 +57,21 @@ class ProductViewSet(viewsets.ModelViewSet):
             qs = qs.filter(id__in=sale_ids)
 
         return qs
+
+
+class BrandListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        payload = list_brand_summary_payloads()
+        return Response(BrandSummarySerializer(payload, many=True).data)
+
+
+class BrandDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, brand_slug: str):
+        payload = get_brand_detail_payload(brand_slug)
+        if payload is None:
+            raise NotFound("Brand not found.")
+        return Response(BrandDetailSerializer(payload).data)

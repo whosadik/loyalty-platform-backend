@@ -26,14 +26,17 @@ class Command(BaseCommand):
 
         def mk_common():
             price = random.choice([9.99, 12.99, 15.99, 19.99, 24.99, 29.99, 39.99])
-            raw_meta = {}
+            raw_meta = {
+                "rating": f"{random.choice([4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 4.7, 4.8]):.1f}",
+                "reviews_count": random.randint(12, 120),
+            }
             if random.random() < 0.25:
                 discount = random.choice([10, 15, 20, 25, 30])
                 original_price = round(price / (1 - discount / 100), 2)
-                raw_meta = {
+                raw_meta.update({
                     "original_price": f"{original_price:.2f}",
                     "discount": discount,
-                }
+                })
             return {
                 "brand": random.choice(brands),
                 "price": price,

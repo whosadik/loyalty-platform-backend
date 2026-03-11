@@ -39,6 +39,7 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         decision: str | None,
         category: str = "skincare",
         steps: list[tuple[int, str]] | None = None,
+        ml_extra: dict | None = None,
     ) -> tuple[RoadmapPlan, list[RoadmapStep]]:
         ml_meta = {
             "mode": "v4_ranking",
@@ -46,6 +47,8 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         }
         if decision is not None:
             ml_meta["decision"] = decision
+        if ml_extra:
+            ml_meta.update(ml_extra)
         plan = RoadmapPlan.objects.create(
             user=user,
             category=category,
@@ -370,3 +373,112 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
             "baseline_only",
         )
         self.assertFalse(bool(payload["artifacts"]["planner"]["candidate"]["planner_guard"]["passed"]))
+
+    def test_report_includes_shadow_top1_agreement_and_swaps(self):
+        u_same = self._user("diag_shadow_same")
+        u_diff = self._user("diag_shadow_diff")
+
+        self._plan(
+            user=u_same,
+            decision="model_used",
+            category="skincare",
+            ml_extra={
+                "predictions": [{"candidate_type": "serum", "score": 0.91}],
+                "shadow": {
+                    "enabled": True,
+                    "reason": "ok",
+                    "model_version": "shadow_semantic_v1",
+                    "predictions": [{"candidate_type": "serum", "score": 0.87}],
+                },
+            },
+        )
+        self._plan(
+            user=u_diff,
+            decision="disabled",
+            category="skincare",
+            ml_extra={
+                "predictions": [{"candidate_type": "cleanser", "score": 0.66}],
+                "shadow": {
+                    "enabled": True,
+                    "reason": "ok",
+                    "model_version": "shadow_semantic_v1",
+                    "predictions": [{"candidate_type": "moisturizer", "score": 0.71}],
+                },
+            },
+        )
+
+        payload = self._run_report_json(control="disabled", categories="skincare", min_sample=1)
+        shadow = payload["runtime_observability"]["shadow"]
+        top1 = shadow["top1_comparison"]
+
+        self.assertEqual(shadow["plans_with_shadow_meta"], 2)
+        self.assertEqual(shadow["shadow_enabled_plans"], 2)
+        self.assertEqual(shadow["reason_counts"]["ok"], 2)
+        self.assertEqual(shadow["model_version_counts"]["shadow_semantic_v1"], 2)
+        self.assertEqual(top1["eligible_plans"], 2)
+        self.assertEqual(top1["same_top1_plans"], 1)
+        self.assertEqual(top1["different_top1_plans"], 1)
+        self.assertAlmostEqual(float(top1["agreement_rate"]), 0.5, places=6)
+        skincare = shadow["by_category"]["skincare"]
+        self.assertEqual(skincare["different_top1_plans"], 1)
+        self.assertAlmostEqual(float(skincare["agreement_rate"]), 0.5, places=6)
+        self.assertEqual(shadow["top_swaps"][0]["category"], "skincare")
+        self.assertEqual(shadow["top_swaps"][0]["active_top1"], "cleanser")
+        self.assertEqual(shadow["top_swaps"][0]["shadow_top1"], "moisturizer")
+        self.assertEqual(int(shadow["top_swaps"][0]["plans"]), 1)
+
+    def test_report_includes_shadow_vs_real_completion_outcome(self):
+        u_active = self._user("diag_shadow_outcome_active")
+        u_shadow = self._user("diag_shadow_outcome_shadow")
+
+        plan_active, steps_active = self._plan(
+            user=u_active,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "serum")],
+            ml_extra={
+                "predictions": [{"candidate_type": "serum", "score": 0.91}],
+                "shadow": {
+                    "enabled": True,
+                    "reason": "ok",
+                    "model_version": "shadow_semantic_v1",
+                    "predictions": [{"candidate_type": "conditioner", "score": 0.83}],
+                },
+            },
+        )
+        plan_shadow, steps_shadow = self._plan(
+            user=u_shadow,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "conditioner")],
+            ml_extra={
+                "predictions": [{"candidate_type": "shampoo", "score": 0.65}],
+                "shadow": {
+                    "enabled": True,
+                    "reason": "ok",
+                    "model_version": "shadow_semantic_v1",
+                    "predictions": [{"candidate_type": "conditioner", "score": 0.82}],
+                },
+            },
+        )
+
+        self._emit_step_events(user=u_active, plan=plan_active, step=steps_active[0], completed=1)
+        self._emit_step_events(user=u_shadow, plan=plan_shadow, step=steps_shadow[0], completed=1)
+
+        payload = self._run_report_json(control="disabled", categories="haircare", min_sample=1)
+        outcome = payload["runtime_observability"]["shadow"]["outcome_comparison"]
+
+        self.assertEqual(outcome["eligible_plans"], 2)
+        self.assertEqual(outcome["active_hits"], 1)
+        self.assertEqual(outcome["shadow_hits"], 1)
+        self.assertEqual(outcome["active_only_hits"], 1)
+        self.assertEqual(outcome["shadow_only_hits"], 1)
+        self.assertEqual(outcome["both_hits"], 0)
+        self.assertEqual(outcome["neither_hits"], 0)
+        self.assertAlmostEqual(float(outcome["active_hit_rate"]), 0.5, places=6)
+        self.assertAlmostEqual(float(outcome["shadow_hit_rate"]), 0.5, places=6)
+        self.assertAlmostEqual(float(outcome["shadow_delta_vs_active"]), 0.0, places=6)
+        haircare = outcome["by_category"]["haircare"]
+        self.assertEqual(haircare["eligible_plans"], 2)
+        self.assertEqual(haircare["active_only_hits"], 1)
+        self.assertEqual(haircare["shadow_only_hits"], 1)

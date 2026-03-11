@@ -250,6 +250,28 @@ def _collect_sale_meta(row: tuple[Any, ...], col: dict[str, int]) -> dict[str, A
     return sale_meta
 
 
+def _collect_social_meta(row: tuple[Any, ...], col: dict[str, int]) -> dict[str, Any]:
+    social_meta: dict[str, Any] = {}
+
+    for key in ("rating", "avg_rating"):
+        if key not in col:
+            continue
+        value = _to_decimal(row[col[key]])
+        if value is not None:
+            social_meta["rating"] = str(value)
+            break
+
+    for key in ("reviews_count", "reviews", "ratings_count"):
+        if key not in col:
+            continue
+        value = _to_decimal(row[col[key]])
+        if value is not None and value >= 0:
+            social_meta["reviews_count"] = int(value)
+            break
+
+    return social_meta
+
+
 class Command(BaseCommand):
     help = "Import products from XLSX file into catalog."
 
@@ -398,6 +420,7 @@ class Command(BaseCommand):
                             "area_raw": _str(row[col["area_raw"]]) if "area_raw" in col else "",
                             "source_row": row_index,
                             **_collect_sale_meta(row, col),
+                            **_collect_social_meta(row, col),
                         },
                     }
 

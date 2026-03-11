@@ -90,6 +90,32 @@ CANDIDATE_NUMERIC_FEATURES = [
     "candidate_anchor_active_conflict_rate",
 ]
 
+CHAIN_TRANSITION_NUMERIC_FEATURES = [
+    "anchor_position_in_chain",
+    "last1_position_in_chain",
+    "last2_position_in_chain",
+    "candidate_distance_from_anchor",
+    "candidate_distance_from_last1",
+    "candidate_distance_from_last2",
+    "candidate_abs_distance_from_anchor",
+    "candidate_abs_distance_from_last1",
+    "candidate_abs_distance_from_last2",
+    "candidate_is_same_as_anchor",
+    "candidate_is_after_anchor",
+    "candidate_is_before_anchor",
+    "candidate_is_immediate_followup_to_anchor",
+    "candidate_is_immediate_predecessor_to_anchor",
+    "candidate_is_same_as_last1",
+    "candidate_is_after_last1",
+    "candidate_is_before_last1",
+    "candidate_is_immediate_followup_to_last1",
+    "candidate_is_immediate_predecessor_to_last1",
+    "last1_after_last2_in_chain",
+    "last1_before_last2_in_chain",
+    "candidate_continues_last_transition_direction",
+    "candidate_reverses_last_transition_direction",
+]
+
 ALL_CATEGORICAL_FEATURES = [*BASE_CATEGORICAL_FEATURES, *CANDIDATE_CATEGORICAL_FEATURES]
 ALL_NUMERIC_FEATURES = [*BASE_NUMERIC_FEATURES, *CANDIDATE_NUMERIC_FEATURES]
 
@@ -507,4 +533,71 @@ def build_candidate_content_features(
         total,
     )
     out["candidate_anchor_active_conflict_rate"] = _conflict_rate(summary, anchor_sig)
+    return out
+
+
+def build_chain_transition_features(
+    *,
+    rules_chain: list[str] | tuple[str, ...] | None,
+    candidate_type: str | None,
+    anchor_product_type: str | None,
+    last1_product_type: str | None,
+    last2_product_type: str | None = None,
+) -> dict[str, Any]:
+    chain = [slug_token(item, default="") for item in (rules_chain or []) if slug_token(item, default="")]
+    pos_map = {token: idx for idx, token in enumerate(chain)}
+
+    def _pos(token: str | None) -> int:
+        normalized = slug_token(token, default="")
+        if not normalized:
+            return -1
+        return int(pos_map.get(normalized, -1))
+
+    candidate = slug_token(candidate_type, default="")
+    candidate_pos = _pos(candidate)
+    anchor_pos = _pos(anchor_product_type)
+    last1_pos = _pos(last1_product_type)
+    last2_pos = _pos(last2_product_type)
+
+    def _distance(from_pos: int, to_pos: int) -> int:
+        if from_pos < 0 or to_pos < 0:
+            return -99
+        return int(to_pos - from_pos)
+
+    dist_anchor = _distance(anchor_pos, candidate_pos)
+    dist_last1 = _distance(last1_pos, candidate_pos)
+    dist_last2 = _distance(last2_pos, candidate_pos)
+    last_progression = _distance(last2_pos, last1_pos)
+
+    out = {col: 0 for col in CHAIN_TRANSITION_NUMERIC_FEATURES}
+    out["anchor_position_in_chain"] = int(anchor_pos)
+    out["last1_position_in_chain"] = int(last1_pos)
+    out["last2_position_in_chain"] = int(last2_pos)
+    out["candidate_distance_from_anchor"] = int(dist_anchor)
+    out["candidate_distance_from_last1"] = int(dist_last1)
+    out["candidate_distance_from_last2"] = int(dist_last2)
+    out["candidate_abs_distance_from_anchor"] = int(abs(dist_anchor)) if dist_anchor != -99 else 99
+    out["candidate_abs_distance_from_last1"] = int(abs(dist_last1)) if dist_last1 != -99 else 99
+    out["candidate_abs_distance_from_last2"] = int(abs(dist_last2)) if dist_last2 != -99 else 99
+    out["candidate_is_same_as_anchor"] = int(dist_anchor == 0)
+    out["candidate_is_after_anchor"] = int(dist_anchor > 0)
+    out["candidate_is_before_anchor"] = int(dist_anchor < 0 and dist_anchor != -99)
+    out["candidate_is_immediate_followup_to_anchor"] = int(dist_anchor == 1)
+    out["candidate_is_immediate_predecessor_to_anchor"] = int(dist_anchor == -1)
+    out["candidate_is_same_as_last1"] = int(dist_last1 == 0)
+    out["candidate_is_after_last1"] = int(dist_last1 > 0)
+    out["candidate_is_before_last1"] = int(dist_last1 < 0 and dist_last1 != -99)
+    out["candidate_is_immediate_followup_to_last1"] = int(dist_last1 == 1)
+    out["candidate_is_immediate_predecessor_to_last1"] = int(dist_last1 == -1)
+    out["last1_after_last2_in_chain"] = int(last_progression > 0)
+    out["last1_before_last2_in_chain"] = int(last_progression < 0 and last_progression != -99)
+
+    if last_progression > 0 and dist_last1 > 0:
+        out["candidate_continues_last_transition_direction"] = 1
+    elif last_progression < 0 and dist_last1 < 0 and dist_last1 != -99:
+        out["candidate_continues_last_transition_direction"] = 1
+    if last_progression > 0 and dist_last1 < 0 and dist_last1 != -99:
+        out["candidate_reverses_last_transition_direction"] = 1
+    elif last_progression < 0 and dist_last1 > 0:
+        out["candidate_reverses_last_transition_direction"] = 1
     return out

@@ -253,6 +253,10 @@ def _fmt_metric(value: Any, ndigits: int = 4) -> str:
         return "n/a"
 
 
+def _event_key(created_at: Any, event_id: int | None) -> tuple[Any, int]:
+    return created_at, int(event_id or 0)
+
+
 def _artifact_rows(payload: dict[str, Any]) -> list[list[Any]]:
     artifacts = _safe_dict(payload.get("artifacts"))
     rows: list[list[Any]] = []
@@ -280,6 +284,42 @@ def _artifact_rows(payload: dict[str, Any]) -> list[list[Any]]:
                 ]
             )
     return rows
+
+
+def _top_prediction_token(rows: Any) -> str | None:
+    for row in _safe_list(rows):
+        item = _safe_dict(row)
+        token = str(item.get("product_type") or item.get("candidate_type") or "").strip().lower()
+        if token:
+            return token
+    return None
+
+
+def _shadow_outcome_summary(counter: Counter[str]) -> dict[str, Any]:
+    eligible = int(counter.get("eligible_plans", 0))
+    active_hits = int(counter.get("active_hits", 0))
+    shadow_hits = int(counter.get("shadow_hits", 0))
+    both_hits = int(counter.get("both_hits", 0))
+    active_only_hits = int(counter.get("active_only_hits", 0))
+    shadow_only_hits = int(counter.get("shadow_only_hits", 0))
+    neither_hits = int(counter.get("neither_hits", 0))
+    active_rate = _rate(active_hits, eligible)
+    shadow_rate = _rate(shadow_hits, eligible)
+    delta = None
+    if active_rate is not None and shadow_rate is not None:
+        delta = shadow_rate - active_rate
+    return {
+        "eligible_plans": eligible,
+        "active_hits": active_hits,
+        "shadow_hits": shadow_hits,
+        "both_hits": both_hits,
+        "active_only_hits": active_only_hits,
+        "shadow_only_hits": shadow_only_hits,
+        "neither_hits": neither_hits,
+        "active_hit_rate": _round_or_none(active_rate),
+        "shadow_hit_rate": _round_or_none(shadow_rate),
+        "shadow_delta_vs_active": _round_or_none(delta),
+    }
 
 
 def _build_markdown(payload: dict[str, Any]) -> str:
@@ -497,6 +537,126 @@ def _build_markdown(payload: dict[str, Any]) -> str:
             [[k, v] for k, v in sorted(_safe_dict(runtime.get("disabled_reasons")).items(), key=lambda kv: (-kv[1], kv[0]))],
         )
     )
+    shadow = _safe_dict(runtime.get("shadow"))
+    shadow_top1 = _safe_dict(shadow.get("top1_comparison"))
+    lines.append("### shadow comparison")
+    lines.append(
+        _md_table(
+            ["metric", "value"],
+            [
+                ["plans_with_shadow_meta", shadow.get("plans_with_shadow_meta", 0)],
+                ["shadow_enabled_plans", shadow.get("shadow_enabled_plans", 0)],
+                ["eligible_top1_comparisons", shadow_top1.get("eligible_plans", 0)],
+                ["same_top1_plans", shadow_top1.get("same_top1_plans", 0)],
+                ["different_top1_plans", shadow_top1.get("different_top1_plans", 0)],
+                ["agreement_rate_pct", f"{_safe_number(shadow_top1.get('agreement_rate')) * 100.0:.2f}"],
+            ],
+        )
+    )
+    lines.append("### shadow reasons")
+    lines.append(
+        _md_table(
+            ["reason", "count"],
+            [[k, v] for k, v in sorted(_safe_dict(shadow.get("reason_counts")).items(), key=lambda kv: (-kv[1], kv[0]))],
+        )
+    )
+    lines.append("### shadow model versions")
+    lines.append(
+        _md_table(
+            ["model_version", "count"],
+            [[k, v] for k, v in sorted(_safe_dict(shadow.get("model_version_counts")).items(), key=lambda kv: (-kv[1], kv[0]))],
+        )
+    )
+    lines.append("### shadow by category")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "plans_with_shadow_meta",
+                "shadow_enabled_plans",
+                "eligible_top1_comparisons",
+                "same_top1_plans",
+                "different_top1_plans",
+                "agreement_rate_pct",
+            ],
+            [
+                [
+                    cat,
+                    row.get("plans_with_shadow_meta", 0),
+                    row.get("shadow_enabled_plans", 0),
+                    row.get("eligible_plans", 0),
+                    row.get("same_top1_plans", 0),
+                    row.get("different_top1_plans", 0),
+                    f"{_safe_number(row.get('agreement_rate')) * 100.0:.2f}",
+                ]
+                for cat, row in sorted(_safe_dict(shadow.get("by_category")).items())
+            ],
+        )
+    )
+    lines.append("### top shadow swaps")
+    lines.append(
+        _md_table(
+            ["category", "active_top1", "shadow_top1", "plans"],
+            [
+                [
+                    row.get("category"),
+                    row.get("active_top1"),
+                    row.get("shadow_top1"),
+                    row.get("plans"),
+                ]
+                for row in _safe_list(shadow.get("top_swaps"))[:15]
+            ],
+        )
+    )
+    shadow_outcome = _safe_dict(shadow.get("outcome_comparison"))
+    lines.append("### shadow vs outcome")
+    lines.append(
+        _md_table(
+            ["metric", "value"],
+            [
+                ["eligible_plans", shadow_outcome.get("eligible_plans", 0)],
+                ["active_hits", shadow_outcome.get("active_hits", 0)],
+                ["shadow_hits", shadow_outcome.get("shadow_hits", 0)],
+                ["both_hits", shadow_outcome.get("both_hits", 0)],
+                ["active_only_hits", shadow_outcome.get("active_only_hits", 0)],
+                ["shadow_only_hits", shadow_outcome.get("shadow_only_hits", 0)],
+                ["neither_hits", shadow_outcome.get("neither_hits", 0)],
+                ["active_hit_rate_pct", f"{_safe_number(shadow_outcome.get('active_hit_rate')) * 100.0:.2f}"],
+                ["shadow_hit_rate_pct", f"{_safe_number(shadow_outcome.get('shadow_hit_rate')) * 100.0:.2f}"],
+                ["shadow_delta_vs_active_pp", f"{_safe_number(shadow_outcome.get('shadow_delta_vs_active')) * 100.0:.2f}"],
+            ],
+        )
+    )
+    lines.append("### shadow vs outcome by category")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "eligible_plans",
+                "active_hits",
+                "shadow_hits",
+                "active_only_hits",
+                "shadow_only_hits",
+                "active_hit_rate_pct",
+                "shadow_hit_rate_pct",
+                "shadow_delta_vs_active_pp",
+            ],
+            [
+                [
+                    cat,
+                    row.get("eligible_plans", 0),
+                    row.get("active_hits", 0),
+                    row.get("shadow_hits", 0),
+                    row.get("active_only_hits", 0),
+                    row.get("shadow_only_hits", 0),
+                    f"{_safe_number(row.get('active_hit_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('shadow_hit_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('shadow_delta_vs_active')) * 100.0:.2f}",
+                ]
+                for cat, row in sorted(_safe_dict(shadow_outcome.get("by_category")).items())
+            ],
+        )
+    )
     lines.append("")
 
     lines.append("## 8) Model artifacts")
@@ -602,6 +762,18 @@ class Command(BaseCommand):
         fallback_reason_counts: Counter[str] = Counter()
         disabled_reason_counts: Counter[str] = Counter()
         mode_counts: Counter[str] = Counter()
+        shadow_reason_counts: Counter[str] = Counter()
+        shadow_model_version_counts: Counter[str] = Counter()
+        shadow_meta_plan_ids: set[int] = set()
+        shadow_enabled_plan_ids: set[int] = set()
+        shadow_top1_eligible_plan_ids: set[int] = set()
+        shadow_top1_same_plan_ids: set[int] = set()
+        shadow_top1_diff_plan_ids: set[int] = set()
+        shadow_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        shadow_swap_counts: Counter[tuple[str, str, str]] = Counter()
+        active_top1_by_plan: dict[int, str] = {}
+        shadow_top1_by_plan: dict[int, str] = {}
+        shadow_enabled_by_plan: dict[int, bool] = {}
 
         for row in plan_rows:
             pid = int(row["id"])
@@ -609,6 +781,7 @@ class Command(BaseCommand):
             user_id = int(row["user_id"])
             meta = _safe_dict(row.get("meta"))
             ml = _safe_dict(meta.get("ml"))
+            shadow = _safe_dict(ml.get("shadow"))
             decision = _decision_from_meta(meta)
 
             all_scope_plan_ids.add(pid)
@@ -623,6 +796,30 @@ class Command(BaseCommand):
             elif decision == "disabled":
                 disabled_reason_counts[str(ml.get("disabled_reason") or "__missing_reason__")] += 1
             mode_counts[str(ml.get("mode") or "none")] += 1
+
+            if shadow:
+                active_top1_by_plan[pid] = str(_top_prediction_token(ml.get("predictions")) or "")
+                shadow_top1_by_plan[pid] = str(_top_prediction_token(shadow.get("predictions")) or "")
+                shadow_enabled_by_plan[pid] = bool(shadow.get("enabled"))
+                shadow_meta_plan_ids.add(pid)
+                shadow_by_category[cat]["plans_with_shadow_meta"] += 1
+                shadow_reason_counts[str(shadow.get("reason") or "__missing_reason__")] += 1
+                shadow_model_version_counts[str(shadow.get("model_version") or "__missing_model_version__")] += 1
+                if bool(shadow.get("enabled")):
+                    shadow_enabled_plan_ids.add(pid)
+                    shadow_by_category[cat]["shadow_enabled_plans"] += 1
+                    active_top1 = _top_prediction_token(ml.get("predictions"))
+                    shadow_top1 = _top_prediction_token(shadow.get("predictions"))
+                    if active_top1 and shadow_top1:
+                        shadow_top1_eligible_plan_ids.add(pid)
+                        shadow_by_category[cat]["eligible_plans"] += 1
+                        if active_top1 == shadow_top1:
+                            shadow_top1_same_plan_ids.add(pid)
+                            shadow_by_category[cat]["same_top1_plans"] += 1
+                        else:
+                            shadow_top1_diff_plan_ids.add(pid)
+                            shadow_by_category[cat]["different_top1_plans"] += 1
+                            shadow_swap_counts[(cat or "__unknown__", active_top1, shadow_top1)] += 1
 
         if cohort_mode == "fresh":
             cohort_scope_plan_ids = {pid for pid in all_scope_plan_ids if plan_decision.get(pid) != "missing_ml_meta"}
@@ -730,6 +927,24 @@ class Command(BaseCommand):
         for pid in analysis_plan_ids:
             category_plan_ids[str(plan_category.get(pid) or "__unknown__")].add(pid)
 
+        latest_plan_refresh_key: dict[int, tuple[Any, int]] = {}
+        completion_events_by_plan: dict[int, list[tuple[Any, int, str, str]]] = defaultdict(list)
+        if analysis_plan_ids:
+            refresh_qs = RoadmapEvent.objects.filter(
+                created_at__gte=since,
+                created_at__lte=now_utc,
+                event_type=RoadmapEvent.Type.PLAN_REFRESHED,
+                plan_id__in=analysis_plan_ids,
+            )
+            if not include_ga:
+                refresh_qs = refresh_qs.exclude(user__username__startswith="ga_")
+            for row in refresh_qs.values("plan_id", "created_at", "id"):
+                pid = int(row["plan_id"])
+                key = _event_key(row["created_at"], _to_int(row.get("id")))
+                prev = latest_plan_refresh_key.get(pid)
+                if prev is None or key > prev:
+                    latest_plan_refresh_key[pid] = key
+
         unattributed: Counter[str] = Counter()
 
         def _increment_step_metric(
@@ -817,13 +1032,29 @@ class Command(BaseCommand):
                 RoadmapEvent.Type.STEP_COMPLETED: "step_completed",
                 RoadmapEvent.Type.STEP_SKIPPED: "step_skipped",
             }
-            for row in interaction_qs.values("step_id", "event_type", "_effective_plan_id"):
+            for row in interaction_qs.values("id", "step_id", "event_type", "created_at", "context", "_effective_plan_id"):
                 pid = int(row["_effective_plan_id"])
                 sid = _to_int(row.get("step_id"))
                 metric = event_map.get(str(row.get("event_type") or ""))
                 if not metric:
                     continue
                 _increment_step_metric(pid=pid, sid=sid, metric_key=metric, source=None)
+                if metric == "step_completed":
+                    ctx = _safe_dict(row.get("context"))
+                    step_info = _safe_dict(step_meta.get(int(sid or 0)))
+                    product_type = str(
+                        step_info.get("product_type")
+                        or ctx.get("product_type")
+                        or ""
+                    ).strip().lower()
+                    completion_events_by_plan[pid].append(
+                        (
+                            row.get("created_at"),
+                            int(row.get("id") or 0),
+                            product_type,
+                            str(ctx.get("matched_by") or "").strip().lower(),
+                        )
+                    )
                 if sid is None:
                     unattributed["step_interaction_missing_step_id"] += 1
                     continue
@@ -1421,6 +1652,84 @@ class Command(BaseCommand):
             if planner_candidate_model_path
             else None
         )
+        shadow_by_category_summary = {
+            str(cat): {
+                "plans_with_shadow_meta": int(counter.get("plans_with_shadow_meta", 0)),
+                "shadow_enabled_plans": int(counter.get("shadow_enabled_plans", 0)),
+                "eligible_plans": int(counter.get("eligible_plans", 0)),
+                "same_top1_plans": int(counter.get("same_top1_plans", 0)),
+                "different_top1_plans": int(counter.get("different_top1_plans", 0)),
+                "agreement_rate": _round_or_none(
+                    _rate(counter.get("same_top1_plans", 0), counter.get("eligible_plans", 0))
+                ),
+            }
+            for cat, counter in sorted(shadow_by_category.items(), key=lambda kv: kv[0])
+        }
+        shadow_top_swaps = [
+            {
+                "category": str(category),
+                "active_top1": str(active_top1),
+                "shadow_top1": str(shadow_top1),
+                "plans": int(count),
+            }
+            for (category, active_top1, shadow_top1), count in sorted(
+                shadow_swap_counts.items(),
+                key=lambda kv: (-kv[1], kv[0][0], kv[0][1], kv[0][2]),
+            )
+        ]
+        shadow_outcome_counts: Counter[str] = Counter()
+        shadow_outcome_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        for pid in analysis_plan_ids:
+            if not bool(shadow_enabled_by_plan.get(pid)):
+                continue
+            active_top1 = str(active_top1_by_plan.get(pid) or "").strip().lower()
+            shadow_top1 = str(shadow_top1_by_plan.get(pid) or "").strip().lower()
+            if not active_top1 or not shadow_top1:
+                continue
+            start_key = latest_plan_refresh_key.get(pid)
+            if start_key is None:
+                start_key = _event_key(plan_updated.get(pid), 0)
+            actual_outcome = None
+            completion_rows = sorted(
+                completion_events_by_plan.get(pid, []),
+                key=lambda item: _event_key(item[0], item[1]),
+            )
+            for created_at, event_id, product_type, _matched_by in completion_rows:
+                if _event_key(created_at, event_id) < start_key:
+                    continue
+                if str(product_type or "").strip():
+                    actual_outcome = str(product_type).strip().lower()
+                    break
+            if not actual_outcome:
+                continue
+            cat = str(plan_category.get(pid) or "__unknown__")
+            shadow_outcome_counts["eligible_plans"] += 1
+            shadow_outcome_by_category[cat]["eligible_plans"] += 1
+            active_hit = active_top1 == actual_outcome
+            shadow_hit = shadow_top1 == actual_outcome
+            if active_hit:
+                shadow_outcome_counts["active_hits"] += 1
+                shadow_outcome_by_category[cat]["active_hits"] += 1
+            if shadow_hit:
+                shadow_outcome_counts["shadow_hits"] += 1
+                shadow_outcome_by_category[cat]["shadow_hits"] += 1
+            if active_hit and shadow_hit:
+                shadow_outcome_counts["both_hits"] += 1
+                shadow_outcome_by_category[cat]["both_hits"] += 1
+            elif active_hit and not shadow_hit:
+                shadow_outcome_counts["active_only_hits"] += 1
+                shadow_outcome_by_category[cat]["active_only_hits"] += 1
+            elif shadow_hit and not active_hit:
+                shadow_outcome_counts["shadow_only_hits"] += 1
+                shadow_outcome_by_category[cat]["shadow_only_hits"] += 1
+            else:
+                shadow_outcome_counts["neither_hits"] += 1
+                shadow_outcome_by_category[cat]["neither_hits"] += 1
+        shadow_outcome_summary = _shadow_outcome_summary(shadow_outcome_counts)
+        shadow_outcome_summary["by_category"] = {
+            str(cat): _shadow_outcome_summary(counter)
+            for cat, counter in sorted(shadow_outcome_by_category.items(), key=lambda kv: kv[0])
+        }
 
         payload: dict[str, Any] = {
             "generated_at_utc": now_utc.isoformat(),
@@ -1462,6 +1771,29 @@ class Command(BaseCommand):
                 "mode_distribution": {
                     str(k): int(v)
                     for k, v in sorted(mode_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+                "shadow": {
+                    "plans_with_shadow_meta": int(len(shadow_meta_plan_ids)),
+                    "shadow_enabled_plans": int(len(shadow_enabled_plan_ids)),
+                    "reason_counts": {
+                        str(k): int(v)
+                        for k, v in sorted(shadow_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "model_version_counts": {
+                        str(k): int(v)
+                        for k, v in sorted(shadow_model_version_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "top1_comparison": {
+                        "eligible_plans": int(len(shadow_top1_eligible_plan_ids)),
+                        "same_top1_plans": int(len(shadow_top1_same_plan_ids)),
+                        "different_top1_plans": int(len(shadow_top1_diff_plan_ids)),
+                        "agreement_rate": _round_or_none(
+                            _rate(len(shadow_top1_same_plan_ids), len(shadow_top1_eligible_plan_ids))
+                        ),
+                    },
+                    "by_category": shadow_by_category_summary,
+                    "top_swaps": shadow_top_swaps[:25],
+                    "outcome_comparison": shadow_outcome_summary,
                 },
             },
             "artifacts": {
@@ -1506,6 +1838,8 @@ class Command(BaseCommand):
                 "Default cohort-mode=fresh excludes missing_ml_meta from active model vs control comparison.",
                 "Policy simulation is offline what-if analysis over observed plans; runtime behavior is unchanged.",
                 "Artifact inventory shows active runtime model summaries plus optional candidate paths passed via CLI.",
+                "Shadow comparison uses stored active and shadow prediction lists from RoadmapPlan.meta.ml.",
+                "Shadow vs outcome compares top-1 active/shadow predictions to the first STEP_COMPLETED product_type after the latest PLAN_REFRESHED for that plan.",
             ],
         }
 

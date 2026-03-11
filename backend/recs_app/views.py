@@ -14,6 +14,7 @@ from rest_framework import serializers
 
 from backend.throttles import RecsRateThrottle
 from catalog.models import Product
+from catalog.serializers import ProductSerializer
 from transactions.models import OwnedProduct, TransactionItem, Transaction
 from users_app.models import CustomerProfile
 
@@ -209,7 +210,7 @@ class MeRecommendationsView(APIView):
                     "owned_active_count": len(owned_active_ids),
                     **context_meta,
                 },
-                "results": results,
+                "results": _enrich_results_with_catalog_payload(results),
             }
         )
 
@@ -298,7 +299,7 @@ class MeBundleView(APIView):
                     "model_version": model_version,
                     "algo_routing": algo_routing,
                 },
-                "results": results,
+                "results": _enrich_results_with_catalog_payload(results),
             }
         )
 
@@ -322,6 +323,7 @@ def _product_obj_to_dict(p: Product) -> dict[str, Any]:
         "name": p.name,
         "brand": p.brand,
         "price": float(p.price),
+        "currency": p.currency,
         "category": p.category,
         "product_type": p.product_type,
         "concerns": p.concerns or [],
@@ -331,7 +333,47 @@ def _product_obj_to_dict(p: Product) -> dict[str, Any]:
         "supported_skin_types": p.supported_skin_types or [],
         "strength": p.strength,
         "in_stock": bool(p.in_stock),
+        "image_url": p.image_url or None,
+        "image_urls": list(p.image_urls or []),
+        "raw_meta": p.raw_meta or {},
     }
+
+
+def _enrich_results_with_catalog_payload(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    product_ids: list[int] = []
+    for row in results:
+        product = row.get("product") or {}
+        product_id = product.get("id")
+        if product_id is None:
+            continue
+        try:
+            product_ids.append(int(product_id))
+        except Exception:
+            continue
+
+    if not product_ids:
+        return results
+
+    serialized = ProductSerializer(Product.objects.filter(id__in=product_ids), many=True).data
+    by_id = {int(item["id"]): item for item in serialized}
+
+    enriched: list[dict[str, Any]] = []
+    for row in results:
+        product = row.get("product") or {}
+        try:
+            product_id = int(product.get("id"))
+        except Exception:
+            enriched.append(row)
+            continue
+
+        payload = by_id.get(product_id)
+        if payload is None:
+            enriched.append(row)
+            continue
+
+        enriched.append({**row, "product": payload})
+
+    return enriched
 
 
 def _apply_filters_to_product_dict(p: dict[str, Any], *, category=None, product_type=None, price_min=None, price_max=None) -> bool:
@@ -627,6 +669,10 @@ class HomeRecommendationsView(APIView):
 
         RecommendationEvent.objects.bulk_create(events, batch_size=500)
 
+        for_you_enriched = _enrich_results_with_catalog_payload(for_you)
+        because_enriched = _enrich_results_with_catalog_payload(because)
+        trending_enriched = _enrich_results_with_catalog_payload(trending)
+
         return Response({
             "ok": True,
             "query": {
@@ -646,9 +692,14 @@ class HomeRecommendationsView(APIView):
                 "reranker_model_available": bool(get_reranker_model_version()),
             },
             "sections": [
-                {"key": "for_you", "title": "For you", "results": for_you},
-                {"key": "because_you_bought", "title": "Because you bought", "base_product_id": base_product_ids[0] if base_product_ids else None, "results": because},
-                {"key": "trending", "title": "Trending", "results": trending},
+                {"key": "for_you", "title": "For you", "results": for_you_enriched},
+                {
+                    "key": "because_you_bought",
+                    "title": "Because you bought",
+                    "base_product_id": base_product_ids[0] if base_product_ids else None,
+                    "results": because_enriched,
+                },
+                {"key": "trending", "title": "Trending", "results": trending_enriched},
             ],
         })
 

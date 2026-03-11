@@ -26,6 +26,7 @@ from roadmap_app.ml_next_step import (
 from roadmap_app.models import RoadmapPlan, RoadmapStep
 from transactions.models import OwnedProduct, TransactionItem
 from users_app.models import CustomerProfile
+from users_app.services import favorite_category_snapshot
 
 
 CATEGORY_RULES: dict[str, dict[str, Any]] = {
@@ -1383,6 +1384,20 @@ def get_active_plan(user, category: str) -> RoadmapPlan | None:
         .order_by("-updated_at", "-id")
         .first()
     )
+
+
+def resolve_primary_roadmap_category(user) -> str:
+    active_plan = get_active_plan(user, category="")
+    if active_plan and str(active_plan.category or "").strip() in CATEGORY_RULES:
+        return str(active_plan.category)
+
+    favorite_category = str(
+        (favorite_category_snapshot(user) or {}).get("favorite_category") or ""
+    ).strip()
+    if favorite_category in CATEGORY_RULES:
+        return favorite_category
+
+    return RoadmapPlan.Category.SKINCARE
 
 
 def get_next_missing_step(plan: RoadmapPlan | None) -> RoadmapStep | None:

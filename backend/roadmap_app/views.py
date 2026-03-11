@@ -26,7 +26,12 @@ from roadmap_app.serializers import (
     RoadmapStepPatchRequestSerializer,
     RoadmapStepReadSerializer,
 )
-from roadmap_app.services import get_active_plan, patch_step_status, refresh_roadmap
+from roadmap_app.services import (
+    get_active_plan,
+    patch_step_status,
+    refresh_roadmap,
+    resolve_primary_roadmap_category,
+)
 
 
 def _active_offer_assignment_for_step(user, step: RoadmapStep | None) -> OfferAssignment | None:
@@ -134,12 +139,8 @@ class MeRoadmapView(APIView):
 
         plan = get_active_plan(request.user, category=category or "")
         if not plan:
-            if not category:
-                return Response(
-                    {"ok": False, "message": "Provide ?category=skincare|haircare|makeup|fragrance"},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            plan = refresh_roadmap(request.user, category=category, post_ctx=None)
+            resolved_category = category or resolve_primary_roadmap_category(request.user)
+            plan = refresh_roadmap(request.user, category=resolved_category, post_ctx=None)
 
         next_step = (
             plan.steps.filter(status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED])
@@ -190,7 +191,7 @@ class MeRoadmapRefreshView(APIView):
     def post(self, request):
         s = RoadmapRefreshRequestSerializer(data=request.data)
         s.is_valid(raise_exception=True)
-        category = s.validated_data["category"]
+        category = s.validated_data.get("category") or resolve_primary_roadmap_category(request.user)
         plan = refresh_roadmap(request.user, category=category, post_ctx=None)
         return Response(RoadmapPlanReadSerializer(plan).data)
 

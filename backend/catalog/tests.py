@@ -71,6 +71,8 @@ class ImportProductsXlsxTests(TestCase):
                     "volume_raw",
                     "original_price",
                     "discount",
+                    "rating",
+                    "reviews_count",
                 ]
             )
             ws.append(
@@ -102,6 +104,8 @@ class ImportProductsXlsxTests(TestCase):
                     "30 ml",
                     "2499",
                     "20",
+                    "4.8",
+                    "56",
                 ]
             )
             wb.save(xlsx_path)
@@ -123,6 +127,8 @@ class ImportProductsXlsxTests(TestCase):
         self.assertEqual(p.description, "Product description")
         self.assertEqual(p.raw_meta["original_price"], "2499")
         self.assertEqual(p.raw_meta["discount"], 20)
+        self.assertEqual(p.raw_meta["rating"], "4.8")
+        self.assertEqual(p.raw_meta["reviews_count"], 56)
 
 
 class ProductSearchApiTests(APITestCase):
@@ -243,6 +249,8 @@ class ProductSaleApiTests(APITestCase):
         self.assertEqual(resp.data["original_price"], "125.00")
         self.assertEqual(resp.data["discount"], 20)
         self.assertTrue(resp.data["has_discount"])
+        self.assertEqual(resp.data["brand_slug"], "dermalab")
+        self.assertEqual(resp.data["points_earned"], 10)
 
         resp = self.client.get(f"/api/products/{self.discount_only.id}/")
         self.assertEqual(resp.status_code, 200)
@@ -250,9 +258,92 @@ class ProductSaleApiTests(APITestCase):
         self.assertEqual(resp.data["original_price"], "100.00")
         self.assertTrue(resp.data["has_discount"])
 
+    def test_product_serializer_exposes_social_proof_fields(self):
+        self.discounted.raw_meta = {
+            **self.discounted.raw_meta,
+            "rating": "4.7",
+            "reviews_count": 42,
+        }
+        self.discounted.save(update_fields=["raw_meta", "updated_at"])
+
+        resp = self.client.get(f"/api/products/{self.discounted.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["rating"], 4.7)
+        self.assertEqual(resp.data["reviews_count"], 42)
+
     def test_sale_query_param_returns_only_discounted_products(self):
         resp = self.client.get("/api/products/?sale=true")
         self.assertEqual(resp.status_code, 200)
 
         names = {item["name"] for item in resp.data}
         self.assertEqual(names, {"Sale Serum", "Discount Mask"})
+
+
+class BrandApiTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(username="catalog_brand_u1", password="pass12345")
+        self.client.force_authenticate(self.user)
+
+        Product.objects.create(
+            name="Bright Serum",
+            brand="Glow Lab",
+            price=Decimal("100.00"),
+            category=Product.Category.SKINCARE,
+            product_type="serum",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+            raw_meta={"discount": 15},
+        )
+        Product.objects.create(
+            name="Soft Cleanser",
+            brand="Glow Lab",
+            price=Decimal("80.00"),
+            category=Product.Category.SKINCARE,
+            product_type="cleanser",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Night Cream",
+            brand="Derma Stories",
+            price=Decimal("120.00"),
+            category=Product.Category.SKINCARE,
+            product_type="cream",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+
+    def test_brands_list_returns_slug_and_product_count(self):
+        resp = self.client.get("/api/brands/")
+        self.assertEqual(resp.status_code, 200)
+
+        glow_lab = next((item for item in resp.data if item["name"] == "Glow Lab"), None)
+        self.assertIsNotNone(glow_lab)
+        self.assertEqual(glow_lab["slug"], "glow-lab")
+        self.assertEqual(glow_lab["product_count"], 2)
+
+    def test_brand_detail_returns_meta_for_slug(self):
+        resp = self.client.get("/api/brands/glow-lab/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["name"], "Glow Lab")
+        self.assertEqual(resp.data["product_count"], 2)
+        self.assertEqual(resp.data["sale_products_count"], 1)
+        self.assertIn("skincare", resp.data["categories"])
+        self.assertIn("serum", resp.data["top_product_types"])
+        self.assertTrue(resp.data["description"].startswith("Glow Lab"))
