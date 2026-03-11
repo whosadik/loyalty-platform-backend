@@ -1003,9 +1003,11 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     step_payloads: list[dict[str, Any]] = []
     for product_type in chain:
         source_meta = source_by_type.get(product_type, {"source": "rules", "score": None})
-        source_is_ml = source_meta.get("source") == "ml_next_step"
-        source_is_planner = source_meta.get("source") == "ml_planner"
-        source_is_state_prefix = source_meta.get("source") == "state_prefix"
+        source_key = str(source_meta.get("source") or "")
+        source_is_ml = source_key == "ml_next_step"
+        source_is_planner = source_key == "ml_planner"
+        source_is_planner_fallback = source_key == "planner_fallback"
+        source_is_state_prefix = source_key == "state_prefix"
         score_val = source_meta.get("score")
 
         status = _status_for_type(product_type, owned_types_set, purchased_types_set)
@@ -1047,6 +1049,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         why: list[str] = []
         if source_is_planner:
             why.append("picked via ML planner")
+        elif source_is_planner_fallback:
+            why.append("picked via planner fallback")
         elif source_is_state_prefix:
             why.append("picked via user state")
         else:

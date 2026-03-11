@@ -160,9 +160,11 @@ class RoadmapTelemetryTests(APITestCase):
         self.assertIsNotNone(plan_event)
         self.assertEqual(int((plan_event.context or {}).get("plan_id")), int(plan.id))
         self.assertEqual(str((plan_event.context or {}).get("category")), "haircare")
+        self.assertEqual(str((plan_event.context or {}).get("source")), "roadmap_v1")
         self.assertEqual(int((plan_event.context or {}).get("steps_total")), int(plan.steps.count()))
         self.assertEqual(int((plan_event.context or {}).get("next_step_id")), int(next_step.id))
         self.assertTrue(str(((plan_event.context or {}).get("ml") or {}).get("decision") or "").strip())
+        self.assertIn("planner", plan_event.context or {})
 
         generated_events = RoadmapEvent.objects.filter(
             user=self.user,
@@ -174,8 +176,10 @@ class RoadmapTelemetryTests(APITestCase):
         self.assertIsNotNone(generated)
         self.assertEqual(int((generated.context or {}).get("plan_id")), int(plan.id))
         self.assertEqual(int((generated.context or {}).get("step_id")), int(generated.step_id))
-        self.assertIn(str((generated.context or {}).get("source") or ""), {"rules", "ml_next_step", ""})
+        self.assertEqual(str((generated.context or {}).get("plan_source")), "roadmap_v1")
+        self.assertIn(str((generated.context or {}).get("source") or ""), {"rules", "ml_next_step", "planner", "planner_fallback", "user_state", ""})
         self.assertIn("ml", generated.context or {})
+        self.assertIn("planner", generated.context or {})
 
         self.assertFalse(
             RoadmapEvent.objects.filter(

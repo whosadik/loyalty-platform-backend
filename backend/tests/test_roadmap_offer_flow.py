@@ -37,6 +37,8 @@ class RoadmapOfferFlowTests(APITestCase):
             price=Decimal("8.00"),
             category="haircare",
             product_type="shampoo",
+            image_url="https://example.com/shampoo.jpg",
+            image_urls=["https://example.com/shampoo.jpg"],
             concerns=[],
             attrs={},
             actives=[],
@@ -51,6 +53,8 @@ class RoadmapOfferFlowTests(APITestCase):
             price=Decimal("9.00"),
             category="haircare",
             product_type="conditioner",
+            image_url="https://example.com/conditioner.jpg",
+            image_urls=["https://example.com/conditioner.jpg"],
             concerns=[],
             attrs={},
             actives=[],
@@ -65,6 +69,8 @@ class RoadmapOfferFlowTests(APITestCase):
             price=Decimal("11.00"),
             category="haircare",
             product_type="hair_mask",
+            image_url="https://example.com/hair-mask.jpg",
+            image_urls=["https://example.com/hair-mask.jpg"],
             concerns=[],
             attrs={},
             actives=[],
@@ -79,6 +85,8 @@ class RoadmapOfferFlowTests(APITestCase):
             price=Decimal("10.00"),
             category="haircare",
             product_type="hair_oil",
+            image_url="https://example.com/hair-oil.jpg",
+            image_urls=["https://example.com/hair-oil.jpg"],
             concerns=[],
             attrs={},
             actives=[],
@@ -135,6 +143,11 @@ class RoadmapOfferFlowTests(APITestCase):
         summary = roadmap.data.get("summary") or {}
         next_step = summary.get("next_step") or {}
         self.assertEqual(next_step.get("product_type"), "conditioner")
+        self.assertEqual(next_step.get("title"), "Кондиционирование")
+        self.assertTrue(str(next_step.get("description") or "").strip())
+        self.assertEqual(next_step.get("step_id"), next_step.get("id"))
+        self.assertEqual((next_step.get("recommended_product") or {}).get("image_url"), "https://example.com/conditioner.jpg")
+        self.assertEqual((next_step.get("recommended_product") or {}).get("points_earned"), 1)
 
         next_offer = self.client.get("/api/me/next-offer")
         self.assertEqual(next_offer.status_code, 200)
@@ -185,11 +198,14 @@ class RoadmapOfferFlowTests(APITestCase):
         rec_ids = []
         for step in steps:
             rp = step.get("recommended_product")
+            self.assertTrue(str(step.get("title") or "").strip())
+            self.assertTrue(str(step.get("description") or "").strip())
             if not rp:
                 continue
             self.assertEqual(step.get("recommended_product_id"), int(rp["id"]))
             rec_ids.append(int(rp["id"]))
             self.assertTrue(bool(rp.get("in_stock")))
+            self.assertTrue(str(rp.get("image_url") or "").strip())
         self.assertEqual(len(rec_ids), len(set(rec_ids)))
 
     def test_not_owned_products_are_not_recommended_or_suggested(self):

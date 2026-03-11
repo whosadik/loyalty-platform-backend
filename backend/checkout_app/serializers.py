@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from roadmap_app.serializers import RoadmapStepSnapshotSerializer
+
 
 class CheckoutItemSerializer(serializers.Serializer):
     product = serializers.IntegerField()
@@ -49,6 +51,7 @@ class CheckoutCommitResponseSerializer(serializers.Serializer):
     new_tier = serializers.CharField(required=False, allow_null=True)
     tier_upgraded = serializers.BooleanField(required=False)
     next_offer = CheckoutNextOfferSerializer(required=False, allow_null=True)
+    next_roadmap_step = RoadmapStepSnapshotSerializer(required=False, allow_null=True)
 
 
 class CheckoutLastResponseSerializer(serializers.Serializer):

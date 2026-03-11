@@ -6,6 +6,7 @@ from rest_framework.test import APITestCase
 from catalog.models import Product
 from loyalty.models import LoyaltyAccount, Tier
 from transactions.models import CartItem
+from users_app.models import CustomerProfile
 
 
 def _first_result(data):
@@ -23,6 +24,7 @@ class TransactionsCheckoutContractTests(APITestCase):
         User = get_user_model()
         self.user = User.objects.create_user(username="tx_contract_u1", password="pass12345")
         self.client.force_authenticate(self.user)
+        CustomerProfile.objects.get_or_create(user=self.user)
 
         bronze, _ = Tier.objects.get_or_create(
             name="Bronze",
@@ -64,6 +66,74 @@ class TransactionsCheckoutContractTests(APITestCase):
             supported_skin_types=["normal"],
             strength="medium",
         )
+        Product.objects.create(
+            name="Gentle Cleanser",
+            brand="Uilesim",
+            price=Decimal("80.00"),
+            currency="KZT",
+            category="skincare",
+            product_type="cleanser",
+            image_url="https://example.com/cleanser.jpg",
+            image_urls=["https://example.com/cleanser.jpg"],
+            in_stock=True,
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="medium",
+        )
+        Product.objects.create(
+            name="Balance Toner",
+            brand="Uilesim",
+            price=Decimal("90.00"),
+            currency="KZT",
+            category="skincare",
+            product_type="toner",
+            image_url="https://example.com/toner.jpg",
+            image_urls=["https://example.com/toner.jpg"],
+            in_stock=True,
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="medium",
+        )
+        Product.objects.create(
+            name="Barrier Cream",
+            brand="Uilesim",
+            price=Decimal("130.00"),
+            currency="KZT",
+            category="skincare",
+            product_type="moisturizer",
+            image_url="https://example.com/cream.jpg",
+            image_urls=["https://example.com/cream.jpg"],
+            in_stock=True,
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="medium",
+        )
+        Product.objects.create(
+            name="Daily SPF",
+            brand="Uilesim",
+            price=Decimal("140.00"),
+            currency="KZT",
+            category="skincare",
+            product_type="spf",
+            image_url="https://example.com/spf.jpg",
+            image_urls=["https://example.com/spf.jpg"],
+            in_stock=True,
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="medium",
+        )
 
     def test_transactions_and_last_checkout_expose_rich_snapshot(self):
         CartItem.objects.create(user=self.user, product=self.product, quantity=2)
@@ -88,6 +158,12 @@ class TransactionsCheckoutContractTests(APITestCase):
         self.assertEqual(checkout.data["new_balance"], 180)
         self.assertEqual(checkout.data["new_tier"], "Silver")
         self.assertTrue(checkout.data["tier_upgraded"])
+        self.assertIsNotNone(checkout.data.get("next_roadmap_step"))
+        self.assertEqual(checkout.data["next_roadmap_step"]["category"], "skincare")
+        self.assertTrue(str(checkout.data["next_roadmap_step"]["title"]).strip())
+        self.assertTrue(str(checkout.data["next_roadmap_step"]["description"]).strip())
+        self.assertIsNotNone(checkout.data["next_roadmap_step"].get("recommended_product"))
+        self.assertTrue(str(checkout.data["next_roadmap_step"]["recommended_product"].get("image_url") or "").strip())
         self.assertEqual(CartItem.objects.get(user=self.user, product=self.product).quantity, 1)
 
         transactions = self.client.get("/api/transactions/")
@@ -108,6 +184,8 @@ class TransactionsCheckoutContractTests(APITestCase):
         self.assertEqual(txn["new_tier"], "Silver")
         self.assertTrue(txn["tier_upgraded"])
         self.assertIn("Покупка", txn["description"])
+        self.assertEqual(txn["next_roadmap_step"]["step_id"], checkout.data["next_roadmap_step"]["step_id"])
+        self.assertEqual(txn["next_roadmap_step"]["title"], checkout.data["next_roadmap_step"]["title"])
         self.assertEqual(len(txn["items"]), 1)
         self.assertEqual(txn["items"][0]["product"], self.product.id)
         self.assertEqual(txn["items"][0]["product_summary"]["id"], self.product.id)
@@ -119,6 +197,7 @@ class TransactionsCheckoutContractTests(APITestCase):
         self.assertEqual(detail.data["transaction_id"], expected_ref)
         self.assertEqual(detail.data["points_change"], 180)
         self.assertEqual(detail.data["items"][0]["product_summary"]["name"], "Barrier Serum")
+        self.assertEqual(detail.data["next_roadmap_step"]["step_id"], checkout.data["next_roadmap_step"]["step_id"])
 
         last_checkout = self.client.get("/api/checkout/last")
         self.assertEqual(last_checkout.status_code, 200)
@@ -128,6 +207,10 @@ class TransactionsCheckoutContractTests(APITestCase):
         self.assertEqual(last_checkout.data["checkout"]["transaction_id"], expected_ref)
         self.assertEqual(last_checkout.data["checkout"]["new_tier"], "Silver")
         self.assertTrue(last_checkout.data["checkout"]["tier_upgraded"])
+        self.assertEqual(
+            last_checkout.data["checkout"]["next_roadmap_step"]["step_id"],
+            checkout.data["next_roadmap_step"]["step_id"],
+        )
 
     def test_checkout_deletes_cart_line_when_all_quantity_is_committed(self):
         CartItem.objects.create(user=self.user, product=self.product, quantity=1)

@@ -117,10 +117,12 @@ class ReportRoadmapGenerationGapTests(TestCase):
             context={
                 "plan_id": model_plan.id,
                 "category": "makeup",
+                "source": "roadmap_planner_v1",
                 "next_step_id": model_step.id,
                 "next_step_index": 1,
                 "next_product_type": "foundation",
                 "ml": {"decision": "model_used", "mode": "v4_ranking", "rollout_mode": "full"},
+                "planner": {"mode": "serve", "served": True, "decision": "model_used", "model_version": "planner_test_v1"},
             },
         )
         self._event(
@@ -134,12 +136,14 @@ class ReportRoadmapGenerationGapTests(TestCase):
                 "step_id": model_step.id,
                 "step_index": 1,
                 "category": "makeup",
+                "plan_source": "roadmap_planner_v1",
                 "product_type": "foundation",
                 "status": "recommended",
                 "recommended_product_id": 501,
                 "has_recommendation": True,
-                "source": "ml_next_step",
+                "source": "planner",
                 "ml": {"decision": "model_used", "rollout_mode": "full"},
+                "planner": {"mode": "serve", "served": True, "decision": "model_used", "model_version": "planner_test_v1"},
             },
         )
         self._event(
@@ -176,10 +180,12 @@ class ReportRoadmapGenerationGapTests(TestCase):
             context={
                 "plan_id": disabled_plan.id,
                 "category": "makeup",
+                "source": "roadmap_v1",
                 "next_step_id": disabled_step.id,
                 "next_step_index": 2,
                 "next_product_type": "concealer",
                 "ml": {"decision": "disabled", "mode": "v4_ranking", "rollout_mode": "disable"},
+                "planner": {"mode": "off", "served": False, "decision": "disabled"},
             },
         )
         self._event(
@@ -193,12 +199,14 @@ class ReportRoadmapGenerationGapTests(TestCase):
                 "step_id": disabled_step.id,
                 "step_index": 2,
                 "category": "makeup",
+                "plan_source": "roadmap_v1",
                 "product_type": "concealer",
                 "status": "recommended",
                 "recommended_product_id": 601,
                 "has_recommendation": True,
                 "source": "rules",
                 "ml": {"decision": "disabled", "rollout_mode": "disable"},
+                "planner": {"mode": "off", "served": False, "decision": "disabled"},
             },
         )
         self._event(
@@ -219,7 +227,9 @@ class ReportRoadmapGenerationGapTests(TestCase):
             context={
                 "plan_id": missing_plan.id,
                 "category": "skincare",
+                "source": "roadmap_v1",
                 "ml": {"mode": "v4_ranking", "rollout_mode": "none"},
+                "planner": {"mode": "off", "served": False, "decision": "disabled"},
             },
         )
         self._event(
@@ -233,10 +243,12 @@ class ReportRoadmapGenerationGapTests(TestCase):
                 "step_id": missing_step.id,
                 "step_index": 1,
                 "category": "skincare",
+                "plan_source": "roadmap_v1",
                 "product_type": "serum",
                 "status": "recommended",
                 "source": "rules",
                 "ml": {"rollout_mode": "none"},
+                "planner": {"mode": "off", "served": False, "decision": "disabled"},
             },
         )
 
@@ -295,6 +307,20 @@ class ReportRoadmapGenerationGapTests(TestCase):
         adherence_by_ml = payload["recommended_product_adherence"]["by_ml_decision"]
         self.assertEqual(adherence_by_ml["model_used"]["checkout_targeted_recommended_product"], 1)
         self.assertEqual(adherence_by_ml["disabled"]["next_step_with_recommendation"], 1)
+        adherence_by_plan_source = payload["recommended_product_adherence"]["by_plan_source"]
+        self.assertEqual(adherence_by_plan_source["roadmap_planner_v1"]["checkout_targeted_recommended_product"], 1)
+        self.assertEqual(adherence_by_plan_source["roadmap_v1"]["next_step_with_recommendation"], 1)
+
+        by_plan_source = payload["breakdowns"]["by_plan_source"]
+        self.assertEqual(by_plan_source["roadmap_planner_v1"]["plans_refreshed"], 1)
+        self.assertEqual(by_plan_source["roadmap_planner_v1"]["steps_completed_after_generated"], 1)
+        self.assertEqual(by_plan_source["roadmap_v1"]["plans_refreshed"], 1)
+        self.assertEqual(by_plan_source["roadmap_v1"]["steps_generated"], 1)
+
+        by_generated_source = payload["breakdowns"]["by_generated_source"]
+        self.assertEqual(by_generated_source["planner"]["steps_generated"], 1)
+        self.assertEqual(by_generated_source["planner"]["steps_completed_after_generated"], 1)
+        self.assertEqual(by_generated_source["rules"]["steps_generated"], 1)
 
         by_expose_source = payload["breakdowns"]["by_expose_source"]
         self.assertEqual(by_expose_source["roadmap_api"]["steps_generated"], 1)

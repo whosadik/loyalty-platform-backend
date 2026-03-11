@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
 from catalog.models import Product
+from roadmap_app.models import RoadmapEvent
 from roadmap_app.services import refresh_roadmap
 
 
@@ -87,3 +88,22 @@ class RoadmapPlannerRuntimeTests(TestCase):
         self.assertTrue(bool((plan.meta.get("planner") or {}).get("served")))
         self.assertEqual(str((plan.meta.get("planner") or {}).get("model_version")), "planner_test_v1")
         self.assertEqual(str(((steps[0].why or [None])[0] or "")), "picked via ML planner")
+
+        plan_event = RoadmapEvent.objects.filter(
+            user=self.user,
+            plan=plan,
+            event_type=RoadmapEvent.Type.PLAN_REFRESHED,
+        ).order_by("-id").first()
+        self.assertIsNotNone(plan_event)
+        self.assertEqual(str((plan_event.context or {}).get("source")), "roadmap_planner_v1")
+        self.assertTrue(bool(((plan_event.context or {}).get("planner") or {}).get("served")))
+
+        generated = RoadmapEvent.objects.filter(
+            user=self.user,
+            plan=plan,
+            event_type=RoadmapEvent.Type.STEP_GENERATED,
+            step__step_index=1,
+        ).order_by("-id").first()
+        self.assertIsNotNone(generated)
+        self.assertEqual(str((generated.context or {}).get("plan_source")), "roadmap_planner_v1")
+        self.assertEqual(str((generated.context or {}).get("source")), "planner")

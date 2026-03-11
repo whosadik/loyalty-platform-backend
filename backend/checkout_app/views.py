@@ -27,6 +27,7 @@ from offers.services import get_or_assign_next_offer
 from offers.events import record_offer_event
 from roadmap_app.events import build_step_event_context, record_roadmap_event
 from roadmap_app.models import RoadmapEvent
+from roadmap_app.serializers import serialize_roadmap_step_snapshot
 from roadmap_app.services import match_completed_steps_for_purchase, update_roadmap_from_purchase
 
 from drf_spectacular.utils import OpenApiResponse, OpenApiExample, extend_schema, inline_serializer
@@ -343,11 +344,18 @@ class CheckoutView(APIView):
                     pass
 
             roadmap_ctx = None
+            next_roadmap_step = None
             try:
                 roadmap_result = update_roadmap_from_purchase(request.user, post_ctx)
                 roadmap_ctx = (roadmap_result or {}).get("roadmap_ctx")
+                next_roadmap_step = serialize_roadmap_step_snapshot(
+                    (roadmap_result or {}).get("next_missing_step"),
+                    category=(roadmap_result or {}).get("category"),
+                    plan_id=getattr((roadmap_result or {}).get("plan"), "id", None),
+                )
             except Exception:
                 roadmap_ctx = None
+                next_roadmap_step = None
 
             # Auto-assign next offer after successful checkout
             next_assignment = get_or_assign_next_offer(
@@ -408,6 +416,7 @@ class CheckoutView(APIView):
                 "new_tier": account.tier.name if account.tier else None,
                 "tier_upgraded": bool(account.tier and account.tier.name != tier_before),
                 "next_offer": next_offer_payload,
+                "next_roadmap_step": next_roadmap_step,
             }
 
             # сохраняем снимок результата для replay

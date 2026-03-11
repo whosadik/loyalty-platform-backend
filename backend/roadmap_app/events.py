@@ -39,11 +39,28 @@ def build_step_event_context(
 def _generated_step_source(step: RoadmapStep | None) -> str | None:
     why_items = [str(item).strip().lower() for item in _safe_list(getattr(step, "why", [])) if str(item).strip()]
     for item in why_items:
+        if "picked via ml planner" in item:
+            return "planner"
+        if "picked via planner fallback" in item:
+            return "planner_fallback"
+        if "picked via user state" in item:
+            return "user_state"
         if "picked via ml next_step" in item:
             return "ml_next_step"
         if "picked via rules" in item:
             return "rules"
     return None
+
+
+def _planner_context(plan: RoadmapPlan) -> dict[str, Any]:
+    planner = _safe_dict(_safe_dict(plan.meta).get("planner"))
+    return {
+        "mode": str(planner.get("mode") or ""),
+        "served": bool(planner.get("served")),
+        "decision": str(planner.get("decision") or ""),
+        "model_version": str(planner.get("model_version") or ""),
+        "selected_feature_set": str(planner.get("selected_feature_set") or ""),
+    }
 
 
 def build_plan_refresh_context(*, plan: RoadmapPlan, next_step: RoadmapStep | None) -> dict[str, Any]:
@@ -57,6 +74,7 @@ def build_plan_refresh_context(*, plan: RoadmapPlan, next_step: RoadmapStep | No
     ctx: dict[str, Any] = {
         "plan_id": int(plan.id),
         "category": str(plan.category),
+        "source": str(_safe_dict(plan.meta).get("source") or "roadmap_v1"),
         "steps_total": int(len(steps)),
         "missing_steps_count": int(missing_steps_count),
         "next_step_id": int(next_step.id) if next_step else None,
@@ -70,6 +88,7 @@ def build_plan_refresh_context(*, plan: RoadmapPlan, next_step: RoadmapStep | No
             "fallback_reason": ml.get("fallback_reason"),
             "disabled_reason": ml.get("disabled_reason"),
         },
+        "planner": _planner_context(plan),
     }
     refresh_caller = _safe_dict(plan.meta).get("context")
     if isinstance(refresh_caller, dict) and str(refresh_caller.get("refresh_caller") or "").strip():
@@ -84,6 +103,7 @@ def build_step_generated_context(*, plan: RoadmapPlan, step: RoadmapStep) -> dic
         "step_id": int(step.id),
         "step_index": int(step.step_index),
         "category": str(plan.category),
+        "plan_source": str(_safe_dict(plan.meta).get("source") or "roadmap_v1"),
         "product_type": str(step.product_type),
         "status": str(step.status),
         "recommended_product_id": int(step.recommended_product_id) if step.recommended_product_id else None,
@@ -96,6 +116,7 @@ def build_step_generated_context(*, plan: RoadmapPlan, step: RoadmapStep) -> dic
             "decision": str(ml.get("decision") or ""),
             "rollout_mode": str(ml.get("rollout_mode") or "none"),
         },
+        "planner": _planner_context(plan),
     }
     return ctx
 

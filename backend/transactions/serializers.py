@@ -41,6 +41,7 @@ class TransactionSnapshotMixin(serializers.Serializer):
     new_tier = serializers.SerializerMethodField()
     tier_upgraded = serializers.SerializerMethodField()
     next_offer = serializers.SerializerMethodField()
+    next_roadmap_step = serializers.SerializerMethodField()
 
     def _meta(self, obj: Transaction) -> dict:
         return obj.pricing_meta if isinstance(obj.pricing_meta, dict) else {}
@@ -119,6 +120,9 @@ class TransactionSnapshotMixin(serializers.Serializer):
     def get_next_offer(self, obj: Transaction):
         return self._meta(obj).get("next_offer")
 
+    def get_next_roadmap_step(self, obj: Transaction):
+        return self._meta(obj).get("next_roadmap_step")
+
 
 class TransactionItemSerializer(serializers.ModelSerializer):
     product_summary = serializers.SerializerMethodField()
@@ -160,6 +164,7 @@ class TransactionSerializer(TransactionSnapshotMixin, serializers.ModelSerialize
             "new_tier",
             "tier_upgraded",
             "next_offer",
+            "next_roadmap_step",
             "items",
         ]
         read_only_fields = [
@@ -185,6 +190,7 @@ class TransactionSerializer(TransactionSnapshotMixin, serializers.ModelSerialize
             "new_tier",
             "tier_upgraded",
             "next_offer",
+            "next_roadmap_step",
         ]
 
     def create(self, validated_data):

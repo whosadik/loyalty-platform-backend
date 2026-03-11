@@ -75,6 +75,24 @@ def _decision_from_ml(ml: dict[str, Any]) -> str:
     return "missing_ml_meta"
 
 
+def _decision_from_planner(planner: dict[str, Any]) -> str:
+    decision = str(planner.get("decision") or "").strip().lower()
+    if decision:
+        return decision
+    return "missing_planner_meta"
+
+
+def _plan_source_from_context(ctx: dict[str, Any]) -> str:
+    plan_source = str(ctx.get("plan_source") or "").strip().lower()
+    if plan_source:
+        return plan_source
+    source = str(ctx.get("source") or "").strip().lower()
+    if source in {"roadmap_planner_v1", "roadmap_v1"}:
+        return source
+    planner = _safe_dict(ctx.get("planner"))
+    return "roadmap_planner_v1" if bool(planner.get("served")) else "roadmap_v1"
+
+
 def _step_index_bucket(step_index: int | None) -> str:
     if step_index is None:
         return "__unknown__"
@@ -392,6 +410,22 @@ def _build_markdown(payload: dict[str, Any]) -> str:
         )
     )
     lines.append("")
+    lines.append("## 1h) Recommended Product Adherence By Plan Source")
+    lines.append(
+        _md_table(
+            [
+                "plan_source",
+                "next_step_with_recommendation",
+                "checkout_targeted_next_step",
+                "checkout_targeted_recommended_product",
+                "targeted_next_step_rate",
+                "recommended_adoption_rate",
+                "recommended_share_within_targeted",
+            ],
+            _adherence_rows(_safe_dict(adherence.get("by_plan_source"))),
+        )
+    )
+    lines.append("")
     lines.append("## 2) By Category")
     lines.append(
         _md_table(
@@ -463,6 +497,43 @@ def _build_markdown(payload: dict[str, Any]) -> str:
                 "gen_to_complete",
             ],
             _bucket_rows(_safe_dict(breakdowns.get("by_ml_decision")), include_plan_refresh=True),
+        )
+    )
+    lines.append("")
+    lines.append("## 5b) By Plan Source")
+    lines.append(
+        _md_table(
+            [
+                "plan_source",
+                "plans_refreshed",
+                "steps_generated",
+                "steps_exposed",
+                "steps_clicked",
+                "steps_completed",
+                "gen_to_exp",
+                "exp_to_click",
+                "exp_to_complete",
+                "gen_to_complete",
+            ],
+            _bucket_rows(_safe_dict(breakdowns.get("by_plan_source")), include_plan_refresh=True),
+        )
+    )
+    lines.append("")
+    lines.append("## 5c) By Generated Source")
+    lines.append(
+        _md_table(
+            [
+                "generated_source",
+                "steps_generated",
+                "steps_exposed",
+                "steps_clicked",
+                "steps_completed",
+                "gen_to_exp",
+                "exp_to_click",
+                "exp_to_complete",
+                "gen_to_complete",
+            ],
+            _bucket_rows(_safe_dict(breakdowns.get("by_generated_source")), include_plan_refresh=False),
         )
     )
     lines.append("")
@@ -571,17 +642,20 @@ class Command(BaseCommand):
 
             if event_type == RoadmapEvent.Type.PLAN_REFRESHED:
                 ml = _safe_dict(ctx.get("ml"))
+                planner = _safe_dict(ctx.get("planner"))
                 plan_instances.append(
                     {
                         "event_id": _to_int(row.get("id")),
                         "user_id": int(user_id),
                         "plan_id": _to_int(row.get("plan_id")) or _to_int(ctx.get("plan_id")),
                         "category": category_key or "__unknown__",
+                        "plan_source": _plan_source_from_context(ctx),
                         "generated_at": created_at,
                         "next_step_id": _to_int(ctx.get("next_step_id")),
                         "next_step_index": _to_int(ctx.get("next_step_index")),
                         "next_product_type": str(ctx.get("next_product_type") or "").strip().lower() or "__unknown__",
                         "ml_decision": _decision_from_ml(ml),
+                        "planner_decision": _decision_from_planner(planner),
                     }
                 )
                 continue
@@ -595,6 +669,7 @@ class Command(BaseCommand):
 
             if event_type == RoadmapEvent.Type.STEP_GENERATED:
                 ml = _safe_dict(ctx.get("ml"))
+                planner = _safe_dict(ctx.get("planner"))
                 event_id = _to_int(row.get("id"))
                 recommended_product_id = _to_int(ctx.get("recommended_product_id")) or _to_int(
                     row.get("step__recommended_product_id")
@@ -608,6 +683,7 @@ class Command(BaseCommand):
                         "step_id": int(step_id),
                         "generated_at": created_at,
                         "category": category_key or "__unknown__",
+                        "plan_source": _plan_source_from_context(ctx),
                         "step_index": _to_int(ctx.get("step_index")),
                         "step_index_bucket": _step_index_bucket(_to_int(ctx.get("step_index"))),
                         "product_type": str(ctx.get("product_type") or "").strip().lower() or "__unknown__",
@@ -616,6 +692,7 @@ class Command(BaseCommand):
                         "recommended_product_id": recommended_product_id,
                         "has_recommendation": bool(has_recommendation),
                         "ml_decision": _decision_from_ml(ml),
+                        "planner_decision": _decision_from_planner(planner),
                         "ml_rollout_mode": str(ml.get("rollout_mode") or "none").strip().lower() or "none",
                         "ml_rollout_selected": bool(ml.get("rollout_selected")),
                     }
@@ -758,10 +835,13 @@ class Command(BaseCommand):
         adherence_by_category: dict[str, dict[str, int]] = defaultdict(_new_adherence_bucket)
         adherence_by_step_bucket: dict[str, dict[str, int]] = defaultdict(_new_adherence_bucket)
         adherence_by_ml_decision: dict[str, dict[str, int]] = defaultdict(_new_adherence_bucket)
+        adherence_by_plan_source: dict[str, dict[str, int]] = defaultdict(_new_adherence_bucket)
         by_category: dict[str, dict[str, int]] = defaultdict(_new_bucket)
         by_step_index: dict[str, dict[str, int]] = defaultdict(_new_bucket)
         by_product_type: dict[str, dict[str, int]] = defaultdict(_new_bucket)
         by_ml_decision: dict[str, dict[str, int]] = defaultdict(_new_bucket)
+        by_plan_source: dict[str, dict[str, int]] = defaultdict(_new_bucket)
+        by_generated_source: dict[str, dict[str, int]] = defaultdict(_new_bucket)
         by_expose_source: dict[str, dict[str, int]] = defaultdict(_new_bucket)
 
         for item in plan_instances:
@@ -769,6 +849,7 @@ class Command(BaseCommand):
             by_ml_decision[str(item.get("ml_decision") or "missing_ml_meta")]["plans_refreshed"] += 1
         for item in analysis_plan_instances:
             by_category[str(item.get("category") or "__unknown__")]["plans_refreshed"] += 1
+            by_plan_source[str(item.get("plan_source") or "__unknown__")]["plans_refreshed"] += 1
             overall_analysis["plans_refreshed"] += 1
             if _to_int(item.get("next_step_id")) is not None:
                 next_step_only_raw["plans_refreshed"] += 1
@@ -816,6 +897,20 @@ class Command(BaseCommand):
             pt_bucket["steps_completed_after_exposure"] += int(bool(item.get("has_completed_after_exposure")))
             pt_bucket["steps_completed_after_generated"] += int(bool(item.get("has_completed_after_generated")))
 
+            plan_source_bucket = by_plan_source[str(item.get("plan_source") or "__unknown__")]
+            plan_source_bucket["steps_generated"] += 1
+            plan_source_bucket["steps_exposed"] += int(bool(item.get("has_exposed")))
+            plan_source_bucket["steps_clicked"] += int(bool(item.get("has_clicked_after_exposure")))
+            plan_source_bucket["steps_completed_after_exposure"] += int(bool(item.get("has_completed_after_exposure")))
+            plan_source_bucket["steps_completed_after_generated"] += int(bool(item.get("has_completed_after_generated")))
+
+            generated_source_bucket = by_generated_source[str(item.get("generated_source") or "__unknown__")]
+            generated_source_bucket["steps_generated"] += 1
+            generated_source_bucket["steps_exposed"] += int(bool(item.get("has_exposed")))
+            generated_source_bucket["steps_clicked"] += int(bool(item.get("has_clicked_after_exposure")))
+            generated_source_bucket["steps_completed_after_exposure"] += int(bool(item.get("has_completed_after_exposure")))
+            generated_source_bucket["steps_completed_after_generated"] += int(bool(item.get("has_completed_after_generated")))
+
             source_bucket = by_expose_source[str(item.get("first_expose_source") or "__not_exposed__")]
             source_bucket["steps_generated"] += 1
             source_bucket["steps_exposed"] += int(bool(item.get("has_exposed")))
@@ -842,18 +937,21 @@ class Command(BaseCommand):
                     adherence_by_category[str(item.get("category") or "__unknown__")]["next_step_with_recommendation"] += 1
                     adherence_by_step_bucket[_adherence_step_bucket(_to_int(item.get("step_index")))]["next_step_with_recommendation"] += 1
                     adherence_by_ml_decision[str(item.get("ml_decision") or "missing_ml_meta")]["next_step_with_recommendation"] += 1
+                    adherence_by_plan_source[str(item.get("plan_source") or "__unknown__")]["next_step_with_recommendation"] += 1
 
                     if bool(item.get("has_targeted_next_step_checkout")):
                         adherence_raw["checkout_targeted_next_step"] += 1
                         adherence_by_category[str(item.get("category") or "__unknown__")]["checkout_targeted_next_step"] += 1
                         adherence_by_step_bucket[_adherence_step_bucket(_to_int(item.get("step_index")))]["checkout_targeted_next_step"] += 1
                         adherence_by_ml_decision[str(item.get("ml_decision") or "missing_ml_meta")]["checkout_targeted_next_step"] += 1
+                        adherence_by_plan_source[str(item.get("plan_source") or "__unknown__")]["checkout_targeted_next_step"] += 1
 
                     if bool(item.get("has_recommended_product_checkout")):
                         adherence_raw["checkout_targeted_recommended_product"] += 1
                         adherence_by_category[str(item.get("category") or "__unknown__")]["checkout_targeted_recommended_product"] += 1
                         adherence_by_step_bucket[_adherence_step_bucket(_to_int(item.get("step_index")))]["checkout_targeted_recommended_product"] += 1
                         adherence_by_ml_decision[str(item.get("ml_decision") or "missing_ml_meta")]["checkout_targeted_recommended_product"] += 1
+                        adherence_by_plan_source[str(item.get("plan_source") or "__unknown__")]["checkout_targeted_recommended_product"] += 1
 
         overall_raw_final = _finalize_bucket(overall_raw)
         overall_analysis_final = _finalize_bucket(overall_analysis)
@@ -884,20 +982,24 @@ class Command(BaseCommand):
                 "by_category": {k: _finalize_adherence_bucket(v) for k, v in sorted(adherence_by_category.items())},
                 "by_step_bucket": {k: _finalize_adherence_bucket(v) for k, v in sorted(adherence_by_step_bucket.items())},
                 "by_ml_decision": {k: _finalize_adherence_bucket(v) for k, v in sorted(adherence_by_ml_decision.items())},
+                "by_plan_source": {k: _finalize_adherence_bucket(v) for k, v in sorted(adherence_by_plan_source.items())},
             },
             "breakdowns": {
                 "by_category": {k: _finalize_bucket(v) for k, v in sorted(by_category.items())},
                 "by_step_index": {k: _finalize_bucket(v) for k, v in sorted(by_step_index.items())},
                 "by_product_type": {k: _finalize_bucket(v) for k, v in sorted(by_product_type.items())},
                 "by_ml_decision": {k: _finalize_bucket(v) for k, v in sorted(by_ml_decision.items())},
+                "by_plan_source": {k: _finalize_bucket(v) for k, v in sorted(by_plan_source.items())},
+                "by_generated_source": {k: _finalize_bucket(v) for k, v in sorted(by_generated_source.items())},
                 "by_expose_source": {k: _finalize_bucket(v) for k, v in sorted(by_expose_source.items())},
             },
             "notes": [
                 "Read-only report: no DB writes, no runtime logic changes.",
                 "Step funnel is built from STEP_GENERATED instances and attributes exposed/clicked/completed only until the next STEP_GENERATED for the same step.",
-                "By category/step/product_type/expose_source breakdowns use analysis cohort; by_ml_decision always keeps missing_ml_meta separate.",
+                "By category/step/product_type/plan_source/generated_source/expose_source breakdowns use analysis cohort; by_ml_decision always keeps missing_ml_meta separate.",
                 "next_step_only uses PLAN_REFRESHED.next_step_id to isolate the active next-step funnel per refresh.",
                 "recommended_product_adherence uses next_step_only generated instances with has_recommendation=true and STEP_COMPLETED.matched_by to separate product-type completion from exact recommended_product_id adoption.",
+                "plan_source and planner-aware slices come from PLAN_REFRESHED / STEP_GENERATED context and distinguish roadmap_planner_v1 from roadmap_v1 when telemetry is present.",
                 "steps_completed_after_generated can be higher than steps_completed_after_exposure when purchases happen without a tracked exposure in the same generated-instance window.",
             ],
         }
