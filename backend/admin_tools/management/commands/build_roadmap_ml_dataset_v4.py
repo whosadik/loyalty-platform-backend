@@ -22,9 +22,11 @@ from catalog.models import Product
 from roadmap_app.content_features import (
     ALL_CATEGORICAL_FEATURES,
     ALL_NUMERIC_FEATURES,
+    CHAIN_TRANSITION_NUMERIC_FEATURES,
     build_base_content_features,
     build_candidate_catalog_summaries,
     build_candidate_content_features,
+    build_chain_transition_features,
     product_signature,
     profile_signature,
 )
@@ -91,6 +93,52 @@ def _float_or_zero(value: Any) -> float:
         return float(value)
     except Exception:
         return 0.0
+
+
+def _chain_distance(category: str, from_type: str, to_type: str) -> int:
+    chain = [str(x).strip().lower() for x in (RULE_CHAIN_BY_CATEGORY.get(str(category)) or []) if str(x).strip()]
+    pos = {token: idx for idx, token in enumerate(chain)}
+    from_pos = pos.get(str(from_type or "").strip().lower())
+    to_pos = pos.get(str(to_type or "").strip().lower())
+    if from_pos is None or to_pos is None:
+        return -99
+    return int(to_pos - from_pos)
+
+
+def _episode_sample_weight(
+    *,
+    category: str,
+    label: str,
+    label_source: str,
+    label_matched_by: str,
+    last1_product_type: str,
+) -> float:
+    weight = 1.0
+    source = str(label_source or "none").strip().lower()
+    matched_by = str(label_matched_by or "__none__").strip().lower()
+    label_norm = str(label or "__none__").strip().lower()
+    last1_norm = str(last1_product_type or "__none__").strip().lower()
+    category_norm = str(category or "").strip().lower()
+
+    if source == "step_completed_event":
+        weight *= 1.15
+        if matched_by == "recommended_product_id":
+            weight *= 1.10
+        elif matched_by == "semantic_content_match":
+            weight *= 1.05
+    elif source == "future_transaction":
+        weight *= 0.80
+    elif source == "none":
+        weight *= 0.90
+
+    if category_norm == "haircare" and source == "future_transaction":
+        dist = _chain_distance(category_norm, last1_norm, label_norm)
+        if label_norm == last1_norm:
+            weight *= 0.75
+        elif dist != -99 and dist <= 0:
+            weight *= 0.85
+
+    return round(float(max(0.30, min(2.00, weight))), 6)
 
 
 def _repo_root() -> Path:
@@ -664,7 +712,7 @@ class Command(BaseCommand):
 
             last_product_types: list[str] = []
             last_categories: list[str] = []
-            last_slot_values: list[str] = []
+            recent_candidate_tokens: list[str] = []
             slot_counter: Counter[str] = Counter()
             owned_counts_all: Counter[tuple[str, str]] = Counter()
             candidate_owned_counter: Counter[str] = Counter()
@@ -698,6 +746,8 @@ class Command(BaseCommand):
                     else:
                         candidate_key = item_type
                     if candidate_key:
+                        if len(recent_candidate_tokens) < 5:
+                            recent_candidate_tokens.append(candidate_key)
                         candidate_owned_counter[candidate_key] += qty
                         candidate_last_seen_at.setdefault(candidate_key, ts)
                     if last_ts_in_category is None:
@@ -714,8 +764,6 @@ class Command(BaseCommand):
                     slot_value = str(row.get("slot") or "")
                     if slot_value in SLOTS:
                         slot_counter[slot_value] += qty
-                        if len(last_slot_values) < 5:
-                            last_slot_values.append(slot_value)
 
             days_since_last_purchase = -1
             if last_ts_in_category is not None:
@@ -769,7 +817,6 @@ class Command(BaseCommand):
                     **feature_base,
                 }
             )
-            recent_candidate_tokens = last_slot_values if category == "fragrance" else last_product_types
             candidate_days_since_last_seen_map: dict[str, int] = {}
             for candidate_key, candidate_ts in candidate_last_seen_at.items():
                 candidate_days_since_last_seen_map[str(candidate_key)] = int(
@@ -831,11 +878,25 @@ class Command(BaseCommand):
                 if str(k).strip()
             }
             anchor_sig = product_signature(aux.get("anchor_item"))
+            anchor_chain_token = (
+                recent_candidate_tokens[0]
+                if recent_candidate_tokens
+                else str(anchor_sig.get("product_type") or "").strip().lower()
+            )
+            last1_chain_token = recent_candidate_tokens[0] if recent_candidate_tokens else ""
+            last2_chain_token = recent_candidate_tokens[1] if len(recent_candidate_tokens) > 1 else ""
             if label != "__none__" and label not in set(candidates):
                 label_outside_candidates += 1
             pos_map = {token: idx for idx, token in enumerate(RULE_CHAIN_BY_CATEGORY.get(category) or [])}
             for candidate in candidates:
                 seen_count_last5 = int(sum(1 for token in recent_candidate_tokens if token == candidate))
+                sample_weight = _episode_sample_weight(
+                    category=category,
+                    label=label,
+                    label_source=str(ep.get("label_source") or "none"),
+                    label_matched_by=str(ep.get("label_matched_by") or "__none__"),
+                    last1_product_type=last1_chain_token,
+                )
                 row = {
                     "episode_id": int(ep["episode_id"]),
                     "group_id": int(ep["group_id"]),
@@ -859,12 +920,22 @@ class Command(BaseCommand):
                     "candidate_days_since_last_seen_in_category": int(
                         candidate_days_since_last_seen_map.get(candidate, -1)
                     ),
+                    "sample_weight": float(sample_weight),
                 }
                 row.update(
                     build_candidate_content_features(
                         candidate_catalog_summaries.get((category, str(candidate))),
                         profile_map.get(int(ep["user_id"])),
                         anchor_sig,
+                    )
+                )
+                row.update(
+                    build_chain_transition_features(
+                        rules_chain=RULE_CHAIN_BY_CATEGORY.get(category) or [],
+                        candidate_type=str(candidate),
+                        anchor_product_type=anchor_chain_token,
+                        last1_product_type=last1_chain_token,
+                        last2_product_type=last2_chain_token,
                     )
                 )
                 for key, value in ep.items():
@@ -956,6 +1027,7 @@ class Command(BaseCommand):
             "candidate_owned_count_in_category",
             "candidate_seen_90d_count_in_category",
             "candidate_days_since_last_seen_in_category",
+            *CHAIN_TRANSITION_NUMERIC_FEATURES,
             *owned_feature_columns,
             *ALL_NUMERIC_FEATURES,
         ]
@@ -996,6 +1068,20 @@ class Command(BaseCommand):
             "feature_columns": feature_columns,
             "categorical_features": categorical_features,
             "numeric_features": numeric_features,
+            "sample_weight_policy": {
+                "step_completed_event_weight": 1.15,
+                "recommended_product_id_multiplier": 1.10,
+                "semantic_content_match_multiplier": 1.05,
+                "future_transaction_weight": 0.80,
+                "none_weight": 0.90,
+                "haircare_future_repeat_multiplier": 0.75,
+                "haircare_future_backward_multiplier": 0.85,
+            },
+            "sample_weight_summary": {
+                "min": round(float(df["sample_weight"].min()), 6),
+                "max": round(float(df["sample_weight"].max()), 6),
+                "mean": round(float(df["sample_weight"].mean()), 6),
+            },
             "baselines": baselines,
             "leakage_assertions": {
                 "features_only_use_transactions_lte_t0": True,

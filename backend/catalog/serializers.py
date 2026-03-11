@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from .new_fields import created_at_is_new
 from .models import Product
 from .product_metrics import (
     get_product_brand_slug,
@@ -16,6 +17,7 @@ class ProductSerializer(serializers.ModelSerializer):
     discount = serializers.SerializerMethodField()
     has_discount = serializers.SerializerMethodField()
     points_earned = serializers.SerializerMethodField()
+    is_new = serializers.SerializerMethodField()
     rating = serializers.SerializerMethodField()
     reviews_count = serializers.SerializerMethodField()
 
@@ -34,6 +36,9 @@ class ProductSerializer(serializers.ModelSerializer):
 
     def get_points_earned(self, obj: Product) -> int:
         return get_product_points_earned(obj)
+
+    def get_is_new(self, obj: Product) -> bool:
+        return created_at_is_new(obj.created_at)
 
     def get_rating(self, obj: Product) -> float | None:
         return get_product_rating(obj)
@@ -72,6 +77,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "discount",
             "has_discount",
             "points_earned",
+            "is_new",
             "rating",
             "reviews_count",
             "created_at",

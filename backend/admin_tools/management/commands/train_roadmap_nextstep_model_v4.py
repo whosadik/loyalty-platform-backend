@@ -249,6 +249,7 @@ def _build_logistic_bundle(
     *,
     X_train: "pd.DataFrame",
     y_train: "np.ndarray",
+    sample_weight_train: "np.ndarray | None",
     categorical_features: list[str],
     numeric_features: list[str],
     params: dict[str, Any],
@@ -285,7 +286,10 @@ def _build_logistic_bundle(
         max_iter=int(params.get("max_iter", 500)),
     )
     X_train_model = preprocessor.fit_transform(X_train)
-    model.fit(X_train_model, y_train)
+    if sample_weight_train is not None:
+        model.fit(X_train_model, y_train, sample_weight=sample_weight_train)
+    else:
+        model.fit(X_train_model, y_train)
     return {"model": model, "preprocessor": preprocessor, "model_type": "logistic_pairwise"}
 
 
@@ -304,9 +308,11 @@ def _build_ranker_bundle(
     X_train: "pd.DataFrame",
     y_train: "np.ndarray",
     group_train: list[int],
+    sample_weight_train: "np.ndarray | None",
     X_val: "pd.DataFrame",
     y_val: "np.ndarray",
     group_val: list[int],
+    sample_weight_val: "np.ndarray | None",
     categorical_features: list[str],
     params: dict[str, Any],
     seed: int,
@@ -325,8 +331,10 @@ def _build_ranker_bundle(
             X_train,
             y_train,
             group=group_train,
+            sample_weight=sample_weight_train,
             eval_set=[(X_val, y_val)],
             eval_group=[group_val],
+            eval_sample_weight=[sample_weight_val] if sample_weight_val is not None else None,
             eval_at=[1, 3, 5],
             categorical_feature=[col for col in categorical_features if col in X_train.columns],
         )
@@ -335,8 +343,20 @@ def _build_ranker_bundle(
     from catboost import CatBoostRanker, Pool
 
     cat_idx = [int(X_train.columns.get_loc(col)) for col in categorical_features if col in X_train.columns]
-    train_pool = Pool(X_train, y_train, group_id=_dense_group_ids(group_train), cat_features=cat_idx)
-    val_pool = Pool(X_val, y_val, group_id=_dense_group_ids(group_val), cat_features=cat_idx)
+    train_pool = Pool(
+        X_train,
+        y_train,
+        group_id=_dense_group_ids(group_train),
+        cat_features=cat_idx,
+        weight=sample_weight_train,
+    )
+    val_pool = Pool(
+        X_val,
+        y_val,
+        group_id=_dense_group_ids(group_val),
+        cat_features=cat_idx,
+        weight=sample_weight_val,
+    )
     model = CatBoostRanker(
         loss_function="YetiRankPairwise",
         eval_metric="NDCG:top=5",
@@ -791,6 +811,16 @@ class Command(BaseCommand):
             group_train = _group_sizes(fit_train_df)
             y_val = val_df["y"].astype(int).to_numpy()
             group_val = _group_sizes(val_df)
+            sample_weight_train = (
+                fit_train_df["sample_weight"].astype(float).to_numpy()
+                if "sample_weight" in fit_train_df.columns
+                else None
+            )
+            sample_weight_val = (
+                val_df["sample_weight"].astype(float).to_numpy()
+                if "sample_weight" in val_df.columns
+                else None
+            )
 
             best_score: tuple[float, float, float] | None = None
             best_bundle: dict[str, Any] | None = None
@@ -811,6 +841,7 @@ class Command(BaseCommand):
                     bundle = _build_logistic_bundle(
                         X_train=X_train,
                         y_train=y_train,
+                        sample_weight_train=sample_weight_train,
                         categorical_features=cat_cols,
                         numeric_features=num_cols,
                         params=params,
@@ -822,9 +853,11 @@ class Command(BaseCommand):
                         X_train=X_train,
                         y_train=y_train,
                         group_train=group_train,
+                        sample_weight_train=sample_weight_train,
                         X_val=X_val,
                         y_val=y_val,
                         group_val=group_val,
+                        sample_weight_val=sample_weight_val,
                         categorical_features=cat_cols,
                         params=params,
                         seed=seed,
@@ -941,6 +974,7 @@ class Command(BaseCommand):
             "owned_feature_columns": dataset_meta.get("owned_feature_columns") or [],
             "owned_feature_map": dataset_meta.get("owned_feature_map") or {},
             "selected_feature_set": selected_feature_set,
+            "sample_weight_used": bool("sample_weight" in work.columns),
         }
 
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -969,6 +1003,8 @@ class Command(BaseCommand):
             "numeric_features": selected["numeric_features"],
             "temperature": float(round(selected["temperature"], 6)),
             "negative_samples_per_episode": int(max_negatives_per_episode),
+            "sample_weight_used": bool("sample_weight" in work.columns),
+            "sample_weight_policy": dataset_meta.get("sample_weight_policy") or {},
             "selected_params": selected["params"],
             "candidate_types_by_category": dataset_meta.get("candidate_types_by_category") or {},
             "metrics_train": selected["metrics_train"],

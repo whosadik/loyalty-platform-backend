@@ -24,6 +24,7 @@ from roadmap_app.content_features import (
     build_base_content_features,
     build_candidate_catalog_summaries,
     build_candidate_content_features,
+    build_chain_transition_features,
     product_signature,
     profile_signature,
 )
@@ -421,6 +422,18 @@ def _safe_dict(value: Any) -> dict[str, Any]:
 
 def _safe_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _ordered_unique_tokens(values: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        token = str(value or "").strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
 
 
 def _normalized_category_set(value: Any) -> set[str]:
@@ -880,11 +893,52 @@ def _group_softmax(values: list[float], temperature: float) -> list[float]:
     return [float(x) for x in probs.tolist()]
 
 
+def _apply_runtime_progression_bias(
+    *,
+    category: str,
+    rows: list[dict[str, Any]],
+    score_list: list[float],
+    days_since_last_purchase: int,
+    has_context_anchor: bool,
+) -> tuple[list[float], list[float]]:
+    if not bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_RUNTIME_BIAS_ENABLED", False)):
+        return score_list, [0.0 for _ in score_list]
+    if str(category or "").strip().lower() != "haircare":
+        return score_list, [0.0 for _ in score_list]
+    if not rows or len(rows) != len(score_list):
+        return score_list, [0.0 for _ in score_list]
+
+    effective_days = 0 if has_context_anchor else int(days_since_last_purchase)
+    if effective_days < 0 or effective_days > 3:
+        return score_list, [0.0 for _ in score_list]
+
+    freshness = 1.0 if has_context_anchor else max(0.0, min(1.0, (3.0 - min(float(effective_days), 3.0)) / 3.0))
+    if freshness <= 0.0:
+        return score_list, [0.0 for _ in score_list]
+
+    adjusted_scores: list[float] = []
+    biases: list[float] = []
+    for row, base_score in zip(rows, score_list):
+        bias = 0.0
+        if int(row.get("candidate_is_immediate_followup_to_anchor", 0) or 0) == 1:
+            bias += 0.14 * freshness
+
+        if int(row.get("candidate_is_same_as_anchor", 0) or 0) == 1:
+            bias -= 0.14 * freshness
+        elif int(row.get("candidate_is_before_anchor", 0) or 0) == 1:
+            bias -= 0.08 * freshness
+
+        adjusted_scores.append(float(base_score) + float(bias))
+        biases.append(float(round(bias, 6)))
+    return adjusted_scores, biases
+
+
 def _predict_with_v4_artifact(
     *,
     artifact: dict[str, Any],
     user_id: int,
     category: str,
+    context_product_ids: list[int] | None,
     candidate_types: list[str] | None,
 ) -> list[dict[str, Any]]:
     if pd is None:
@@ -947,6 +1001,30 @@ def _predict_with_v4_artifact(
 
     profile_row = CustomerProfile.objects.filter(user_id=int(user_id)).first()
     profile_sig = profile_signature(profile_row)
+    context_rows = list(
+        Product.objects.filter(id__in=[int(x) for x in (context_product_ids or []) if str(x).strip()])
+        .values(
+            "id",
+            "category",
+            "product_type",
+            "concerns",
+            "actives",
+            "flags",
+            "supported_skin_types",
+            "attrs",
+            "ingredients_inci",
+            "raw_meta",
+        )
+    )
+    context_by_id = {int(row["id"]): row for row in context_rows}
+    ordered_context_products: list[dict[str, Any]] = []
+    for raw_id in context_product_ids or []:
+        try:
+            row = context_by_id.get(int(raw_id))
+        except Exception:
+            row = None
+        if row:
+            ordered_context_products.append(dict(row))
 
     items: list[dict[str, Any]] = []
     for row in tx_rows:
@@ -1038,6 +1116,38 @@ def _predict_with_v4_artifact(
     if last_ts_in_category is not None:
         days_since_last_purchase = int((now_utc.date() - last_ts_in_category.date()).days)
 
+    context_products_for_category: list[dict[str, Any]] = []
+    for row in ordered_context_products:
+        item_category = str(row.get("category") or "").strip().lower()
+        item_type = str(row.get("product_type") or "").strip().lower()
+        if item_category != category:
+            continue
+        slot_value = ""
+        if item_category == "fragrance":
+            slot_value = slot_of_fragrance(
+                _safe_dict(row.get("attrs")),
+                raw_meta=_safe_dict(row.get("raw_meta")),
+            )
+        context_products_for_category.append(
+            {
+                "category": item_category,
+                "product_type": item_type,
+                "concerns": row.get("concerns") if isinstance(row.get("concerns"), list) else [],
+                "actives": row.get("actives") if isinstance(row.get("actives"), list) else [],
+                "flags": row.get("flags") if isinstance(row.get("flags"), list) else [],
+                "supported_skin_types": (
+                    row.get("supported_skin_types")
+                    if isinstance(row.get("supported_skin_types"), list)
+                    else []
+                ),
+                "attrs": _safe_dict(row.get("attrs")),
+                "ingredients_inci": str(row.get("ingredients_inci") or ""),
+                "raw_meta": _safe_dict(row.get("raw_meta")),
+                "slot": slot_value,
+            }
+        )
+    has_context_anchor = bool(context_products_for_category)
+
     base: dict[str, Any] = {
         "category": category,
         "month_of_year": int(now_utc.month),
@@ -1098,15 +1208,29 @@ def _predict_with_v4_artifact(
             )
         )
     )
-    anchor_sig = product_signature(anchor_item)
+    anchor_source_item = context_products_for_category[0] if context_products_for_category else anchor_item
+    anchor_sig = product_signature(anchor_source_item)
 
-    recent_candidate_tokens = [
+    context_candidate_tokens = [
+        str(row.get("slot") or "") if category == "fragrance" else str(row.get("product_type") or "")
+        for row in context_products_for_category
+        if str((row.get("slot") or "") if category == "fragrance" else (row.get("product_type") or "")).strip()
+    ]
+    history_candidate_tokens = [
         token
         for token in ([str(row.get("slot") or "") for row in reversed(items) if str(row["category"]) == "fragrance"]
         if category == "fragrance"
         else [str(row["product_type"]) for row in reversed(items) if str(row["category"]) == category])
         if token
-    ][:5]
+    ]
+    recent_candidate_tokens = _ordered_unique_tokens(context_candidate_tokens + history_candidate_tokens)[:5]
+    anchor_chain_token = (
+        recent_candidate_tokens[0]
+        if recent_candidate_tokens
+        else str(anchor_sig.get("product_type") or "").strip().lower()
+    )
+    last1_chain_token = recent_candidate_tokens[0] if recent_candidate_tokens else ""
+    last2_chain_token = recent_candidate_tokens[1] if len(recent_candidate_tokens) > 1 else ""
 
     rows: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -1130,6 +1254,15 @@ def _predict_with_v4_artifact(
                 candidate_catalog_summaries.get((category, candidate)),
                 profile_sig,
                 anchor_sig,
+            )
+        )
+        row.update(
+            build_chain_transition_features(
+                rules_chain=rules_chain,
+                candidate_type=candidate,
+                anchor_product_type=anchor_chain_token,
+                last1_product_type=last1_chain_token,
+                last2_product_type=last2_chain_token,
             )
         )
         for col in feature_columns:
@@ -1192,6 +1325,13 @@ def _predict_with_v4_artifact(
             else:
                 score_list.append(float(row))
 
+    score_list, runtime_biases = _apply_runtime_progression_bias(
+        category=category,
+        rows=rows,
+        score_list=score_list,
+        days_since_last_purchase=days_since_last_purchase,
+        has_context_anchor=has_context_anchor,
+    )
     temperature = _to_float(artifact.get("temperature", 1.0)) or 1.0
     prob_list = _group_softmax(score_list, temperature)
 
@@ -1203,6 +1343,7 @@ def _predict_with_v4_artifact(
                 "product_type": candidate,
                 "score": float(prob_list[idx]),
                 "raw_score": float(score_list[idx]),
+                "runtime_bias": float(runtime_biases[idx]) if idx < len(runtime_biases) else 0.0,
                 "model_type": model_type,
             }
         )
@@ -1250,6 +1391,7 @@ def predict_next_product_types_for_model_path(
             artifact=model,
             user_id=user_id,
             category=category,
+            context_product_ids=context_ids,
             candidate_types=candidate_types,
         )
         return _normalize_predictions(raw_rows)

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import tempfile
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from catalog.models import Product
@@ -190,6 +192,83 @@ class ProductSearchApiTests(APITestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.data), 1)
         self.assertEqual(resp.data[0]["brand"], "DermaLab")
+
+    def test_search_filters_products_by_category(self):
+        resp = self.client.get("/api/products/?search=skincare")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]["category"], Product.Category.SKINCARE)
+
+    def test_products_list_supports_opt_in_pagination(self):
+        for index in range(15):
+            Product.objects.create(
+                name=f"Paged Product {index}",
+                brand="Paged Brand",
+                price=Decimal("90.00"),
+                category=Product.Category.SKINCARE,
+                product_type="serum",
+                concerns=[],
+                attrs={},
+                actives=[],
+                flags=[],
+                supported_skin_types=[],
+                strength=Product.Strength.LOW,
+                in_stock=True,
+            )
+
+        resp = self.client.get("/api/products/?page=1&page_size=12")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsInstance(resp.data, dict)
+        self.assertEqual(resp.data["count"], 18)
+        self.assertEqual(len(resp.data["results"]), 12)
+        self.assertIsNotNone(resp.data["next"])
+
+    def test_products_list_without_page_keeps_legacy_array_shape(self):
+        resp = self.client.get("/api/products/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIsInstance(resp.data, list)
+
+    def test_new_query_param_returns_only_recent_products(self):
+        fresh = Product.objects.create(
+            name="Fresh Serum",
+            brand="Fresh Lab",
+            price=Decimal("99.00"),
+            category=Product.Category.SKINCARE,
+            product_type="serum",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+        old = Product.objects.create(
+            name="Old Mask",
+            brand="Archive Lab",
+            price=Decimal("89.00"),
+            category=Product.Category.SKINCARE,
+            product_type="mask",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+        Product.objects.filter(id=old.id).update(created_at=timezone.now() - timedelta(days=90))
+        old.refresh_from_db()
+
+        resp = self.client.get("/api/products/?new=true")
+        self.assertEqual(resp.status_code, 200)
+
+        names = {item["name"] for item in resp.data}
+        self.assertIn(fresh.name, names)
+        self.assertNotIn(old.name, names)
+
+        fresh_payload = next(item for item in resp.data if item["name"] == fresh.name)
+        self.assertTrue(fresh_payload["is_new"])
 
 
 class ProductSaleApiTests(APITestCase):

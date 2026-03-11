@@ -40,10 +40,25 @@ class FakeLGBMRanker:
         self.kwargs = kwargs
         self.columns: list[str] = []
 
-    def fit(self, X, y, group=None, eval_set=None, eval_group=None, eval_at=None, categorical_feature=None):
+    def fit(
+        self,
+        X,
+        y,
+        group=None,
+        sample_weight=None,
+        eval_set=None,
+        eval_group=None,
+        eval_sample_weight=None,
+        eval_at=None,
+        categorical_feature=None,
+    ):
         self.columns = list(X.columns)
         self.group = list(group or [])
+        self.sample_weight = list(sample_weight) if sample_weight is not None else []
         self.eval_group = list((eval_group or [])[0] or []) if eval_group else []
+        self.eval_sample_weight = (
+            list(eval_sample_weight[0]) if eval_sample_weight and eval_sample_weight[0] is not None else []
+        )
         self.categorical_feature = list(categorical_feature or [])
         return self
 
@@ -162,6 +177,7 @@ class RoadmapNextStepV4DatasetTests(TestCase):
             self.assertEqual(str(sample["last1_product_type"]), "cleanser")
             self.assertEqual(int(sample["tx_count_90d_category"]), 1)
             self.assertEqual(str(sample["label"]), "serum")
+            self.assertLess(float(sample["sample_weight"]), 1.0)
 
     def test_v4_dataset_groups_and_none_label_present(self):
         t0_positive = timezone.now() - timedelta(days=40)
@@ -252,6 +268,43 @@ class RoadmapNextStepV4DatasetTests(TestCase):
             self.assertGreater(float(serum_row["candidate_profile_goal_match_rate"]), 0.0)
             self.assertGreater(float(serum_row["candidate_anchor_shared_inci_rate"]), 0.0)
 
+    def test_v4_dataset_includes_chain_transition_features(self):
+        t0 = timezone.now() - timedelta(days=22)
+        self._create_exposed(t0)
+        self._create_tx(self.p_cleanser, t0 - timedelta(days=1), "v4-chain-1")
+        self._create_tx(self.p_serum, t0 + timedelta(days=1), "v4-chain-2")
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            serum_row = frame[frame["candidate_type"].astype(str) == "serum"].iloc[0]
+            cleanser_row = frame[frame["candidate_type"].astype(str) == "cleanser"].iloc[0]
+
+            self.assertIn("candidate_distance_from_anchor", frame.columns)
+            self.assertIn("candidate_is_immediate_followup_to_anchor", frame.columns)
+            self.assertEqual(int(serum_row["anchor_position_in_chain"]), 0)
+            self.assertEqual(int(serum_row["last1_position_in_chain"]), 0)
+            self.assertEqual(int(serum_row["candidate_distance_from_anchor"]), 1)
+            self.assertEqual(int(serum_row["candidate_distance_from_last1"]), 1)
+            self.assertEqual(int(serum_row["candidate_is_immediate_followup_to_anchor"]), 1)
+            self.assertEqual(int(serum_row["candidate_is_after_anchor"]), 1)
+            self.assertEqual(int(cleanser_row["candidate_distance_from_anchor"]), 0)
+            self.assertEqual(int(cleanser_row["candidate_is_same_as_anchor"]), 1)
+
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertIn(
+                "candidate_is_immediate_followup_to_anchor",
+                list(metadata.get("numeric_features") or []),
+            )
+
     def test_v4_dataset_prefers_step_completed_semantic_label_over_transaction_fallback(self):
         t0 = timezone.now() - timedelta(days=18)
         self._create_exposed(t0)
@@ -283,6 +336,7 @@ class RoadmapNextStepV4DatasetTests(TestCase):
             self.assertEqual(str(sample["label"]), "serum")
             self.assertEqual(str(sample["label_source"]), "step_completed_event")
             self.assertEqual(str(sample["label_matched_by"]), "semantic_content_match")
+            self.assertGreater(float(sample["sample_weight"]), 1.0)
 
             metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(
@@ -293,6 +347,7 @@ class RoadmapNextStepV4DatasetTests(TestCase):
                 int((metadata.get("label_matched_by_distribution") or {}).get("semantic_content_match", 0)),
                 1,
             )
+            self.assertIn("sample_weight_policy", metadata)
 
 
 class RoadmapNextStepV4AdapterTests(TestCase):
@@ -385,8 +440,18 @@ class RoadmapNextStepV4AdapterTests(TestCase):
             def predict(self, X):
                 self.columns = list(X.columns)
                 self.seen = X.copy()
-                score = pd.to_numeric(X["candidate_profile_goal_match_rate"], errors="coerce").fillna(0.0) * 10.0
-                score = score + pd.to_numeric(X["candidate_anchor_shared_inci_rate"], errors="coerce").fillna(0.0)
+                score = (
+                    pd.to_numeric(
+                        X["candidate_is_immediate_followup_to_anchor"], errors="coerce"
+                    ).fillna(0.0)
+                    * 10.0
+                )
+                score = score + pd.to_numeric(
+                    X["candidate_profile_goal_match_rate"], errors="coerce"
+                ).fillna(0.0)
+                score = score + pd.to_numeric(
+                    X["candidate_anchor_shared_inci_rate"], errors="coerce"
+                ).fillna(0.0)
                 return score.to_numpy()
 
         dummy = DummyArtifactModel()
@@ -400,6 +465,8 @@ class RoadmapNextStepV4AdapterTests(TestCase):
                 "candidate_type",
                 "profile_skin_type",
                 "anchor_product_type",
+                "candidate_distance_from_anchor",
+                "candidate_is_immediate_followup_to_anchor",
                 "candidate_profile_goal_match_rate",
                 "candidate_anchor_shared_inci_rate",
             ],
@@ -410,6 +477,8 @@ class RoadmapNextStepV4AdapterTests(TestCase):
                 "anchor_product_type",
             ],
             "numeric_features": [
+                "candidate_distance_from_anchor",
+                "candidate_is_immediate_followup_to_anchor",
                 "candidate_profile_goal_match_rate",
                 "candidate_anchor_shared_inci_rate",
             ],
@@ -434,11 +503,185 @@ class RoadmapNextStepV4AdapterTests(TestCase):
         self.assertEqual([row["candidate_type"] for row in rows], ["serum", "cleanser"])
         self.assertIn("candidate_profile_goal_match_rate", dummy.columns)
         self.assertIn("candidate_anchor_shared_inci_rate", dummy.columns)
+        self.assertIn("candidate_distance_from_anchor", dummy.columns)
+        self.assertIn("candidate_is_immediate_followup_to_anchor", dummy.columns)
         self.assertIsNotNone(dummy.seen)
         serum_row = dummy.seen[dummy.seen["candidate_type"].astype(str) == "serum"].iloc[0]
         self.assertEqual(str(serum_row["profile_skin_type"]), "dry")
         self.assertEqual(str(serum_row["anchor_product_type"]), "cleanser")
+        self.assertEqual(int(serum_row["candidate_distance_from_anchor"]), 1)
+        self.assertEqual(int(serum_row["candidate_is_immediate_followup_to_anchor"]), 1)
         self.assertGreater(float(serum_row["candidate_profile_goal_match_rate"]), 0.0)
+
+    def test_v4_artifact_runtime_uses_context_product_ids_as_anchor(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_context_anchor_u1", password="pass12345")
+        shampoo = Product.objects.create(
+            name="Context Shampoo",
+            brand="B",
+            price=Decimal("11.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        conditioner = Product.objects.create(
+            name="Context Conditioner",
+            brand="B",
+            price=Decimal("13.00"),
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Context Mask",
+            brand="B",
+            price=Decimal("17.00"),
+            category="haircare",
+            product_type="hair_mask",
+            in_stock=True,
+        )
+        tx = Transaction.objects.create(
+            user=user,
+            total_amount=Decimal("11.00"),
+            channel="web",
+            idempotency_key="artifact-context-anchor-1",
+        )
+        TransactionItem.objects.create(
+            transaction=tx,
+            product=shampoo,
+            quantity=1,
+            unit_price=Decimal("11.00"),
+        )
+
+        class DummyArtifactModel:
+            def __init__(self):
+                self.seen = None
+
+            def predict(self, X):
+                self.seen = X.copy()
+                return pd.Series([0.0] * len(X), index=X.index, dtype=float).to_numpy()
+
+        dummy = DummyArtifactModel()
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": dummy,
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "anchor_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "anchor_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["shampoo", "conditioner", "hair_mask"]},
+            "rules_chain_by_category": {"haircare": ["shampoo", "conditioner", "hair_mask"]},
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"shampoo": 0.5, "conditioner": 0.3, "hair_mask": 0.2}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+            predict_next_product_types(
+                user=user,
+                context_product_ids=[conditioner.id],
+                category="haircare",
+                candidate_types=["shampoo", "conditioner", "hair_mask"],
+            )
+
+        self.assertIsNotNone(dummy.seen)
+        self.assertEqual(set(dummy.seen["anchor_product_type"].astype(str).tolist()), {"conditioner"})
+
+    def test_v4_artifact_runtime_applies_haircare_progression_bias(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_haircare_bias_u1", password="pass12345")
+        shampoo = Product.objects.create(
+            name="Bias Shampoo",
+            brand="B",
+            price=Decimal("11.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Bias Conditioner",
+            brand="B",
+            price=Decimal("13.00"),
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+        tx = Transaction.objects.create(
+            user=user,
+            total_amount=Decimal("11.00"),
+            channel="web",
+            idempotency_key="artifact-haircare-bias-1",
+        )
+        TransactionItem.objects.create(
+            transaction=tx,
+            product=shampoo,
+            quantity=1,
+            unit_price=Decimal("11.00"),
+        )
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                is_shampoo = X["candidate_type"].astype(str) == "shampoo"
+                score = pd.Series([0.52] * len(X), index=X.index, dtype=float)
+                score.loc[is_shampoo] = 0.60
+                score.loc[~is_shampoo] = 0.55
+                return score.to_numpy()
+
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "anchor_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "anchor_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["shampoo", "conditioner"]},
+            "rules_chain_by_category": {"haircare": ["shampoo", "conditioner"]},
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"shampoo": 0.5, "conditioner": 0.5}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_RUNTIME_BIAS_ENABLED=True,
+        ), patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+            rows = predict_next_product_types(
+                user=user,
+                context_product_ids=[],
+                category="haircare",
+                candidate_types=["shampoo", "conditioner"],
+            )
+
+        self.assertEqual([row["candidate_type"] for row in rows], ["conditioner", "shampoo"])
 
 
 class RoadmapNextStepV4EvalSourceTests(TestCase):
