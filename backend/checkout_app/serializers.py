@@ -46,4 +46,11 @@ class CheckoutCommitResponseSerializer(serializers.Serializer):
     points_earned = serializers.IntegerField()
     new_balance = serializers.IntegerField()
     tier = serializers.CharField(required=False, allow_null=True)
+    new_tier = serializers.CharField(required=False, allow_null=True)
+    tier_upgraded = serializers.BooleanField(required=False)
     next_offer = CheckoutNextOfferSerializer(required=False, allow_null=True)
+
+
+class CheckoutLastResponseSerializer(serializers.Serializer):
+    ok = serializers.BooleanField()
+    checkout = serializers.JSONField(allow_null=True)

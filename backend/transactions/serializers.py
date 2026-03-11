@@ -7,19 +7,185 @@ from catalog.serializers import ProductSerializer
 from .models import CartItem, OwnedProduct, Transaction, TransactionItem, WishlistItem
 
 
+def _coerce_decimal(value, default: str = "0.00") -> Decimal:
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return Decimal(default)
+
+
+def _coerce_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+class TransactionSnapshotMixin(serializers.Serializer):
+    transaction_id = serializers.SerializerMethodField()
+    type = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
+    status = serializers.SerializerMethodField()
+    gross_total = serializers.SerializerMethodField()
+    discount_amount = serializers.SerializerMethodField()
+    net_total = serializers.SerializerMethodField()
+    offer_applied = serializers.SerializerMethodField()
+    offer_assignment_id = serializers.SerializerMethodField()
+    target = serializers.SerializerMethodField()
+    eligible_total = serializers.SerializerMethodField()
+    points_earned = serializers.SerializerMethodField()
+    points_redeemed = serializers.SerializerMethodField()
+    points_change = serializers.SerializerMethodField()
+    new_balance = serializers.SerializerMethodField()
+    tier_after = serializers.SerializerMethodField()
+    new_tier = serializers.SerializerMethodField()
+    tier_upgraded = serializers.SerializerMethodField()
+    next_offer = serializers.SerializerMethodField()
+
+    def _meta(self, obj: Transaction) -> dict:
+        return obj.pricing_meta if isinstance(obj.pricing_meta, dict) else {}
+
+    def _gross_total(self, obj: Transaction) -> Decimal:
+        meta = self._meta(obj)
+        return _coerce_decimal(meta.get("gross_total", obj.total_amount or "0.00"))
+
+    def _net_total(self, obj: Transaction) -> Decimal:
+        meta = self._meta(obj)
+        return _coerce_decimal(meta.get("net_total", obj.total_amount or "0.00"))
+
+    def get_transaction_id(self, obj: Transaction) -> str:
+        return f"TXN-{int(obj.id):08d}"
+
+    def get_type(self, obj: Transaction) -> str:
+        return str(self._meta(obj).get("type") or "purchase")
+
+    def get_description(self, obj: Transaction) -> str:
+        item_count = sum(int(item.quantity or 0) for item in obj.items.all())
+        if item_count <= 1:
+            return "Покупка"
+        return f"Покупка, {item_count} товара"
+
+    def get_status(self, obj: Transaction) -> str:
+        return str(self._meta(obj).get("status") or "completed")
+
+    def get_gross_total(self, obj: Transaction) -> str:
+        return str(self._gross_total(obj))
+
+    def get_discount_amount(self, obj: Transaction) -> str:
+        meta = self._meta(obj)
+        return str(_coerce_decimal(meta.get("discount_amount", "0.00")))
+
+    def get_net_total(self, obj: Transaction) -> str:
+        return str(self._net_total(obj))
+
+    def get_offer_applied(self, obj: Transaction) -> bool:
+        return bool(self._meta(obj).get("offer_applied", False))
+
+    def get_offer_assignment_id(self, obj: Transaction):
+        return self._meta(obj).get("offer_assignment_id")
+
+    def get_target(self, obj: Transaction):
+        return self._meta(obj).get("target")
+
+    def get_eligible_total(self, obj: Transaction) -> str:
+        meta = self._meta(obj)
+        return str(_coerce_decimal(meta.get("eligible_total", self._gross_total(obj))))
+
+    def get_points_earned(self, obj: Transaction) -> int:
+        return _coerce_int(self._meta(obj).get("points_earned"), default=0)
+
+    def get_points_redeemed(self, obj: Transaction) -> int:
+        return _coerce_int(self._meta(obj).get("points_redeemed"), default=0)
+
+    def get_points_change(self, obj: Transaction) -> int:
+        return self.get_points_earned(obj) - self.get_points_redeemed(obj)
+
+    def get_new_balance(self, obj: Transaction):
+        value = self._meta(obj).get("new_balance")
+        if value is None:
+            return None
+        return _coerce_int(value, default=0)
+
+    def get_tier_after(self, obj: Transaction):
+        meta = self._meta(obj)
+        return meta.get("new_tier") or meta.get("tier")
+
+    def get_new_tier(self, obj: Transaction):
+        return self.get_tier_after(obj)
+
+    def get_tier_upgraded(self, obj: Transaction) -> bool:
+        return bool(self._meta(obj).get("tier_upgraded", False))
+
+    def get_next_offer(self, obj: Transaction):
+        return self._meta(obj).get("next_offer")
+
+
 class TransactionItemSerializer(serializers.ModelSerializer):
+    product_summary = serializers.SerializerMethodField()
+
+    def get_product_summary(self, obj: TransactionItem):
+        return ProductSummarySerializer(obj.product).data
+
     class Meta:
         model = TransactionItem
-        fields = ["product", "quantity", "unit_price"]
+        fields = ["product", "quantity", "unit_price", "product_summary"]
 
 
-class TransactionSerializer(serializers.ModelSerializer):
+class TransactionSerializer(TransactionSnapshotMixin, serializers.ModelSerializer):
     items = TransactionItemSerializer(many=True)
 
     class Meta:
         model = Transaction
-        fields = ["id", "created_at", "total_amount", "channel", "items"]
-        read_only_fields = ["id", "created_at", "total_amount"]
+        fields = [
+            "id",
+            "transaction_id",
+            "created_at",
+            "type",
+            "description",
+            "status",
+            "channel",
+            "total_amount",
+            "gross_total",
+            "discount_amount",
+            "net_total",
+            "offer_applied",
+            "offer_assignment_id",
+            "target",
+            "eligible_total",
+            "points_earned",
+            "points_redeemed",
+            "points_change",
+            "new_balance",
+            "tier_after",
+            "new_tier",
+            "tier_upgraded",
+            "next_offer",
+            "items",
+        ]
+        read_only_fields = [
+            "id",
+            "transaction_id",
+            "created_at",
+            "type",
+            "description",
+            "status",
+            "total_amount",
+            "gross_total",
+            "discount_amount",
+            "net_total",
+            "offer_applied",
+            "offer_assignment_id",
+            "target",
+            "eligible_total",
+            "points_earned",
+            "points_redeemed",
+            "points_change",
+            "new_balance",
+            "tier_after",
+            "new_tier",
+            "tier_upgraded",
+            "next_offer",
+        ]
 
     def create(self, validated_data):
         items_data = validated_data.pop("items", [])

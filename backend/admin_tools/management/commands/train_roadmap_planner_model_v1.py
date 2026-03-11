@@ -79,6 +79,27 @@ def _popularity_baseline_metrics(df: "pd.DataFrame") -> tuple[dict[str, Any], di
     return _evaluate_scores(df=df, raw_scores=raw_scores, temperature=1.0)
 
 
+def _candidate_popularity_priors(df: "pd.DataFrame") -> dict[str, dict[str, float]]:
+    if df.empty or "candidate_popularity_in_train" not in df.columns:
+        return {}
+    priors: dict[str, dict[str, float]] = {}
+    grouped = (
+        df.groupby(["category", "candidate_type"], dropna=False)["candidate_popularity_in_train"]
+        .median()
+        .reset_index()
+    )
+    for row in grouped.itertuples(index=False):
+        category = str(getattr(row, "category", "") or "").strip().lower()
+        candidate_type = str(getattr(row, "candidate_type", "") or "").strip().lower()
+        if not category or not candidate_type:
+            continue
+        priors.setdefault(category, {})[candidate_type] = round(
+            float(getattr(row, "candidate_popularity_in_train", 0.0) or 0.0),
+            6,
+        )
+    return priors
+
+
 def _build_eval_markdown(report: dict[str, Any]) -> str:
     lines: list[str] = []
     lines.append("# Roadmap Planner v1 Evaluation")
@@ -226,6 +247,7 @@ class Command(BaseCommand):
             max_negatives_per_episode=max_negatives_per_episode,
             seed=seed,
         )
+        candidate_popularity_priors = _candidate_popularity_priors(train_df_full)
         if estimator_name in {"lightgbm", "catboost"}:
             fit_train_df = sampled_train_df[_positive_group_mask(sampled_train_df)].sort_values(["episode_id", "candidate_type"]).reset_index(drop=True)
             if fit_train_df.empty:
@@ -402,6 +424,7 @@ class Command(BaseCommand):
             "trained_at_utc": trained_at,
             "model_version": model_version,
             "candidate_types_by_category": dataset_meta.get("candidate_types_by_category") or {},
+            "candidate_popularity_priors": candidate_popularity_priors,
             "selected_feature_set": selected_feature_set,
         }
 
@@ -434,6 +457,7 @@ class Command(BaseCommand):
             "negative_samples_per_episode": int(max_negatives_per_episode),
             "selected_params": selected["params"],
             "candidate_types_by_category": dataset_meta.get("candidate_types_by_category") or {},
+            "candidate_popularity_priors": candidate_popularity_priors,
             "metrics_train": selected["metrics_train"],
             "metrics_val": selected["metrics_val"],
             "metrics_test": selected["metrics_test"],
@@ -454,6 +478,7 @@ class Command(BaseCommand):
             "selected_params": selected["params"],
             "temperature": float(round(selected["temperature"], 6)),
             "dataset_path": dataset_path,
+            "candidate_popularity_priors": candidate_popularity_priors,
             "train_rows": int(len(train_df_full)),
             "val_rows": int(len(val_df)),
             "test_rows": int(len(test_df)),

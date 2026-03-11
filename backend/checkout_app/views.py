@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from decimal import Decimal
 from datetime import timedelta
@@ -12,9 +12,14 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.exceptions import ValidationError
 
-from checkout_app.serializers import CheckoutCommitResponseSerializer, CheckoutRequestSerializer
+from checkout_app.serializers import (
+    CheckoutCommitResponseSerializer,
+    CheckoutLastResponseSerializer,
+    CheckoutRequestSerializer,
+)
 from checkout_app.pricing import Line, apply_offer_to_totals, calc_gross
-from transactions.models import Transaction, TransactionItem, OwnedProduct
+from transactions.models import CartItem, OwnedProduct, Transaction, TransactionItem
+from transactions.serializers import TransactionSerializer
 from offers.models import OfferAssignment, OfferEvent
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from catalog.models import Product
@@ -118,6 +123,7 @@ class CheckoutView(APIView):
             # lock loyalty account for safe redeem/earn
             account = _ensure_account(request.user)
             account = LoyaltyAccount.objects.select_for_update().get(id=account.id)
+            tier_before = account.tier.name if account.tier else None
 
             # 1) create transaction + items
             try:
@@ -399,10 +405,29 @@ class CheckoutView(APIView):
                 "points_earned": points_earned,
                 "new_balance": account.points_balance,
                 "tier": account.tier.name if account.tier else None,
+                "new_tier": account.tier.name if account.tier else None,
+                "tier_upgraded": bool(account.tier and account.tier.name != tier_before),
                 "next_offer": next_offer_payload,
             }
 
             # сохраняем снимок результата для replay
+            cart_items = {
+                item.product_id: item
+                for item in CartItem.objects.select_for_update().filter(
+                    user=request.user,
+                    product_id__in=purchased_ids,
+                )
+            }
+            for purchased_item in created_items:
+                cart_item = cart_items.get(purchased_item.product_id)
+                if not cart_item:
+                    continue
+                remaining_quantity = int(cart_item.quantity or 0) - int(purchased_item.quantity or 0)
+                if remaining_quantity <= 0:
+                    cart_item.delete()
+                    continue
+                cart_item.quantity = remaining_quantity
+                cart_item.save(update_fields=["quantity", "updated_at"])
             Transaction.objects.filter(id=txn.id).update(pricing_meta=payload)
 
             # AUDIT: checkout created
@@ -436,6 +461,26 @@ class CheckoutView(APIView):
             pass
 
         return Response({"ok": True, **payload}, status=201)
+
+
+class CheckoutLastView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Checkout"],
+        description="Read-only snapshot of the latest checkout for the authenticated user.",
+        responses={200: CheckoutLastResponseSerializer},
+    )
+    def get(self, request):
+        txn = (
+            Transaction.objects.filter(user=request.user)
+            .prefetch_related("items__product")
+            .order_by("-created_at", "-id")
+            .first()
+        )
+        if not txn:
+            return Response({"ok": True, "checkout": None})
+        return Response({"ok": True, "checkout": TransactionSerializer(txn).data})
 
 class CheckoutPreviewView(APIView):
     permission_classes = [IsAuthenticated]
@@ -593,3 +638,4 @@ class CheckoutPreviewView(APIView):
             "balance_after_estimated": new_balance_est,
             "tier": account.tier.name if account.tier else None,
         })
+

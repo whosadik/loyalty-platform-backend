@@ -14,6 +14,7 @@ from ml_logic.recommender import recommend as rec_recommend
 from offers.services import _build_rec_profile, _cooccurrence_90d, _load_products_for_recs
 from roadmap_app.events import emit_plan_refresh_events
 from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
+from roadmap_app.ml_planner import generate_planner_chain, planner_runtime_mode
 from roadmap_app.ml_next_step import (
     predict_next_product_types,
     v4_category_staged_rollout_status,
@@ -462,6 +463,20 @@ def _category_owned(user, category: str) -> tuple[list[OwnedProduct], set[int], 
     owned_types_ordered = _unique([str(row.product.product_type) for row in owned_rows if row.product_id])
     owned_types_set = set(owned_types_ordered)
     return owned_rows, owned_product_ids, owned_types_ordered, owned_types_set
+
+
+def _planner_candidate_universe(
+    *,
+    category: str,
+    purchased_types: list[str],
+    owned_types_ordered: list[str],
+) -> list[str]:
+    if category == "fragrance":
+        purchased_slots = [x for x in purchased_types if x in FRAGRANCE_SLOTS]
+        owned_slots = [x for x in owned_types_ordered if x in FRAGRANCE_SLOTS]
+        return _unique(purchased_slots + FRAGRANCE_DEFAULT_CHAIN + owned_slots)
+    rules = CATEGORY_RULES[category]
+    return _unique(purchased_types + owned_types_ordered + rules["base"] + rules["optional"])
 
 
 def _build_chain(
@@ -931,14 +946,53 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         purchased_types = _unique(_purchased_fragrance_slots(post_ctx))
     purchased_types_set = set(purchased_types)
     context_product_ids = _context_product_ids(user, post_ctx, limit=50)
-
-    chain, source_by_type, ml_predictions, ml_runtime = _build_chain(
-        user=user,
-        category=category,
-        purchased_types=purchased_types,
-        owned_types_ordered=owned_types_ordered,
-        context_product_ids=context_product_ids,
+    refresh_caller = (
+        "update_roadmap_from_purchase"
+        if (post_ctx and ((post_ctx.get("product_ids") or []) or (post_ctx.get("categories") or [])))
+        else "refresh_roadmap"
     )
+
+    planner_mode = planner_runtime_mode()
+    planner_result: dict[str, Any] | None = None
+    planner_served = False
+    if planner_mode in {"shadow", "serve"}:
+        rules = CATEGORY_RULES[category]
+        planner_result = generate_planner_chain(
+            user=user,
+            category=category,
+            candidate_types=_planner_candidate_universe(
+                category=category,
+                purchased_types=purchased_types,
+                owned_types_ordered=owned_types_ordered,
+            ),
+            purchased_types=purchased_types,
+            owned_types_ordered=owned_types_ordered,
+            min_steps=int(rules["min_steps"]),
+            max_steps=int(rules["max_steps"]),
+            refresh_caller=refresh_caller,
+        )
+
+    if planner_mode == "serve" and planner_result and planner_result.get("decision") == "model_used":
+        chain = list(planner_result.get("chain") or [])
+        source_by_type = dict(planner_result.get("source_by_type") or {})
+        ml_predictions = []
+        ml_runtime = {
+            "decision": "disabled",
+            "fallback_reason": None,
+            "disabled_reason": "planner_enabled",
+            "guard": None,
+            "category_guard": None,
+            **_default_rollout_meta(),
+        }
+        planner_served = True
+    else:
+        chain, source_by_type, ml_predictions, ml_runtime = _build_chain(
+            user=user,
+            category=category,
+            purchased_types=purchased_types,
+            owned_types_ordered=owned_types_ordered,
+            context_product_ids=context_product_ids,
+        )
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
     prof = _build_rec_profile(cp)
@@ -950,6 +1004,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     for product_type in chain:
         source_meta = source_by_type.get(product_type, {"source": "rules", "score": None})
         source_is_ml = source_meta.get("source") == "ml_next_step"
+        source_is_planner = source_meta.get("source") == "ml_planner"
+        source_is_state_prefix = source_meta.get("source") == "state_prefix"
         score_val = source_meta.get("score")
 
         status = _status_for_type(product_type, owned_types_set, purchased_types_set)
@@ -989,7 +1045,12 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
                 status = RoadmapStep.Status.MISSING
 
         why: list[str] = []
-        why.append("picked via ML next_step" if source_is_ml else "picked via rules")
+        if source_is_planner:
+            why.append("picked via ML planner")
+        elif source_is_state_prefix:
+            why.append("picked via user state")
+        else:
+            why.append("picked via ML next_step" if source_is_ml else "picked via rules")
         if status in {RoadmapStep.Status.OWNED, RoadmapStep.Status.COMPLETED}:
             why.append("already owned")
         elif recommended_product_id:
@@ -1033,9 +1094,21 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     else:
         model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or "")
         ml_mode = "legacy"
+    planner_meta = {
+        "mode": planner_mode,
+        "served": bool(planner_served),
+        "decision": str((planner_result or {}).get("decision") or "disabled"),
+        "fallback_reason": (planner_result or {}).get("fallback_reason"),
+        "disabled_reason": (planner_result or {}).get("disabled_reason"),
+        "model_path": str((planner_result or {}).get("model_path") or ""),
+        "model_version": str((planner_result or {}).get("model_version") or ""),
+        "selected_feature_set": str((planner_result or {}).get("selected_feature_set") or ""),
+        "chain": list((planner_result or {}).get("chain") or []),
+        "trace": list((planner_result or {}).get("trace") or [])[:10],
+    }
     meta = {
         "generation_state": "ok",
-        "source": "roadmap_v1",
+        "source": "roadmap_planner_v1" if planner_served else "roadmap_v1",
         "category": category,
         "generated_at": now.isoformat(),
         "ml": {
@@ -1057,12 +1130,9 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "mode": ml_mode,
             "model_path": model_path,
         },
+        "planner": planner_meta,
         "context": {
-            "refresh_caller": (
-                "update_roadmap_from_purchase"
-                if (post_ctx and ((post_ctx.get("product_ids") or []) or (post_ctx.get("categories") or [])))
-                else "refresh_roadmap"
-            ),
+            "refresh_caller": refresh_caller,
             "post_ctx_categories": (post_ctx or {}).get("categories") or [],
             "post_ctx_product_ids": (post_ctx or {}).get("product_ids") or [],
             "context_product_ids_count": len(context_product_ids),

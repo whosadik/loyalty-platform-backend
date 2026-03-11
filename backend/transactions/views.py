@@ -26,7 +26,11 @@ class TransactionViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Transaction.objects.filter(user=self.request.user).order_by("-created_at")
+        return (
+            Transaction.objects.filter(user=self.request.user)
+            .prefetch_related("items__product")
+            .order_by("-created_at", "-id")
+        )
 
 
 @extend_schema_view(
