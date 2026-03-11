@@ -12,11 +12,14 @@ from django.utils import timezone
 from catalog.models import Product
 from ml_logic.recommender import recommend as rec_recommend
 from offers.services import _build_rec_profile, _cooccurrence_90d, _load_products_for_recs
+from roadmap_app.content_features import product_signature, profile_signature
 from roadmap_app.events import emit_plan_refresh_events
 from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
 from roadmap_app.ml_planner import generate_planner_chain, planner_runtime_mode
 from roadmap_app.ml_next_step import (
+    nextstep_model_artifact_summary,
     predict_next_product_types,
+    predict_next_product_types_for_model_path,
     v4_category_staged_rollout_status,
     v4_min_lift_guard_status,
 )
@@ -451,6 +454,186 @@ def _purchased_fragrance_slots(post_ctx: dict[str, Any] | None) -> list[str]:
         .values("attrs", "raw_meta")
     )
     return _fragrance_slots_from_products_qs(rows)
+
+
+def _post_ctx_products(post_ctx: dict[str, Any] | None) -> list[dict[str, Any]]:
+    product_ids = [int(x) for x in (post_ctx or {}).get("product_ids", []) if str(x).strip()]
+    if not product_ids:
+        return []
+    rows = list(
+        Product.objects.filter(id__in=product_ids).values(
+            "id",
+            "category",
+            "product_type",
+            "concerns",
+            "actives",
+            "flags",
+            "supported_skin_types",
+            "attrs",
+            "ingredients_inci",
+            "raw_meta",
+        )
+    )
+    by_id = {int(row["id"]): row for row in rows}
+    out: list[dict[str, Any]] = []
+    for pid in product_ids:
+        row = by_id.get(int(pid))
+        if row:
+            out.append(row)
+    return out
+
+
+def _profile_match_reasons(profile_sig: dict[str, Any], product_sig: dict[str, Any]) -> list[str]:
+    category = str(product_sig.get("category") or "")
+    reasons: list[str] = []
+
+    if category == "skincare":
+        supported = set(product_sig.get("supported_skin_types") or [])
+        skin_type = str(profile_sig.get("skin_type") or "__none__")
+        if supported and skin_type != "__none__" and skin_type in supported:
+            reasons.append("skin_type")
+        if set(product_sig.get("concerns") or []).intersection(set(profile_sig.get("goals") or [])):
+            reasons.append("goals")
+        return reasons
+
+    if category == "haircare":
+        for key in ["hair_type", "scalp_type", "hair_thickness"]:
+            if str(profile_sig.get(key) or "__none__") != "__none__" and str(profile_sig.get(key)) == str(product_sig.get(key)):
+                reasons.append(key)
+        if set(product_sig.get("concerns") or []).intersection(set(profile_sig.get("hair_concerns") or [])):
+            reasons.append("hair_concerns")
+        return reasons
+
+    if category == "makeup":
+        if str(product_sig.get("finish") or "__none__") in set(profile_sig.get("makeup_finish_pref") or []):
+            reasons.append("finish")
+        if str(product_sig.get("coverage") or "__none__") in set(profile_sig.get("makeup_coverage_pref") or []):
+            reasons.append("coverage")
+        for key, profile_key in [
+            ("undertone", "makeup_undertone"),
+            ("tone_family", "makeup_tone_family"),
+        ]:
+            if str(profile_sig.get(profile_key) or "__none__") != "__none__" and str(profile_sig.get(profile_key)) == str(product_sig.get(key)):
+                reasons.append(key)
+        if set(product_sig.get("concerns") or []).intersection(set(profile_sig.get("makeup_concerns") or [])):
+            reasons.append("makeup_concerns")
+        return reasons
+
+    if category == "fragrance":
+        if str(product_sig.get("scent_family") or "__none__") in set(profile_sig.get("fragrance_liked_families") or []):
+            reasons.append("scent_family")
+        if str(product_sig.get("intensity") or "__none__") == str(profile_sig.get("fragrance_intensity_pref") or "__none__"):
+            if str(product_sig.get("intensity") or "__none__") != "__none__":
+                reasons.append("intensity")
+        if set(product_sig.get("notes") or []).intersection(set(profile_sig.get("fragrance_liked_notes") or [])):
+            reasons.append("notes")
+    return reasons
+
+
+def _semantic_completion_match_meta(
+    *,
+    user,
+    step: RoadmapStep,
+    purchased_products: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not step.recommended_product_id or not purchased_products:
+        return None
+
+    recommended_row = (
+        Product.objects.filter(id=step.recommended_product_id)
+        .values(
+            "id",
+            "category",
+            "product_type",
+            "concerns",
+            "actives",
+            "flags",
+            "supported_skin_types",
+            "attrs",
+            "ingredients_inci",
+            "raw_meta",
+        )
+        .first()
+    )
+    if not recommended_row:
+        return None
+
+    profile_sig = profile_signature(CustomerProfile.objects.filter(user=user).first())
+    recommended_sig = product_signature(recommended_row)
+    step_product_type = str(step.product_type or "").strip().lower()
+
+    best_meta: dict[str, Any] | None = None
+    best_score = 0.0
+
+    for product in purchased_products:
+        purchased_sig = product_signature(product)
+        if str(purchased_sig.get("category") or "") != str(recommended_sig.get("category") or ""):
+            continue
+        if step_product_type and str(purchased_sig.get("product_type") or "") != step_product_type:
+            continue
+
+        shared_concerns = sorted(
+            set(recommended_sig.get("concerns") or []).intersection(set(purchased_sig.get("concerns") or []))
+        )[:6]
+        shared_actives = sorted(
+            set(recommended_sig.get("actives") or []).intersection(set(purchased_sig.get("actives") or []))
+        )[:6]
+        shared_inci_tokens = sorted(
+            set(recommended_sig.get("inci_tokens") or []).intersection(set(purchased_sig.get("inci_tokens") or []))
+        )[:6]
+        attr_matches = [
+            field
+            for field in [
+                "hair_type",
+                "scalp_type",
+                "hair_thickness",
+                "finish",
+                "coverage",
+                "undertone",
+                "tone_family",
+                "scent_family",
+                "intensity",
+            ]
+            if str(recommended_sig.get(field) or "__none__") != "__none__"
+            and str(recommended_sig.get(field) or "") == str(purchased_sig.get(field) or "")
+        ]
+        profile_reasons = _profile_match_reasons(profile_sig, purchased_sig)
+        evidence_count = (
+            len(shared_concerns)
+            + len(shared_actives)
+            + len(shared_inci_tokens)
+            + len(attr_matches)
+            + len(profile_reasons)
+        )
+        if evidence_count <= 0:
+            continue
+
+        score = (
+            1.0
+            + 0.35 * len(shared_concerns)
+            + 0.25 * len(shared_actives)
+            + 0.05 * len(shared_inci_tokens)
+            + 0.20 * len(attr_matches)
+            + 0.20 * len(profile_reasons)
+        )
+        if score <= best_score:
+            continue
+        best_score = float(score)
+        best_meta = {
+            "recommended_product_id": int(recommended_row["id"]),
+            "purchased_product_id": int(product["id"]),
+            "purchased_product_type": str(product.get("product_type") or ""),
+            "semantic_score": round(float(score), 4),
+            "shared_concerns": shared_concerns,
+            "shared_actives": shared_actives,
+            "shared_inci_tokens": shared_inci_tokens,
+            "attribute_matches": attr_matches,
+            "profile_match_reasons": profile_reasons,
+        }
+
+    if best_meta and float(best_meta.get("semantic_score") or 0.0) >= 1.25:
+        return best_meta
+    return None
 
 
 def _category_owned(user, category: str) -> tuple[list[OwnedProduct], set[int], list[str], set[str]]:
@@ -1098,6 +1281,31 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     else:
         model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or "")
         ml_mode = "legacy"
+    nextstep_artifact = nextstep_model_artifact_summary(model_path)
+    shadow_model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH", "") or "").strip()
+    shadow_enabled = bool(use_v4 and shadow_model_path and shadow_model_path != model_path)
+    shadow_reason = "disabled"
+    shadow_predictions: list[dict[str, Any]] = []
+    shadow_artifact = None
+    if shadow_enabled:
+        shadow_reason = "ok"
+        shadow_artifact = nextstep_model_artifact_summary(shadow_model_path)
+        shadow_predictions = predict_next_product_types_for_model_path(
+            shadow_model_path,
+            user=user,
+            context_product_ids=context_product_ids,
+            category=category,
+            candidate_types=chain,
+        )
+        if not shadow_predictions:
+            shadow_reason = "no_predictions_or_model_unavailable"
+    elif not use_v4:
+        shadow_reason = "shadow_supported_for_v4_only"
+    elif not shadow_model_path:
+        shadow_reason = "shadow_not_configured"
+    else:
+        shadow_reason = "shadow_same_as_active"
+
     planner_meta = {
         "mode": planner_mode,
         "served": bool(planner_served),
@@ -1133,6 +1341,16 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "partial_match_step_index": ml_runtime.get("partial_match_step_index"),
             "mode": ml_mode,
             "model_path": model_path,
+            "model_version": str((nextstep_artifact or {}).get("model_version") or ""),
+            "selected_feature_set": str((nextstep_artifact or {}).get("selected_feature_set") or ""),
+            "shadow": {
+                "enabled": bool(shadow_enabled),
+                "reason": shadow_reason,
+                "model_path": shadow_model_path,
+                "model_version": str((shadow_artifact or {}).get("model_version") or ""),
+                "selected_feature_set": str((shadow_artifact or {}).get("selected_feature_set") or ""),
+                "predictions": shadow_predictions[:10],
+            },
         },
         "planner": planner_meta,
         "context": {
@@ -1246,6 +1464,12 @@ def match_completed_steps_for_purchase(user, post_ctx: dict[str, Any] | None) ->
     }
     purchased_by_category = _post_ctx_types_by_category(post_ctx)
     purchased_fragrance_slots = set(_purchased_fragrance_slots(post_ctx))
+    purchased_products = _post_ctx_products(post_ctx)
+    purchased_products_by_category: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for product in purchased_products:
+        category_key = str(product.get("category") or "").strip().lower()
+        if category_key:
+            purchased_products_by_category[category_key].append(product)
 
     out: list[dict[str, Any]] = []
     for category in categories:
@@ -1257,14 +1481,44 @@ def match_completed_steps_for_purchase(user, post_ctx: dict[str, Any] | None) ->
             continue
 
         matched_by = None
+        match_meta: dict[str, Any] = {}
         if step.recommended_product_id and int(step.recommended_product_id) in purchased_ids:
             matched_by = "recommended_product_id"
+            match_meta = {
+                "recommended_product_id": int(step.recommended_product_id),
+                "purchased_product_id": int(step.recommended_product_id),
+                "purchased_product_type": str(step.product_type or ""),
+            }
         elif category == "fragrance":
             if step.product_type in purchased_fragrance_slots:
                 matched_by = "fragrance_slot"
+                match_meta = {"purchased_slot": str(step.product_type or "")}
         else:
             if step.product_type in set(purchased_by_category.get(category, [])):
-                matched_by = "product_type"
+                semantic_meta = _semantic_completion_match_meta(
+                    user=user,
+                    step=step,
+                    purchased_products=purchased_products_by_category.get(category, []),
+                )
+                if semantic_meta:
+                    matched_by = "semantic_content_match"
+                    match_meta = semantic_meta
+                else:
+                    matched_by = "product_type"
+                    purchased_product = next(
+                        (
+                            product
+                            for product in purchased_products_by_category.get(category, [])
+                            if str(product.get("product_type") or "").strip().lower()
+                            == str(step.product_type or "").strip().lower()
+                        ),
+                        None,
+                    )
+                    if purchased_product:
+                        match_meta = {
+                            "purchased_product_id": int(purchased_product["id"]),
+                            "purchased_product_type": str(purchased_product.get("product_type") or ""),
+                        }
 
         if matched_by:
             out.append(
@@ -1273,6 +1527,7 @@ def match_completed_steps_for_purchase(user, post_ctx: dict[str, Any] | None) ->
                     "plan": plan,
                     "step": step,
                     "matched_by": matched_by,
+                    "match_meta": match_meta,
                 }
             )
     return out

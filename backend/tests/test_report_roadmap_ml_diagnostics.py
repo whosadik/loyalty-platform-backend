@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from io import StringIO
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -308,3 +309,64 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         policy_a = self._policy_row(payload_1, "Policy A - current")
         policy_b = self._policy_row(payload_1, "Policy B - makeup partial")
         self.assertGreater(float(policy_b["step_completion_lift"] or 0.0), float(policy_a["step_completion_lift"] or 0.0))
+
+    def test_report_includes_active_and_candidate_artifact_inventory(self):
+        nextstep_active = {
+            "model_path": "/models/nextstep-active/model.pkl",
+            "model_version": "nextstep_active_v1",
+            "selected_feature_set": "full",
+            "exists": True,
+            "metrics_test": {"ndcg_at_5": 0.62, "recall_at_1": 0.34},
+            "runtime_guard": {"passed": True},
+        }
+        nextstep_candidate = {
+            "model_path": "/models/nextstep-candidate/model.pkl",
+            "model_version": "nextstep_semantic_v2",
+            "selected_feature_set": "full",
+            "exists": True,
+            "metrics_test": {"ndcg_at_5": 0.68, "recall_at_1": 0.39},
+            "runtime_guard": {"passed": True},
+        }
+        planner_active = {
+            "model_path": "/models/planner-active/model.pkl",
+            "model_version": "planner_active_v1",
+            "selected_feature_set": "baseline_only",
+            "exists": True,
+            "metrics_test": {"ndcg_at_5": 0.88, "recall_at_1": 0.74},
+            "planner_guard": {"passed": True},
+        }
+        planner_candidate = {
+            "model_path": "/models/planner-candidate/model.pkl",
+            "model_version": "planner_semantic_v2",
+            "selected_feature_set": "full",
+            "exists": True,
+            "metrics_test": {"ndcg_at_5": 0.90, "recall_at_1": 0.71},
+            "planner_guard": {"passed": False},
+        }
+
+        with patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.nextstep_model_artifact_summary",
+            side_effect=[nextstep_active, nextstep_candidate],
+        ), patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.planner_model_artifact_summary",
+            side_effect=[planner_active, planner_candidate],
+        ):
+            payload = self._run_report_json(
+                categories="skincare",
+                nextstep_candidate_model_path="/models/nextstep-candidate/model.pkl",
+                planner_candidate_model_path="/models/planner-candidate/model.pkl",
+            )
+
+        self.assertEqual(
+            payload["artifacts"]["nextstep"]["active"]["model_version"],
+            "nextstep_active_v1",
+        )
+        self.assertEqual(
+            payload["artifacts"]["nextstep"]["candidate"]["model_version"],
+            "nextstep_semantic_v2",
+        )
+        self.assertEqual(
+            payload["artifacts"]["planner"]["active"]["selected_feature_set"],
+            "baseline_only",
+        )
+        self.assertFalse(bool(payload["artifacts"]["planner"]["candidate"]["planner_guard"]["passed"]))

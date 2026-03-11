@@ -71,6 +71,7 @@ def build_plan_refresh_context(*, plan: RoadmapPlan, next_step: RoadmapStep | No
         if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
     )
     ml = _safe_dict(_safe_dict(plan.meta).get("ml"))
+    shadow = _safe_dict(ml.get("shadow"))
     ctx: dict[str, Any] = {
         "plan_id": int(plan.id),
         "category": str(plan.category),
@@ -83,10 +84,15 @@ def build_plan_refresh_context(*, plan: RoadmapPlan, next_step: RoadmapStep | No
         "ml": {
             "decision": str(ml.get("decision") or ""),
             "mode": str(ml.get("mode") or ""),
+            "model_version": str(ml.get("model_version") or ""),
+            "selected_feature_set": str(ml.get("selected_feature_set") or ""),
             "rollout_mode": str(ml.get("rollout_mode") or "none"),
             "rollout_selected": bool(ml.get("rollout_selected")),
             "fallback_reason": ml.get("fallback_reason"),
             "disabled_reason": ml.get("disabled_reason"),
+            "shadow_enabled": bool(shadow.get("enabled")),
+            "shadow_reason": str(shadow.get("reason") or ""),
+            "shadow_model_version": str(shadow.get("model_version") or ""),
         },
         "planner": _planner_context(plan),
     }
@@ -98,6 +104,7 @@ def build_plan_refresh_context(*, plan: RoadmapPlan, next_step: RoadmapStep | No
 
 def build_step_generated_context(*, plan: RoadmapPlan, step: RoadmapStep) -> dict[str, Any]:
     ml = _safe_dict(_safe_dict(plan.meta).get("ml"))
+    shadow = _safe_dict(ml.get("shadow"))
     ctx: dict[str, Any] = {
         "plan_id": int(plan.id),
         "step_id": int(step.id),
@@ -114,7 +121,13 @@ def build_step_generated_context(*, plan: RoadmapPlan, step: RoadmapStep) -> dic
         "cadence": str(step.cadence or ""),
         "ml": {
             "decision": str(ml.get("decision") or ""),
+            "mode": str(ml.get("mode") or ""),
+            "model_version": str(ml.get("model_version") or ""),
+            "selected_feature_set": str(ml.get("selected_feature_set") or ""),
             "rollout_mode": str(ml.get("rollout_mode") or "none"),
+            "shadow_enabled": bool(shadow.get("enabled")),
+            "shadow_reason": str(shadow.get("reason") or ""),
+            "shadow_model_version": str(shadow.get("model_version") or ""),
         },
         "planner": _planner_context(plan),
     }

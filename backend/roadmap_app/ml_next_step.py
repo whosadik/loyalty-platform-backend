@@ -19,8 +19,17 @@ except Exception:  # pragma: no cover
 from django.conf import settings
 from django.utils import timezone
 
+from catalog.models import Product
+from roadmap_app.content_features import (
+    build_base_content_features,
+    build_candidate_catalog_summaries,
+    build_candidate_content_features,
+    product_signature,
+    profile_signature,
+)
 from roadmap_app.fragrance_slots import SLOTS, slot_of_fragrance
 from transactions.models import TransactionItem
+from users_app.models import CustomerProfile
 
 
 def _model_path() -> Path:
@@ -44,6 +53,18 @@ def _model_path() -> Path:
 def _model_dir() -> Path:
     path = _model_path()
     return path.parent if path.suffix else path
+
+
+def _artifact_dir_for_model_path(model_path: Path) -> Path:
+    return model_path.parent if model_path.suffix else model_path
+
+
+def _artifact_metadata_path_for_model_path(model_path: Path) -> Path:
+    return (_artifact_dir_for_model_path(model_path) / "metadata.json").expanduser()
+
+
+def _artifact_eval_report_path_for_model_path(model_path: Path) -> Path:
+    return (_artifact_dir_for_model_path(model_path) / "eval_report.json").expanduser()
 
 
 def _artifact_metadata_path() -> Path:
@@ -136,6 +157,19 @@ def _load_model() -> Any | None:
         return None
 
 
+def _load_model_for_path(model_path: str | Path | None) -> Any | None:
+    raw = str(model_path or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return _load_model_cached(str(path.resolve()), int(path.stat().st_mtime_ns))
+    except Exception:
+        return None
+
+
 @lru_cache(maxsize=4)
 def _load_metadata_cached(path_str: str, mtime_ns: int) -> dict[str, Any] | None:
     del mtime_ns
@@ -151,6 +185,19 @@ def _load_metadata_cached(path_str: str, mtime_ns: int) -> dict[str, Any] | None
 
 def _load_model_metadata() -> dict[str, Any] | None:
     path = _artifact_metadata_path()
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return _load_metadata_cached(str(path.resolve()), int(path.stat().st_mtime_ns))
+    except Exception:
+        return None
+
+
+def _load_model_metadata_for_path(model_path: str | Path | None) -> dict[str, Any] | None:
+    raw = str(model_path or "").strip()
+    if not raw:
+        return None
+    path = _artifact_metadata_path_for_model_path(Path(raw).expanduser())
     if not path.exists() or not path.is_file():
         return None
     try:
@@ -234,6 +281,72 @@ def _load_eval_report_bundle() -> tuple[dict[str, Any] | None, str, list[str]]:
 def _load_eval_report() -> dict[str, Any] | None:
     report, _, _ = _load_eval_report_bundle()
     return report
+
+
+def nextstep_model_artifact_summary(model_path: str | Path | None = None) -> dict[str, Any]:
+    raw = str(model_path or _model_path()).strip()
+    if not raw:
+        return {
+            "model_path": "",
+            "artifact_dir": "",
+            "exists": False,
+            "metadata_path": "",
+            "metadata_exists": False,
+            "eval_report_path": "",
+            "eval_report_exists": False,
+            "model_version": "",
+            "selected_feature_set": "",
+            "trained_at_utc": "",
+            "task": "",
+            "estimator": "",
+            "metrics_test": {},
+            "runtime_guard": {},
+        }
+
+    path = Path(raw).expanduser()
+    artifact_dir = _artifact_dir_for_model_path(path)
+    metadata_path = _artifact_metadata_path_for_model_path(path)
+    eval_report_path = _artifact_eval_report_path_for_model_path(path)
+    metadata = _load_model_metadata_for_path(path)
+    artifact = _load_model_for_path(path)
+    artifact_dict = artifact if isinstance(artifact, dict) else {}
+    metrics_test = metadata.get("metrics_test") if isinstance(metadata, dict) else None
+    runtime_guard = metadata.get("runtime_guard") if isinstance(metadata, dict) else None
+    path_version = path.stem if path.suffix else path.name
+    summary: dict[str, Any] = {
+        "model_path": str(path),
+        "artifact_dir": str(artifact_dir),
+        "exists": bool(path.exists() and path.is_file()),
+        "metadata_path": str(metadata_path),
+        "metadata_exists": bool(metadata_path.exists() and metadata_path.is_file()),
+        "eval_report_path": str(eval_report_path),
+        "eval_report_exists": bool(eval_report_path.exists() and eval_report_path.is_file()),
+        "model_version": str(
+            ((metadata or {}).get("model_version") if isinstance(metadata, dict) else None)
+            or artifact_dict.get("model_version")
+            or path_version
+            or ""
+        ),
+        "selected_feature_set": str(
+            ((metadata or {}).get("selected_feature_set") if isinstance(metadata, dict) else None)
+            or artifact_dict.get("selected_feature_set")
+            or ""
+        ),
+        "trained_at_utc": str(
+            ((metadata or {}).get("trained_at_utc") if isinstance(metadata, dict) else None)
+            or artifact_dict.get("trained_at_utc")
+            or ""
+        ),
+        "task": str(
+            ((metadata or {}).get("task") if isinstance(metadata, dict) else None)
+            or artifact_dict.get("task")
+            or ""
+        ),
+        "estimator": str(((metadata or {}).get("estimator") if isinstance(metadata, dict) else None) or ""),
+        "metrics_test": metrics_test if isinstance(metrics_test, dict) else {},
+        "runtime_guard": runtime_guard if isinstance(runtime_guard, dict) else {},
+    }
+    return summary
 
 
 @lru_cache(maxsize=4)
@@ -821,11 +934,19 @@ def _predict_with_v4_artifact(
             "product__category",
             "product__product_type",
             "quantity",
+            "product__concerns",
+            "product__actives",
+            "product__flags",
+            "product__supported_skin_types",
             "product__attrs",
+            "product__ingredients_inci",
             "product__raw_meta",
         )
         .order_by("transaction__created_at", "transaction__id", "id")
     )
+
+    profile_row = CustomerProfile.objects.filter(user_id=int(user_id)).first()
+    profile_sig = profile_signature(profile_row)
 
     items: list[dict[str, Any]] = []
     for row in tx_rows:
@@ -844,6 +965,17 @@ def _predict_with_v4_artifact(
                 "tx_total": _to_float(row.get("transaction__total_amount")),
                 "category": item_category,
                 "product_type": item_type,
+                "concerns": row.get("product__concerns") if isinstance(row.get("product__concerns"), list) else [],
+                "actives": row.get("product__actives") if isinstance(row.get("product__actives"), list) else [],
+                "flags": row.get("product__flags") if isinstance(row.get("product__flags"), list) else [],
+                "supported_skin_types": (
+                    row.get("product__supported_skin_types")
+                    if isinstance(row.get("product__supported_skin_types"), list)
+                    else []
+                ),
+                "attrs": _safe_dict(row.get("product__attrs")),
+                "ingredients_inci": str(row.get("product__ingredients_inci") or ""),
+                "raw_meta": _safe_dict(row.get("product__raw_meta")),
                 "quantity": max(1, int(row.get("quantity") or 0)),
                 "slot": slot_value,
             }
@@ -856,6 +988,7 @@ def _predict_with_v4_artifact(
     candidate_owned_counter: dict[str, int] = {}
     candidate_seen_90d_counter: dict[str, int] = {}
     candidate_last_seen_at: dict[str, Any] = {}
+    anchor_item: dict[str, Any] | None = None
 
     last_ts_in_category = None
     tx_ids_90d: set[int] = set()
@@ -886,6 +1019,7 @@ def _predict_with_v4_artifact(
                     candidate_last_seen_at[candidate_key] = ts
             if last_ts_in_category is None:
                 last_ts_in_category = ts
+                anchor_item = row
             if ts >= since_90d:
                 tx_id = int(row["tx_id"])
                 tx_ids_90d.add(tx_id)
@@ -949,6 +1083,22 @@ def _predict_with_v4_artifact(
     pos_by_candidate = {token: idx for idx, token in enumerate(rules_chain)}
     pop_map_raw = (artifact.get("candidate_popularity_in_train_by_category") or {}).get(category) or {}
     pop_map: dict[str, float] = {str(k).strip().lower(): _to_float(v) for k, v in pop_map_raw.items()}
+    candidate_catalog_summaries = build_candidate_catalog_summaries(
+        list(
+            Product.objects.filter(category=category, product_type__in=candidates).values(
+                "category",
+                "product_type",
+                "concerns",
+                "actives",
+                "flags",
+                "supported_skin_types",
+                "attrs",
+                "ingredients_inci",
+                "raw_meta",
+            )
+        )
+    )
+    anchor_sig = product_signature(anchor_item)
 
     recent_candidate_tokens = [
         token
@@ -962,6 +1112,7 @@ def _predict_with_v4_artifact(
     for candidate in candidates:
         seen_count_last5 = int(sum(1 for token in recent_candidate_tokens if token == candidate))
         row = dict(base)
+        row.update(build_base_content_features(profile_sig, anchor_sig))
         row["candidate_type"] = candidate
         row["candidate_is_fragrance_slot"] = int(candidate in SLOTS)
         row["candidate_position_in_chain"] = int(pos_by_candidate.get(candidate, -1))
@@ -974,6 +1125,13 @@ def _predict_with_v4_artifact(
         row["candidate_days_since_last_seen_in_category"] = int(
             (now_utc.date() - candidate_last_seen_at[candidate].date()).days
         ) if candidate in candidate_last_seen_at else -1
+        row.update(
+            build_candidate_content_features(
+                candidate_catalog_summaries.get((category, candidate)),
+                profile_sig,
+                anchor_sig,
+            )
+        )
         for col in feature_columns:
             if col in row:
                 continue
@@ -1059,11 +1217,27 @@ def predict_next_product_types(
     category: str,
     candidate_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    return predict_next_product_types_for_model_path(
+        None,
+        user=user,
+        context_product_ids=context_product_ids,
+        category=category,
+        candidate_types=candidate_types,
+    )
+
+
+def predict_next_product_types_for_model_path(
+    model_path: str | Path | None,
+    user,
+    context_product_ids: list[int],
+    category: str,
+    candidate_types: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """
     Return ranked product_type/candidate_type predictions for next roadmap step.
     If model artifact is absent or incompatible, returns [].
     """
-    model = _load_model()
+    model = _load_model() if model_path in (None, "") else _load_model_for_path(model_path)
     if model is None:
         return []
 

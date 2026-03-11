@@ -12,6 +12,7 @@ from django.utils import timezone
 from catalog.models import Product
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 from transactions.models import Transaction, TransactionItem
+from users_app.models import CustomerProfile
 
 try:
     import pandas as pd
@@ -197,6 +198,11 @@ class RoadmapPlannerDatasetTests(TestCase):
             metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
             self.assertEqual(int(metadata["episodes_total"]), 1)
             self.assertEqual(int(metadata["stop_label_count"]), 0)
+            self.assertNotIn("matched_by", list(metadata.get("feature_columns") or []))
+            self.assertEqual(
+                int((metadata.get("label_source_distribution") or {}).get("step_completed_event", 0)),
+                1,
+            )
 
     def test_planner_dataset_ends_episode_at_next_refresh(self):
         t0 = timezone.now() - timedelta(days=40)
@@ -313,3 +319,86 @@ class RoadmapPlannerDatasetTests(TestCase):
                 (frame["episode_id"] == 1) & (frame["candidate_type"].astype(str) == "__stop__")
             ].iloc[0]
             self.assertEqual(int(episode1_stop["y"]), 1)
+
+    def test_planner_dataset_includes_content_aware_features(self):
+        profile = CustomerProfile.objects.get(user=self.user)
+        profile.makeup_profile = {
+            "finish_pref": ["dewy"],
+            "coverage_pref": ["medium"],
+            "undertone": "neutral",
+            "tone_family": "light",
+            "concerns": ["long_wear"],
+        }
+        profile.save(update_fields=["makeup_profile"])
+
+        self.p_primer.attrs = {"finish": "dewy"}
+        self.p_primer.ingredients_inci = "dimethicone, silica"
+        self.p_primer.save(update_fields=["attrs", "ingredients_inci"])
+        self.p_foundation.attrs = {
+            "finish": "dewy",
+            "coverage": "medium",
+            "undertone": "neutral",
+            "tone_family": "light",
+        }
+        self.p_foundation.concerns = ["long_wear"]
+        self.p_foundation.ingredients_inci = "water, dimethicone, iron_oxides"
+        self.p_foundation.save(
+            update_fields=["attrs", "concerns", "ingredients_inci"]
+        )
+
+        t0 = timezone.now() - timedelta(days=25)
+        self._tx(product=self.p_primer, created_at=t0 - timedelta(days=1), idem_key="planner-content-prior")
+        self._event(
+            event_type=RoadmapEvent.Type.PLAN_REFRESHED,
+            created_at=t0,
+            context={
+                "category": "makeup",
+                "next_step_id": self.step1.id,
+                "next_step_index": 1,
+                "next_product_type": "foundation",
+                "refresh_caller": "refresh_roadmap",
+                "ml": {"decision": "fallback", "rollout_mode": "none"},
+            },
+        )
+        self._event(
+            event_type=RoadmapEvent.Type.STEP_GENERATED,
+            created_at=t0 + timedelta(seconds=1),
+            step=self.step1,
+            context={
+                "category": "makeup",
+                "step_id": self.step1.id,
+                "step_index": 1,
+                "product_type": "foundation",
+                "status": "recommended",
+                "recommended_product_id": self.p_foundation.id,
+                "has_recommendation": True,
+            },
+        )
+        self._event(
+            event_type=RoadmapEvent.Type.STEP_COMPLETED,
+            created_at=t0 + timedelta(days=1),
+            step=self.step1,
+            context={
+                "category": "makeup",
+                "product_type": "foundation",
+                "matched_by": "recommended_product_id",
+            },
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_planner_dataset",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+            )
+            frame = _read_dataset(out_dir)
+            foundation = frame[frame["candidate_type"].astype(str) == "foundation"].iloc[0]
+
+            self.assertIn("profile_makeup_finish_pref_primary", frame.columns)
+            self.assertIn("candidate_profile_makeup_finish_match_rate", frame.columns)
+            self.assertEqual(str(foundation["profile_makeup_finish_pref_primary"]), "dewy")
+            self.assertEqual(str(foundation["anchor_product_type"]), "primer")
+            self.assertGreater(float(foundation["candidate_profile_makeup_finish_match_rate"]), 0.0)
+            self.assertGreater(float(foundation["candidate_anchor_shared_inci_rate"]), 0.0)

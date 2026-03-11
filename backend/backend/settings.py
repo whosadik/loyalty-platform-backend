@@ -295,6 +295,10 @@ ROADMAP_NEXTSTEP_V4_MODEL_PATH = os.getenv(
     "ROADMAP_NEXTSTEP_V4_MODEL_PATH",
     str((BASE_DIR.parent / "models" / "roadmap_next_step_v4" / "model.pkl").resolve()),
 )
+ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH = os.getenv(
+    "ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH",
+    "",
+).strip()
 ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD = float(
     os.getenv("ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD", "0.10")
 )

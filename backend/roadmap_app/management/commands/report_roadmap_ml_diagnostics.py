@@ -13,7 +13,8 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from offers.models import OfferAssignment, OfferEvent
-from roadmap_app.ml_next_step import v4_category_staged_rollout_status
+from roadmap_app.ml_next_step import nextstep_model_artifact_summary, v4_category_staged_rollout_status
+from roadmap_app.ml_planner import planner_model_artifact_summary
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 from transactions.models import Transaction
 
@@ -245,6 +246,42 @@ def _safe_number(value: float | int | None, default: float = 0.0) -> float:
     return float(value)
 
 
+def _fmt_metric(value: Any, ndigits: int = 4) -> str:
+    try:
+        return f"{float(value):.{ndigits}f}"
+    except Exception:
+        return "n/a"
+
+
+def _artifact_rows(payload: dict[str, Any]) -> list[list[Any]]:
+    artifacts = _safe_dict(payload.get("artifacts"))
+    rows: list[list[Any]] = []
+    for family in ["nextstep", "planner"]:
+        family_block = _safe_dict(artifacts.get(family))
+        for slot in ["active", "candidate"]:
+            artifact = _safe_dict(family_block.get(slot))
+            if not artifact:
+                continue
+            metrics_test = _safe_dict(artifact.get("metrics_test"))
+            guard = _safe_dict(
+                artifact.get("runtime_guard") if family == "nextstep" else artifact.get("planner_guard")
+            )
+            rows.append(
+                [
+                    family,
+                    slot,
+                    artifact.get("model_version") or "n/a",
+                    artifact.get("selected_feature_set") or "n/a",
+                    "yes" if bool(artifact.get("exists")) else "no",
+                    _fmt_metric(metrics_test.get("ndcg_at_5")),
+                    _fmt_metric(metrics_test.get("recall_at_1")),
+                    "yes" if bool(guard.get("passed")) else "no",
+                    artifact.get("model_path") or "",
+                ]
+            )
+    return rows
+
+
 def _build_markdown(payload: dict[str, Any]) -> str:
     params = _safe_dict(payload.get("params"))
     executive = _safe_dict(payload.get("executive_summary"))
@@ -462,7 +499,26 @@ def _build_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append("")
 
-    lines.append("## 8) Unattributed / excluded")
+    lines.append("## 8) Model artifacts")
+    lines.append(
+        _md_table(
+            [
+                "family",
+                "slot",
+                "model_version",
+                "feature_set",
+                "exists",
+                "ndcg@5",
+                "recall@1",
+                "guard_passed",
+                "model_path",
+            ],
+            _artifact_rows(payload),
+        )
+    )
+    lines.append("")
+
+    lines.append("## 9) Unattributed / excluded")
     lines.append(
         _md_table(
             ["bucket", "count"],
@@ -471,7 +527,7 @@ def _build_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append("")
 
-    lines.append("## 9) Notes")
+    lines.append("## 10) Notes")
     for note in _safe_list(payload.get("notes")):
         lines.append(f"- {note}")
     lines.append("")
@@ -491,6 +547,8 @@ class Command(BaseCommand):
         parser.add_argument("--min-sample", type=int, default=30)
         parser.add_argument("--cohort-mode", type=str, default="fresh", choices=COHORT_MODE_CHOICES)
         parser.add_argument("--control", type=str, default="non_model", choices=CONTROL_CHOICES)
+        parser.add_argument("--nextstep-candidate-model-path", type=str, default=None)
+        parser.add_argument("--planner-candidate-model-path", type=str, default=None)
 
     def handle(self, *args, **options):
         days = int(options["days"] or 7)
@@ -506,6 +564,8 @@ class Command(BaseCommand):
             raise CommandError("--min-sample must be > 0")
         cohort_mode = str(options["cohort_mode"] or "fresh").strip().lower()
         control = str(options["control"] or "non_model").strip().lower()
+        nextstep_candidate_model_path = str(options.get("nextstep_candidate_model_path") or "").strip()
+        planner_candidate_model_path = str(options.get("planner_candidate_model_path") or "").strip()
 
         if control == "fallback":
             control_decisions = {"fallback"}
@@ -1349,6 +1409,19 @@ class Command(BaseCommand):
         fresh_excluded_missing = len(all_scope_plan_ids - cohort_scope_plan_ids) if cohort_mode == "fresh" else 0
         excluded_non_selected = len(cohort_scope_plan_ids - analysis_plan_ids)
 
+        nextstep_active_artifact = nextstep_model_artifact_summary()
+        nextstep_candidate_artifact = (
+            nextstep_model_artifact_summary(nextstep_candidate_model_path)
+            if nextstep_candidate_model_path
+            else None
+        )
+        planner_active_artifact = planner_model_artifact_summary()
+        planner_candidate_artifact = (
+            planner_model_artifact_summary(planner_candidate_model_path)
+            if planner_candidate_model_path
+            else None
+        )
+
         payload: dict[str, Any] = {
             "generated_at_utc": now_utc.isoformat(),
             "window_start_utc": since.isoformat(),
@@ -1361,6 +1434,8 @@ class Command(BaseCommand):
                 "cohort_mode": cohort_mode,
                 "control": control,
                 "min_sample": min_sample,
+                "nextstep_candidate_model_path": nextstep_candidate_model_path or None,
+                "planner_candidate_model_path": planner_candidate_model_path or None,
             },
             "overall": {
                 "plans_total_in_scope": len(all_scope_plan_ids),
@@ -1387,6 +1462,16 @@ class Command(BaseCommand):
                 "mode_distribution": {
                     str(k): int(v)
                     for k, v in sorted(mode_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+            },
+            "artifacts": {
+                "nextstep": {
+                    "active": nextstep_active_artifact,
+                    "candidate": nextstep_candidate_artifact,
+                },
+                "planner": {
+                    "active": planner_active_artifact,
+                    "candidate": planner_candidate_artifact,
                 },
             },
             "category_summary": category_summary_rows,
@@ -1420,6 +1505,7 @@ class Command(BaseCommand):
                 "Ambiguous assignments/events are reported under unattributed buckets and never forced into cohorts.",
                 "Default cohort-mode=fresh excludes missing_ml_meta from active model vs control comparison.",
                 "Policy simulation is offline what-if analysis over observed plans; runtime behavior is unchanged.",
+                "Artifact inventory shows active runtime model summaries plus optional candidate paths passed via CLI.",
             ],
         }
 

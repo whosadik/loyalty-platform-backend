@@ -27,6 +27,7 @@ from roadmap_app.ml_next_step import (
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 from roadmap_app.services import refresh_roadmap
 from transactions.models import Transaction, TransactionItem
+from users_app.models import CustomerProfile
 
 try:
     import pandas as pd
@@ -123,6 +124,21 @@ class RoadmapNextStepV4DatasetTests(TestCase):
             unit_price=Decimal("12.00"),
         )
 
+    def _create_completed(self, at_dt, *, matched_by: str, product_type: str | None = None, match_meta: dict | None = None):
+        event = RoadmapEvent.objects.create(
+            user=self.user,
+            plan=self.plan,
+            step=self.step,
+            event_type=RoadmapEvent.Type.STEP_COMPLETED,
+            context={
+                "category": "skincare",
+                "product_type": product_type or self.step.product_type,
+                "matched_by": matched_by,
+                "match_meta": match_meta or {},
+            },
+        )
+        RoadmapEvent.objects.filter(id=event.id).update(created_at=at_dt)
+
     def test_v4_dataset_features_do_not_use_transactions_after_t0(self):
         t0 = timezone.now() - timedelta(days=30)
         self._create_exposed(t0)
@@ -180,6 +196,104 @@ class RoadmapNextStepV4DatasetTests(TestCase):
             self.assertIn("baselines", metadata)
             self.assertIn("class_distribution", metadata)
 
+    def test_v4_dataset_includes_content_aware_features(self):
+        profile = CustomerProfile.objects.get(user=self.user)
+        profile.skin_type = "dry"
+        profile.goals = ["hydration"]
+        profile.hair_profile = {}
+        profile.makeup_profile = {}
+        profile.fragrance_profile = {}
+        profile.save(
+            update_fields=[
+                "skin_type",
+                "goals",
+                "hair_profile",
+                "makeup_profile",
+                "fragrance_profile",
+            ]
+        )
+        self.p_cleanser.concerns = ["cleanse"]
+        self.p_cleanser.actives = ["ceramides"]
+        self.p_cleanser.supported_skin_types = ["dry"]
+        self.p_cleanser.ingredients_inci = "aqua, glycerin, ceramide np"
+        self.p_cleanser.save(
+            update_fields=["concerns", "actives", "supported_skin_types", "ingredients_inci"]
+        )
+        self.p_serum.concerns = ["hydration"]
+        self.p_serum.actives = ["niacinamide"]
+        self.p_serum.supported_skin_types = ["dry"]
+        self.p_serum.ingredients_inci = "aqua, glycerin, niacinamide"
+        self.p_serum.save(
+            update_fields=["concerns", "actives", "supported_skin_types", "ingredients_inci"]
+        )
+
+        t0 = timezone.now() - timedelta(days=25)
+        self._create_exposed(t0)
+        self._create_tx(self.p_cleanser, t0 - timedelta(days=1), "v4-content-1")
+        self._create_tx(self.p_serum, t0 + timedelta(days=1), "v4-content-2")
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            serum_row = frame[frame["candidate_type"].astype(str) == "serum"].iloc[0]
+
+            self.assertIn("profile_skin_type", frame.columns)
+            self.assertIn("candidate_profile_goal_match_rate", frame.columns)
+            self.assertEqual(str(serum_row["profile_skin_type"]), "dry")
+            self.assertEqual(str(serum_row["anchor_product_type"]), "cleanser")
+            self.assertGreater(float(serum_row["candidate_profile_goal_match_rate"]), 0.0)
+            self.assertGreater(float(serum_row["candidate_anchor_shared_inci_rate"]), 0.0)
+
+    def test_v4_dataset_prefers_step_completed_semantic_label_over_transaction_fallback(self):
+        t0 = timezone.now() - timedelta(days=18)
+        self._create_exposed(t0)
+        self._create_tx(self.p_cleanser, t0 - timedelta(days=1), "v4-semantic-prior")
+        self._create_completed(
+            t0 + timedelta(days=1),
+            matched_by="semantic_content_match",
+            product_type="serum",
+            match_meta={
+                "recommended_product_id": self.p_serum.id,
+                "purchased_product_id": self.p_serum.id,
+                "semantic_score": 1.5,
+            },
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            self.assertFalse(frame.empty)
+            sample = frame.iloc[0]
+            self.assertEqual(str(sample["label"]), "serum")
+            self.assertEqual(str(sample["label_source"]), "step_completed_event")
+            self.assertEqual(str(sample["label_matched_by"]), "semantic_content_match")
+
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                int((metadata.get("label_source_distribution") or {}).get("step_completed_event", 0)),
+                1,
+            )
+            self.assertEqual(
+                int((metadata.get("label_matched_by_distribution") or {}).get("semantic_content_match", 0)),
+                1,
+            )
+
 
 class RoadmapNextStepV4AdapterTests(TestCase):
     def test_adapter_returns_sorted_unique_candidates(self):
@@ -204,6 +318,127 @@ class RoadmapNextStepV4AdapterTests(TestCase):
         self.assertEqual([row["candidate_type"] for row in rows], ["cleanser", "serum"])
         self.assertEqual(len(rows), len({row["candidate_type"] for row in rows}))
         self.assertGreaterEqual(float(rows[0]["score"]), float(rows[1]["score"]))
+
+    def test_v4_artifact_runtime_uses_content_features(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_artifact_u1", password="pass12345")
+        profile = CustomerProfile.objects.get(user=user)
+        profile.skin_type = "dry"
+        profile.goals = ["hydration"]
+        profile.hair_profile = {}
+        profile.makeup_profile = {}
+        profile.fragrance_profile = {}
+        profile.save(
+            update_fields=[
+                "skin_type",
+                "goals",
+                "hair_profile",
+                "makeup_profile",
+                "fragrance_profile",
+            ]
+        )
+        cleanser = Product.objects.create(
+            name="Artifact Cleanser",
+            brand="B",
+            price=Decimal("11.00"),
+            category="skincare",
+            product_type="cleanser",
+            concerns=["cleanse"],
+            actives=["ceramides"],
+            supported_skin_types=["dry"],
+            ingredients_inci="aqua, glycerin, ceramide np",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Artifact Serum",
+            brand="B",
+            price=Decimal("15.00"),
+            category="skincare",
+            product_type="serum",
+            concerns=["hydration"],
+            actives=["niacinamide"],
+            supported_skin_types=["dry"],
+            ingredients_inci="aqua, glycerin, niacinamide",
+            in_stock=True,
+        )
+        tx = Transaction.objects.create(
+            user=user,
+            total_amount=Decimal("11.00"),
+            channel="web",
+            idempotency_key="artifact-runtime-1",
+        )
+        TransactionItem.objects.create(
+            transaction=tx,
+            product=cleanser,
+            quantity=1,
+            unit_price=Decimal("11.00"),
+        )
+
+        class DummyArtifactModel:
+            def __init__(self):
+                self.columns: list[str] = []
+                self.seen = None
+
+            def predict(self, X):
+                self.columns = list(X.columns)
+                self.seen = X.copy()
+                score = pd.to_numeric(X["candidate_profile_goal_match_rate"], errors="coerce").fillna(0.0) * 10.0
+                score = score + pd.to_numeric(X["candidate_anchor_shared_inci_rate"], errors="coerce").fillna(0.0)
+                return score.to_numpy()
+
+        dummy = DummyArtifactModel()
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": dummy,
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "profile_skin_type",
+                "anchor_product_type",
+                "candidate_profile_goal_match_rate",
+                "candidate_anchor_shared_inci_rate",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "profile_skin_type",
+                "anchor_product_type",
+            ],
+            "numeric_features": [
+                "candidate_profile_goal_match_rate",
+                "candidate_anchor_shared_inci_rate",
+            ],
+            "candidate_types_by_category": {"skincare": ["cleanser", "serum"]},
+            "rules_chain_by_category": {"skincare": ["cleanser", "serum"]},
+            "candidate_popularity_in_train_by_category": {
+                "skincare": {"cleanser": 0.5, "serum": 0.5}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+            rows = predict_next_product_types(
+                user=user,
+                context_product_ids=[],
+                category="skincare",
+                candidate_types=["cleanser", "serum"],
+            )
+
+        self.assertEqual([row["candidate_type"] for row in rows], ["serum", "cleanser"])
+        self.assertIn("candidate_profile_goal_match_rate", dummy.columns)
+        self.assertIn("candidate_anchor_shared_inci_rate", dummy.columns)
+        self.assertIsNotNone(dummy.seen)
+        serum_row = dummy.seen[dummy.seen["candidate_type"].astype(str) == "serum"].iloc[0]
+        self.assertEqual(str(serum_row["profile_skin_type"]), "dry")
+        self.assertEqual(str(serum_row["anchor_product_type"]), "cleanser")
+        self.assertGreater(float(serum_row["candidate_profile_goal_match_rate"]), 0.0)
 
 
 class RoadmapNextStepV4EvalSourceTests(TestCase):
@@ -607,6 +842,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         with override_settings(
             ROADMAP_NEXTSTEP_V4_ENABLED=True,
             ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
             ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
             ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["makeup"],
@@ -643,6 +879,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         with override_settings(
             ROADMAP_NEXTSTEP_V4_ENABLED=True,
             ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
             ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
             ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["makeup"],
@@ -676,6 +913,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         with override_settings(
             ROADMAP_NEXTSTEP_V4_ENABLED=True,
             ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
             ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
             ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["makeup"],
@@ -711,6 +949,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         with override_settings(
             ROADMAP_NEXTSTEP_V4_ENABLED=True,
             ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
             ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
             ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["makeup"],
@@ -735,6 +974,72 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         self.assertEqual(str(ml_meta.get("rollout_mode")), "none")
         self.assertFalse(bool(ml_meta.get("rollout_selected")))
         predict_mock.assert_not_called()
+
+    def test_shadow_model_predictions_are_logged_without_affecting_primary_decision(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_shadow_u1", password="pass12345")
+        self._create_skincare_products("shadow")
+
+        def _artifact_summary(path: str | None):
+            raw = str(path or "")
+            if raw == "C:/tmp/roadmap_nextstep_shadow.pkl":
+                return {
+                    "model_version": "shadow_semantic_v2",
+                    "selected_feature_set": "full",
+                }
+            return {
+                "model_version": "active_v4",
+                "selected_feature_set": "full",
+            }
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+            ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH="C:/tmp/roadmap_nextstep_shadow.pkl",
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            return_value={
+                "passed": True,
+                "final_status": "ENABLE",
+                "current_decision": "ENABLE",
+                "reason": "passed",
+                "hold_reason": None,
+                "category": "skincare",
+                "recommendation_7d": "ENABLE",
+                "recommendation_30d": "ENABLE",
+                "stability_gate_failures": [],
+                "guard_7d": {"passed": True, "reason": "passed"},
+                "guard_30d": {"passed": True, "reason": "passed"},
+            },
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+            return_value=[{"candidate_type": "serum", "score": 0.91}],
+        ) as primary_mock, patch(
+            "roadmap_app.services.predict_next_product_types_for_model_path",
+            return_value=[{"candidate_type": "cleanser", "score": 0.77}],
+        ) as shadow_mock, patch(
+            "roadmap_app.services.nextstep_model_artifact_summary",
+            side_effect=_artifact_summary,
+        ):
+            plan = refresh_roadmap(user, category="skincare", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        shadow_meta = ml_meta.get("shadow") or {}
+        self.assertEqual(str(ml_meta.get("decision")), "model_used")
+        self.assertTrue(bool(shadow_meta.get("enabled")))
+        self.assertEqual(str(shadow_meta.get("reason")), "ok")
+        self.assertEqual(str(shadow_meta.get("model_version")), "shadow_semantic_v2")
+        self.assertEqual(str(shadow_meta.get("selected_feature_set")), "full")
+        self.assertEqual(len(shadow_meta.get("predictions") or []), 1)
+        primary_mock.assert_called_once()
+        shadow_mock.assert_called_once()
 
 
 class RoadmapNextStepV4TrainingTests(TestCase):

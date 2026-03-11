@@ -3,6 +3,7 @@ from django.db.models import Q
 from rest_framework.permissions import IsAdminUser, IsAuthenticated, SAFE_METHODS
 
 from .models import Product
+from .sale_fields import product_has_discount
 from .serializers import ProductSerializer
 
 
@@ -41,5 +42,14 @@ class ProductViewSet(viewsets.ModelViewSet):
                 | Q(product_type__icontains=search)
                 | Q(source_product_id__icontains=search)
             )
+
+        sale = (self.request.query_params.get("sale") or "").strip().lower()
+        if sale in {"1", "true", "yes"}:
+            sale_ids = [
+                product.id
+                for product in qs.only("id", "price", "raw_meta", "attrs")
+                if product_has_discount(product)
+            ]
+            qs = qs.filter(id__in=sale_ids)
 
         return qs

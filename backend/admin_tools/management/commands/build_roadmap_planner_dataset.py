@@ -17,9 +17,19 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from catalog.models import Product
+from roadmap_app.content_features import (
+    ALL_CATEGORICAL_FEATURES,
+    ALL_NUMERIC_FEATURES,
+    build_base_content_features,
+    build_candidate_catalog_summaries,
+    build_candidate_content_features,
+    product_signature,
+    profile_signature,
+)
 from roadmap_app.fragrance_slots import SLOTS, slot_of_fragrance
 from roadmap_app.models import RoadmapEvent, RoadmapStep
 from transactions.models import TransactionItem
+from users_app.models import CustomerProfile
 
 TARGET_CATEGORIES = {"skincare", "haircare", "makeup", "fragrance"}
 STOP_TOKEN = "__stop__"
@@ -252,9 +262,19 @@ class Command(BaseCommand):
             "quantity",
             "product__category",
             "product__product_type",
+            "product__concerns",
+            "product__actives",
+            "product__flags",
+            "product__supported_skin_types",
             "product__attrs",
+            "product__ingredients_inci",
             "product__raw_meta",
         )
+
+        profile_map = {
+            int(profile.user_id): profile_signature(profile)
+            for profile in CustomerProfile.objects.filter(user_id__in=users)
+        }
 
         user_items: dict[int, list[dict[str, Any]]] = defaultdict(list)
         for row in tx_qs.iterator(chunk_size=5000):
@@ -270,6 +290,17 @@ class Command(BaseCommand):
                     "ts": ts,
                     "category": category,
                     "product_type": product_type,
+                    "concerns": row.get("product__concerns") if isinstance(row.get("product__concerns"), list) else [],
+                    "actives": row.get("product__actives") if isinstance(row.get("product__actives"), list) else [],
+                    "flags": row.get("product__flags") if isinstance(row.get("product__flags"), list) else [],
+                    "supported_skin_types": (
+                        row.get("product__supported_skin_types")
+                        if isinstance(row.get("product__supported_skin_types"), list)
+                        else []
+                    ),
+                    "attrs": attrs,
+                    "ingredients_inci": str(row.get("product__ingredients_inci") or ""),
+                    "raw_meta": raw_meta,
                     "history_token": _history_token_for_tx(
                         category=category,
                         product_type=product_type,
@@ -304,6 +335,22 @@ class Command(BaseCommand):
             if product_type not in bucket:
                 bucket.append(product_type)
         candidate_types_by_category["fragrance"] = list(SLOTS)
+
+        candidate_catalog_summaries = build_candidate_catalog_summaries(
+            list(
+                Product.objects.filter(category__in=sorted(TARGET_CATEGORIES)).values(
+                    "category",
+                    "product_type",
+                    "concerns",
+                    "actives",
+                    "flags",
+                    "supported_skin_types",
+                    "attrs",
+                    "ingredients_inci",
+                    "raw_meta",
+                )
+            )
+        )
 
         refresh_groups: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
         for row in refresh_rows:
@@ -392,6 +439,7 @@ class Command(BaseCommand):
                 tx_total_90d: dict[int, float] = {}
                 since_90d = t0 - timedelta(days=90)
                 last_ts_in_category = None
+                anchor_item: dict[str, Any] | None = None
 
                 for item in reversed(prior_items):
                     item_category = str(item["category"] or "")
@@ -409,6 +457,7 @@ class Command(BaseCommand):
                         candidate_last_seen_at[token] = item["ts"]
                     if last_ts_in_category is None:
                         last_ts_in_category = item["ts"]
+                        anchor_item = item
                     if item["ts"] >= since_90d:
                         tx_id = int(item["tx_id"])
                         tx_ids_90d.add(tx_id)
@@ -429,9 +478,11 @@ class Command(BaseCommand):
                 completion_rows = completed_rows[completed_start:completed_end]
                 label = STOP_TOKEN
                 matched_by = ""
+                label_source = "stop_no_completion"
                 if completion_rows:
                     label = str(completion_rows[0].get("product_type") or "").strip().lower() or STOP_TOKEN
                     matched_by = str(completion_rows[0].get("matched_by") or "").strip().lower()
+                    label_source = "step_completed_event"
 
                 candidate_types = list(candidate_types_by_category.get(category) or [])
                 for token in plan_types:
@@ -444,6 +495,11 @@ class Command(BaseCommand):
                 if label != STOP_TOKEN and label not in set(candidate_types):
                     label_outside_candidates += 1
 
+                base_content = build_base_content_features(
+                    profile_map.get(int(user_id)),
+                    product_signature(anchor_item),
+                )
+
                 episode_records.append(
                     {
                         "episode_id": int(len(episode_records) + 1),
@@ -453,6 +509,7 @@ class Command(BaseCommand):
                         "split": str(split_by_user.get(int(user_id)) or "train"),
                         "label": label,
                         "matched_by": matched_by or "__none__",
+                        "label_source": label_source,
                         "refresh_caller": refresh_caller or "__none__",
                         "current_ml_decision": str(ml_ctx.get("decision") or "__none__"),
                         "current_rollout_mode": str(ml_ctx.get("rollout_mode") or "__none__"),
@@ -491,6 +548,8 @@ class Command(BaseCommand):
                             str(token): int((t0.date() - seen_at.date()).days)
                             for token, seen_at in candidate_last_seen_at.items()
                         },
+                        "anchor_item": dict(anchor_item) if isinstance(anchor_item, dict) else None,
+                        **base_content,
                     }
                 )
 
@@ -511,6 +570,7 @@ class Command(BaseCommand):
             recent_category_tokens = [str(x) for x in ep.pop("recent_category_tokens")]
             seen_90d_counter = {str(k): int(v) for k, v in ep.pop("candidate_seen_90d_counter").items()}
             days_since_last_seen_map = {str(k): int(v) for k, v in ep.pop("candidate_days_since_last_seen_map").items()}
+            anchor_sig = product_signature(ep.pop("anchor_item", None))
             category = str(ep["category"])
             label = str(ep["label"])
             popularity_counter = candidate_popularity_train.get(category) or Counter()
@@ -543,6 +603,11 @@ class Command(BaseCommand):
                             8,
                         ),
                         "candidate_is_stop": int(str(candidate) == STOP_TOKEN),
+                        **build_candidate_content_features(
+                            candidate_catalog_summaries.get((category, str(candidate))),
+                            profile_map.get(int(ep["user_id"])),
+                            anchor_sig,
+                        ),
                     }
                 )
 
@@ -570,7 +635,6 @@ class Command(BaseCommand):
         categorical_features = [
             "category",
             "candidate_type",
-            "matched_by",
             "refresh_caller",
             "current_ml_decision",
             "current_rollout_mode",
@@ -585,6 +649,7 @@ class Command(BaseCommand):
             "last3_category",
             "last4_category",
             "last5_category",
+            *ALL_CATEGORICAL_FEATURES,
         ]
         numeric_features = [
             "steps_total",
@@ -613,10 +678,13 @@ class Command(BaseCommand):
             "candidate_days_since_last_seen_in_category",
             "candidate_popularity_in_train",
             "candidate_is_stop",
+            *ALL_NUMERIC_FEATURES,
         ]
         feature_columns = [*categorical_features, *numeric_features]
 
         label_counter = Counter(str(ep["label"]) for ep in episode_records)
+        label_source_counter = Counter(str(ep.get("label_source") or "unknown") for ep in episode_records)
+        label_matched_by_counter = Counter(str(ep.get("matched_by") or "__none__") for ep in episode_records)
         metadata = {
             "version": "planner_v1_candidate_ranking",
             "generated_at_utc": now_utc.isoformat().replace("+00:00", "Z"),
@@ -632,6 +700,8 @@ class Command(BaseCommand):
             "positive_rows": int(df["y"].sum()) if not df.empty else 0,
             "stop_label_count": int(label_counter.get(STOP_TOKEN, 0)),
             "stop_label_rate": round(float(label_counter.get(STOP_TOKEN, 0) / max(1, len(episode_records))), 6),
+            "label_source_distribution": dict(sorted(label_source_counter.items())),
+            "label_matched_by_distribution": dict(sorted(label_matched_by_counter.items())),
             "raw_plan_refreshed_events": int(len(refresh_rows)),
             "skipped_episodes_without_snapshot": int(skipped_no_snapshot),
             "label_outside_candidate_set": int(label_outside_candidates),

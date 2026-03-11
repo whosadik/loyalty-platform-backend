@@ -228,6 +228,28 @@ def _norm_attrs(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _collect_sale_meta(row: tuple[Any, ...], col: dict[str, int]) -> dict[str, Any]:
+    sale_meta: dict[str, Any] = {}
+
+    for key in ("original_price", "old_price", "price_old", "rrp", "compare_at_price"):
+        if key not in col:
+            continue
+        value = _to_decimal(row[col[key]])
+        if value is not None:
+            sale_meta["original_price"] = str(value)
+            break
+
+    for key in ("discount", "discount_percent", "sale_percent"):
+        if key not in col:
+            continue
+        value = _to_decimal(row[col[key]])
+        if value is not None and value > 0:
+            sale_meta["discount"] = int(value)
+            break
+
+    return sale_meta
+
+
 class Command(BaseCommand):
     help = "Import products from XLSX file into catalog."
 
@@ -375,6 +397,7 @@ class Command(BaseCommand):
                             ),
                             "area_raw": _str(row[col["area_raw"]]) if "area_raw" in col else "",
                             "source_row": row_index,
+                            **_collect_sale_meta(row, col),
                         },
                     }
 

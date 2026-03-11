@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import timedelta
 from functools import lru_cache
+import json
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,16 @@ except Exception:  # pragma: no cover
 from django.conf import settings
 from django.utils import timezone
 
+from catalog.models import Product
+from roadmap_app.content_features import (
+    build_base_content_features,
+    build_candidate_catalog_summaries,
+    build_candidate_content_features,
+    product_signature,
+    profile_signature,
+)
 from transactions.models import TransactionItem
+from users_app.models import CustomerProfile
 
 STOP_TOKEN = "__stop__"
 NONE_TOKEN = "__none__"
@@ -73,6 +83,18 @@ def planner_model_path() -> str:
     return str(getattr(settings, "ROADMAP_PLANNER_V1_MODEL_PATH", "") or "").strip()
 
 
+def _artifact_dir_for_model_path(model_path: Path) -> Path:
+    return model_path.parent if model_path.suffix else model_path
+
+
+def _artifact_metadata_path_for_model_path(model_path: Path) -> Path:
+    return (_artifact_dir_for_model_path(model_path) / "metadata.json").expanduser()
+
+
+def _artifact_eval_report_path_for_model_path(model_path: Path) -> Path:
+    return (_artifact_dir_for_model_path(model_path) / "eval_report.json").expanduser()
+
+
 @lru_cache(maxsize=8)
 def _load_planner_artifact(model_path: str) -> dict[str, Any] | None:
     if not model_path or joblib is None:
@@ -88,6 +110,95 @@ def _load_planner_artifact(model_path: str) -> dict[str, Any] | None:
     except Exception:
         return None
     return artifact if isinstance(artifact, dict) else None
+
+
+@lru_cache(maxsize=8)
+def _load_metadata_cached(path_str: str, mtime_ns: int) -> dict[str, Any] | None:
+    del mtime_ns
+    path = Path(path_str)
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _load_planner_metadata(model_path: str | Path | None) -> dict[str, Any] | None:
+    raw = str(model_path or "").strip()
+    if not raw:
+        return None
+    path = _artifact_metadata_path_for_model_path(Path(raw).expanduser())
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        return _load_metadata_cached(str(path.resolve()), int(path.stat().st_mtime_ns))
+    except Exception:
+        return None
+
+
+def planner_model_artifact_summary(model_path: str | Path | None = None) -> dict[str, Any]:
+    raw = str(model_path or planner_model_path()).strip()
+    if not raw:
+        return {
+            "model_path": "",
+            "artifact_dir": "",
+            "exists": False,
+            "metadata_path": "",
+            "metadata_exists": False,
+            "eval_report_path": "",
+            "eval_report_exists": False,
+            "model_version": "",
+            "selected_feature_set": "",
+            "trained_at_utc": "",
+            "task": "",
+            "estimator": "",
+            "metrics_test": {},
+            "planner_guard": {},
+        }
+
+    path = Path(raw).expanduser()
+    artifact_dir = _artifact_dir_for_model_path(path)
+    metadata_path = _artifact_metadata_path_for_model_path(path)
+    eval_report_path = _artifact_eval_report_path_for_model_path(path)
+    metadata = _load_planner_metadata(path)
+    artifact = _load_planner_artifact(str(path))
+    metrics_test = metadata.get("metrics_test") if isinstance(metadata, dict) else None
+    planner_guard = metadata.get("planner_guard") if isinstance(metadata, dict) else None
+    path_version = path.stem if path.suffix else path.name
+    return {
+        "model_path": str(path),
+        "artifact_dir": str(artifact_dir),
+        "exists": bool(path.exists() and path.is_file()),
+        "metadata_path": str(metadata_path),
+        "metadata_exists": bool(metadata_path.exists() and metadata_path.is_file()),
+        "eval_report_path": str(eval_report_path),
+        "eval_report_exists": bool(eval_report_path.exists() and eval_report_path.is_file()),
+        "model_version": str(
+            ((metadata or {}).get("model_version") if isinstance(metadata, dict) else None)
+            or ((artifact or {}).get("model_version") if isinstance(artifact, dict) else None)
+            or path_version
+            or ""
+        ),
+        "selected_feature_set": str(
+            ((metadata or {}).get("selected_feature_set") if isinstance(metadata, dict) else None)
+            or ((artifact or {}).get("selected_feature_set") if isinstance(artifact, dict) else None)
+            or ""
+        ),
+        "trained_at_utc": str(
+            ((metadata or {}).get("trained_at_utc") if isinstance(metadata, dict) else None)
+            or ""
+        ),
+        "task": str(
+            ((metadata or {}).get("task") if isinstance(metadata, dict) else None)
+            or ((artifact or {}).get("task") if isinstance(artifact, dict) else None)
+            or ""
+        ),
+        "estimator": str(((metadata or {}).get("estimator") if isinstance(metadata, dict) else None) or ""),
+        "metrics_test": metrics_test if isinstance(metrics_test, dict) else {},
+        "planner_guard": planner_guard if isinstance(planner_guard, dict) else {},
+    }
 
 
 def _candidate_types_for_category(artifact: dict[str, Any], category: str) -> list[str]:
@@ -117,6 +228,13 @@ def _history_rows(user, *, now_utc) -> list[dict[str, Any]]:
             "transaction__total_amount",
             "product__category",
             "product__product_type",
+            "product__concerns",
+            "product__actives",
+            "product__flags",
+            "product__supported_skin_types",
+            "product__attrs",
+            "product__ingredients_inci",
+            "product__raw_meta",
         )
     )
 
@@ -291,8 +409,63 @@ def generate_planner_chain(
 
     now_utc = timezone.now()
     history_rows = _history_rows(user, now_utc=now_utc)
+    profile_row = CustomerProfile.objects.filter(user=user).first()
+    profile_sig = profile_signature(profile_row)
     history = _history_features(history_rows, category=category, now_utc=now_utc)
     last_product_types = [str(history[f"last{i}_product_type"]) for i in range(1, 6)]
+    anchor_row = next(
+        (
+            row
+            for row in history_rows
+            if str(row.get("product__category") or "").strip().lower() == category
+        ),
+        None,
+    )
+    anchor_sig = product_signature(
+        {
+            "category": anchor_row.get("product__category") if isinstance(anchor_row, dict) else "",
+            "product_type": anchor_row.get("product__product_type") if isinstance(anchor_row, dict) else "",
+            "concerns": (
+                anchor_row.get("product__concerns")
+                if isinstance(anchor_row, dict) and isinstance(anchor_row.get("product__concerns"), list)
+                else []
+            ),
+            "actives": (
+                anchor_row.get("product__actives")
+                if isinstance(anchor_row, dict) and isinstance(anchor_row.get("product__actives"), list)
+                else []
+            ),
+            "flags": (
+                anchor_row.get("product__flags")
+                if isinstance(anchor_row, dict) and isinstance(anchor_row.get("product__flags"), list)
+                else []
+            ),
+            "supported_skin_types": (
+                anchor_row.get("product__supported_skin_types")
+                if isinstance(anchor_row, dict) and isinstance(anchor_row.get("product__supported_skin_types"), list)
+                else []
+            ),
+            "attrs": anchor_row.get("product__attrs") if isinstance(anchor_row, dict) else {},
+            "ingredients_inci": anchor_row.get("product__ingredients_inci") if isinstance(anchor_row, dict) else "",
+            "raw_meta": anchor_row.get("product__raw_meta") if isinstance(anchor_row, dict) else {},
+        }
+    )
+    base_content = build_base_content_features(profile_sig, anchor_sig)
+    candidate_catalog_summaries = build_candidate_catalog_summaries(
+        list(
+            Product.objects.filter(category=category, product_type__in=category_candidates).values(
+                "category",
+                "product_type",
+                "concerns",
+                "actives",
+                "flags",
+                "supported_skin_types",
+                "attrs",
+                "ingredients_inci",
+                "raw_meta",
+            )
+        )
+    )
     trace: list[dict[str, Any]] = []
     planned_actionable: list[str] = []
 
@@ -345,6 +518,7 @@ def generate_planner_chain(
                 "candidate_is_stop": int(candidate == STOP_TOKEN),
             }
             row.update(history)
+            row.update(base_content)
             row.update(
                 _candidate_history_features(
                     history_rows,
@@ -352,6 +526,13 @@ def generate_planner_chain(
                     candidate_type=candidate,
                     last_product_types=last_product_types,
                     now_utc=now_utc,
+                )
+            )
+            row.update(
+                build_candidate_content_features(
+                    candidate_catalog_summaries.get((category, candidate)),
+                    profile_sig,
+                    anchor_sig,
                 )
             )
             row_payloads.append(row)

@@ -1,4 +1,5 @@
 import random
+
 from django.core.management.base import BaseCommand
 
 from catalog.models import Product
@@ -19,31 +20,37 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        # Чтобы сид был воспроизводимым
         random.seed(42)
 
         brands = ["DermaLab", "Glowify", "SkinNova", "CosmoCare", "PureDerm", "Aurum"]
 
         def mk_common():
+            price = random.choice([9.99, 12.99, 15.99, 19.99, 24.99, 29.99, 39.99])
+            raw_meta = {}
+            if random.random() < 0.25:
+                discount = random.choice([10, 15, 20, 25, 30])
+                original_price = round(price / (1 - discount / 100), 2)
+                raw_meta = {
+                    "original_price": f"{original_price:.2f}",
+                    "discount": discount,
+                }
             return {
                 "brand": random.choice(brands),
-                "price": random.choice([9.99, 12.99, 15.99, 19.99, 24.99, 29.99, 39.99]),
+                "price": price,
                 "flags": random.sample(["fragrance", "alcohol", "essential_oils"], k=1) if random.random() < 0.2 else [],
                 "in_stock": True,
                 "actives": [],
                 "strength": "low",
-                "supported_skin_types": [],  # пусто = подходит всем
+                "supported_skin_types": [],
                 "concerns": [],
                 "attrs": {},
-                "step": "",  # для не-skincare
+                "step": "",
+                "raw_meta": raw_meta,
             }
 
         existing_categories = set(Product.objects.values_list("category", flat=True).distinct())
         requested = options.get("only") or []
 
-        # Какие категории сеять:
-        # - если --only не задан: сеем только отсутствующие
-        # - если --only задан: сеем только выбранные (даже если уже есть) НЕ будем, чтобы не плодить мусор
         if requested:
             categories_to_seed = [c for c in requested if c not in existing_categories]
         else:
@@ -67,7 +74,6 @@ class Command(BaseCommand):
                 created += 1
             return obj, was_created
 
-        # --- SKINCARE ---
         if "skincare" in categories_to_seed:
             skincare_types = ["cleanser", "moisturizer", "spf", "serum", "toner", "mask"]
             actives_pool = ["bha", "aha", "retinoid", "vitamin_c", "niacinamide", "ceramides", "hyaluronic"]
@@ -92,7 +98,7 @@ class Command(BaseCommand):
                         "price": common["price"],
                         "category": "skincare",
                         "product_type": pt,
-                        "step": pt,  # legacy routine step
+                        "step": pt,
                         "actives": actives,
                         "supported_skin_types": random.sample(ALL_SKIN_TYPES, k=random.randint(2, 5)),
                         "strength": strength,
@@ -102,7 +108,6 @@ class Command(BaseCommand):
 
                     safe_create("skincare", pt, f"{pt.title()} {i+1}", defaults)
 
-        # --- HAIRCARE ---
         if "haircare" in categories_to_seed:
             hair_types = ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum"]
             hair_concerns = ["anti_frizz", "volume", "repair", "color_safe", "sensitive_scalp"]
@@ -124,7 +129,6 @@ class Command(BaseCommand):
                     }
                     safe_create("haircare", pt, f"{pt.replace('_', ' ').title()} {i+1}", defaults)
 
-        # --- MAKEUP ---
         if "makeup" in categories_to_seed:
             makeup_types = ["lipstick", "mascara", "foundation", "blush", "eyeshadow"]
             makeup_concerns = ["long_wear", "natural_finish", "full_coverage", "waterproof", "sensitive_eyes"]
@@ -161,7 +165,6 @@ class Command(BaseCommand):
                     }
                     safe_create("makeup", pt, f"{pt.title()} {i+1}", defaults)
 
-        # --- FRAGRANCE ---
         if "fragrance" in categories_to_seed:
             frag_types = ["edp", "edt", "body_mist"]
             scent_families = ["floral", "woody", "fresh", "oriental", "gourmand"]

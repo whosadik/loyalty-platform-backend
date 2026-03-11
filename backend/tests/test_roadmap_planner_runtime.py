@@ -7,8 +7,10 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 
 from catalog.models import Product
+from roadmap_app.ml_planner import generate_planner_chain
 from roadmap_app.models import RoadmapEvent
 from roadmap_app.services import refresh_roadmap
+from users_app.models import CustomerProfile
 
 
 def _planner_result(chain: list[str]) -> dict[str, object]:
@@ -107,3 +109,133 @@ class RoadmapPlannerRuntimeTests(TestCase):
         self.assertIsNotNone(generated)
         self.assertEqual(str((generated.context or {}).get("plan_source")), "roadmap_planner_v1")
         self.assertEqual(str((generated.context or {}).get("source")), "planner")
+
+    @override_settings(
+        ROADMAP_PLANNER_V1_MODE="serve",
+        ROADMAP_PLANNER_V1_ENABLED_CATEGORIES=["makeup"],
+        ROADMAP_PLANNER_V1_MODEL_PATH="C:/tmp/planner.pkl",
+    )
+    def test_generate_planner_chain_uses_content_features(self):
+        profile = CustomerProfile.objects.get(user=self.user)
+        profile.makeup_profile = {
+            "finish_pref": ["dewy"],
+            "coverage_pref": ["medium"],
+            "undertone": "neutral",
+            "tone_family": "light",
+            "concerns": ["long_wear"],
+        }
+        profile.save(update_fields=["makeup_profile"])
+
+        primer = Product.objects.create(
+            name="Planner Runtime Primer",
+            brand="B",
+            price=Decimal("9.00"),
+            category="makeup",
+            product_type="primer",
+            attrs={"finish": "dewy"},
+            ingredients_inci="dimethicone, silica",
+            in_stock=True,
+        )
+        foundation = Product.objects.get(category="makeup", product_type="foundation")
+        foundation.attrs = {
+            "finish": "dewy",
+            "coverage": "medium",
+            "undertone": "neutral",
+            "tone_family": "light",
+        }
+        foundation.concerns = ["long_wear"]
+        foundation.ingredients_inci = "water, dimethicone, iron_oxides"
+        foundation.save(update_fields=["attrs", "concerns", "ingredients_inci"])
+
+        mascara = Product.objects.get(category="makeup", product_type="mascara")
+        mascara.attrs = {"finish": "matte"}
+        mascara.ingredients_inci = "water, beeswax"
+        mascara.save(update_fields=["attrs", "ingredients_inci"])
+
+        User = get_user_model()
+        # Reuse checkout-style history via transactions.
+        from transactions.models import Transaction, TransactionItem
+
+        tx = Transaction.objects.create(
+            user=self.user,
+            total_amount=Decimal("9.00"),
+            channel="web",
+            idempotency_key="planner-runtime-content-1",
+        )
+        TransactionItem.objects.create(
+            transaction=tx,
+            product=primer,
+            quantity=1,
+            unit_price=Decimal("9.00"),
+        )
+
+        class DummyPlannerModel:
+            def __init__(self):
+                self.columns: list[str] = []
+                self.seen_frames: list[object] = []
+
+            def predict(self, X):
+                self.columns = list(X.columns)
+                self.seen_frames.append(X.copy())
+                score = (
+                    X["candidate_profile_makeup_finish_match_rate"].astype(float) * 10.0
+                    + X["candidate_anchor_shared_inci_rate"].astype(float) * 3.0
+                    - X["candidate_is_stop"].astype(float) * 5.0
+                )
+                return score.to_numpy()
+
+        model = DummyPlannerModel()
+        artifact = {
+            "task": "roadmap_planner_v1_ranking",
+            "model": model,
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "model_version": "planner_content_test_v1",
+            "selected_feature_set": "full",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "profile_makeup_finish_pref_primary",
+                "anchor_product_type",
+                "candidate_profile_makeup_finish_match_rate",
+                "candidate_anchor_shared_inci_rate",
+                "candidate_is_stop",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "profile_makeup_finish_pref_primary",
+                "anchor_product_type",
+            ],
+            "numeric_features": [
+                "candidate_profile_makeup_finish_match_rate",
+                "candidate_anchor_shared_inci_rate",
+                "candidate_is_stop",
+            ],
+            "candidate_types_by_category": {"makeup": ["foundation", "mascara", "__stop__"]},
+            "candidate_popularity_priors": {"makeup": {"foundation": 0.5, "mascara": 0.4, "__stop__": 0.1}},
+        }
+
+        with patch("roadmap_app.ml_planner._load_planner_artifact", return_value=artifact):
+            result = generate_planner_chain(
+                user=self.user,
+                category="makeup",
+                candidate_types=["foundation", "mascara"],
+                purchased_types=[],
+                owned_types_ordered=[],
+                min_steps=1,
+                max_steps=3,
+                refresh_caller="refresh_roadmap",
+            )
+
+        self.assertEqual(str(result["decision"]), "model_used")
+        self.assertGreaterEqual(len(result["chain"]), 1)
+        self.assertEqual(str(result["chain"][0]), "foundation")
+        self.assertIn("candidate_profile_makeup_finish_match_rate", model.columns)
+        self.assertIn("candidate_anchor_shared_inci_rate", model.columns)
+        self.assertTrue(bool(model.seen_frames))
+        first_seen = model.seen_frames[0]
+        foundation_row = first_seen[first_seen["candidate_type"].astype(str) == "foundation"].iloc[0]
+        self.assertEqual(str(foundation_row["profile_makeup_finish_pref_primary"]), "dewy")
+        self.assertEqual(str(foundation_row["anchor_product_type"]), "primer")
+        self.assertGreater(float(foundation_row["candidate_profile_makeup_finish_match_rate"]), 0.0)

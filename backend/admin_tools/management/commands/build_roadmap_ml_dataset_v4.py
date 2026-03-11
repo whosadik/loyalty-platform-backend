@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 import re
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from datetime import timedelta, timezone as dt_timezone
 from pathlib import Path
@@ -18,12 +18,24 @@ except Exception:  # pragma: no cover
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
+from catalog.models import Product
+from roadmap_app.content_features import (
+    ALL_CATEGORICAL_FEATURES,
+    ALL_NUMERIC_FEATURES,
+    build_base_content_features,
+    build_candidate_catalog_summaries,
+    build_candidate_content_features,
+    product_signature,
+    profile_signature,
+)
 from roadmap_app.fragrance_slots import SLOTS, slot_of_fragrance
 from roadmap_app.models import RoadmapEvent
 from transactions.models import TransactionItem
+from users_app.models import CustomerProfile
 
 
 TARGET_CATEGORIES = {"skincare", "haircare", "makeup", "fragrance"}
+MAX_TS_ID = 10**18
 RULE_CHAIN_BY_CATEGORY: dict[str, list[str]] = {
     "skincare": [
         "cleanser",
@@ -58,6 +70,10 @@ RULE_CHAIN_BY_CATEGORY: dict[str, list[str]] = {
 
 def _safe_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _event_position(created_at, event_id: int) -> tuple[Any, int]:
+    return (created_at.astimezone(dt_timezone.utc), int(event_id))
 
 
 def _slug_token(raw: Any) -> str:
@@ -369,6 +385,7 @@ class Command(BaseCommand):
 
         for row in exposed_qs.values(
             "user_id",
+            "step_id",
             "created_at",
             "context",
             "step__plan__category",
@@ -386,6 +403,7 @@ class Command(BaseCommand):
             if prev is None or created_at < prev["t0"]:
                 first_episode_by_key[key] = {
                     "user_id": user_id,
+                    "step_id": int(row["step_id"]) if row.get("step_id") else None,
                     "category": category,
                     "t0": created_at,
                     "day_key": day_key,
@@ -413,9 +431,53 @@ class Command(BaseCommand):
             "unit_price",
             "product__category",
             "product__product_type",
+            "product__concerns",
+            "product__actives",
+            "product__flags",
+            "product__supported_skin_types",
             "product__attrs",
+            "product__ingredients_inci",
             "product__raw_meta",
         )
+
+        profile_map = {
+            int(profile.user_id): profile_signature(profile)
+            for profile in CustomerProfile.objects.filter(user_id__in=users)
+        }
+
+        completed_qs = RoadmapEvent.objects.filter(
+            user_id__in=users,
+            event_type=RoadmapEvent.Type.STEP_COMPLETED,
+            created_at__gte=since,
+            created_at__lte=now_utc,
+        )
+        if not include_ga:
+            completed_qs = completed_qs.exclude(user__username__startswith="ga_")
+
+        completed_by_key: dict[tuple[int, str], list[dict[str, Any]]] = defaultdict(list)
+        for row in completed_qs.values(
+            "id",
+            "user_id",
+            "step_id",
+            "created_at",
+            "context",
+            "step__product_type",
+            "step__plan__category",
+        ).iterator(chunk_size=5000):
+            context = _safe_dict(row.get("context"))
+            category = str(row.get("step__plan__category") or context.get("category") or "").strip().lower()
+            if category not in TARGET_CATEGORIES:
+                continue
+            completed_by_key[(int(row["user_id"]), category)].append(
+                {
+                    "id": int(row["id"]),
+                    "step_id": int(row["step_id"]) if row.get("step_id") else None,
+                    "created_at": row["created_at"].astimezone(dt_timezone.utc),
+                    "product_type": str(context.get("product_type") or row.get("step__product_type") or "").strip().lower(),
+                    "matched_by": str(context.get("matched_by") or "").strip().lower(),
+                    "match_meta": context.get("match_meta") if isinstance(context.get("match_meta"), dict) else {},
+                }
+            )
 
         user_items: dict[int, list[dict[str, Any]]] = defaultdict(list)
         popularity_counter_by_category: dict[str, Counter[str]] = defaultdict(Counter)
@@ -441,6 +503,17 @@ class Command(BaseCommand):
                     "tx_total": _float_or_zero(row.get("transaction__total_amount")),
                     "category": category,
                     "product_type": product_type,
+                    "concerns": row.get("product__concerns") if isinstance(row.get("product__concerns"), list) else [],
+                    "actives": row.get("product__actives") if isinstance(row.get("product__actives"), list) else [],
+                    "flags": row.get("product__flags") if isinstance(row.get("product__flags"), list) else [],
+                    "supported_skin_types": (
+                        row.get("product__supported_skin_types")
+                        if isinstance(row.get("product__supported_skin_types"), list)
+                        else []
+                    ),
+                    "attrs": _safe_dict(row.get("product__attrs")),
+                    "ingredients_inci": str(row.get("product__ingredients_inci") or ""),
+                    "raw_meta": _safe_dict(row.get("product__raw_meta")),
                     "quantity": quantity,
                     "unit_price": _float_or_zero(row.get("unit_price")),
                     "slot": slot_value,
@@ -453,6 +526,8 @@ class Command(BaseCommand):
 
         for values in user_items.values():
             values.sort(key=lambda x: (x["ts"], int(x["tx_id"]), int(x["item_id"])))
+        for values in completed_by_key.values():
+            values.sort(key=lambda x: (x["created_at"], int(x["id"])))
 
         candidate_types_by_category: dict[str, list[str]] = {}
         top_popularity_by_category: dict[str, list[str]] = {}
@@ -469,6 +544,21 @@ class Command(BaseCommand):
             )
         candidate_types_by_category["fragrance"] = list(SLOTS)
         top_popularity_by_category["fragrance"] = list(SLOTS)
+
+        catalog_rows = list(
+            Product.objects.filter(category__in=sorted(TARGET_CATEGORIES)).values(
+                "category",
+                "product_type",
+                "concerns",
+                "actives",
+                "flags",
+                "supported_skin_types",
+                "attrs",
+                "ingredients_inci",
+                "raw_meta",
+            )
+        )
+        candidate_catalog_summaries = build_candidate_catalog_summaries(catalog_rows)
 
         top_owned_types_by_category: dict[str, list[str]] = {}
         owned_feature_columns: list[str] = []
@@ -493,6 +583,10 @@ class Command(BaseCommand):
         for split_name, split_users in split_map.items():
             for user_id in split_users:
                 split_by_user[int(user_id)] = split_name
+        completed_positions_by_key = {
+            key: [_event_position(row["created_at"], int(row["id"])) for row in rows]
+            for key, rows in completed_by_key.items()
+        }
 
         episode_records: list[dict[str, Any]] = []
         episode_aux: dict[int, dict[str, Any]] = {}
@@ -500,6 +594,7 @@ class Command(BaseCommand):
 
         for episode_id, seed_row in enumerate(episodes_seed, start=1):
             user_id = int(seed_row["user_id"])
+            step_id = int(seed_row["step_id"]) if seed_row.get("step_id") else None
             category = str(seed_row["category"])
             t0 = seed_row["t0"]
             split_name = str(split_by_user.get(user_id) or "train")
@@ -515,24 +610,57 @@ class Command(BaseCommand):
             if any(row["ts"] <= t0 for row in future_items):
                 raise CommandError(f"Leakage detected: future_items has ts <= t0 for user_id={user_id}")
 
-            label = "__none__"
             window_end = t0 + timedelta(days=label_window_days)
-            for row in future_items:
-                ts = row["ts"]
-                if ts > window_end:
-                    break
-                if str(row["category"]) != category:
-                    continue
-                if category == "fragrance":
-                    slot_value = str(row.get("slot") or "")
-                    if slot_value in SLOTS:
-                        label = slot_value
+            label = "__none__"
+            label_source = "none"
+            label_matched_by = "__none__"
+            label_event_step_id = 0
+
+            completion_rows_all = completed_by_key.get((user_id, category), [])
+            completion_positions = completed_positions_by_key.get((user_id, category), [])
+            if completion_rows_all and completion_positions:
+                start_idx = bisect_right(completion_positions, _event_position(t0, 0))
+                end_idx = bisect_left(completion_positions, (window_end, MAX_TS_ID))
+                completion_window_rows = completion_rows_all[start_idx:end_idx]
+            else:
+                completion_window_rows = []
+
+            selected_completion = None
+            if step_id:
+                selected_completion = next(
+                    (row for row in completion_window_rows if int(row.get("step_id") or 0) == int(step_id)),
+                    None,
+                )
+            if selected_completion is None and completion_window_rows:
+                selected_completion = completion_window_rows[0]
+
+            if selected_completion is not None:
+                label_candidate = str(selected_completion.get("product_type") or "").strip().lower()
+                if label_candidate:
+                    label = label_candidate
+                    label_source = "step_completed_event"
+                    label_matched_by = str(selected_completion.get("matched_by") or "__none__").strip().lower() or "__none__"
+                    label_event_step_id = int(selected_completion.get("step_id") or 0)
+
+            if label == "__none__":
+                for row in future_items:
+                    ts = row["ts"]
+                    if ts > window_end:
                         break
-                else:
-                    ptype = str(row.get("product_type") or "")
-                    if ptype:
-                        label = ptype
-                        break
+                    if str(row["category"]) != category:
+                        continue
+                    if category == "fragrance":
+                        slot_value = str(row.get("slot") or "")
+                        if slot_value in SLOTS:
+                            label = slot_value
+                            label_source = "future_transaction"
+                            break
+                    else:
+                        ptype = str(row.get("product_type") or "")
+                        if ptype:
+                            label = ptype
+                            label_source = "future_transaction"
+                            break
 
             last_product_types: list[str] = []
             last_categories: list[str] = []
@@ -542,6 +670,7 @@ class Command(BaseCommand):
             candidate_owned_counter: Counter[str] = Counter()
             candidate_seen_90d_counter: Counter[str] = Counter()
             candidate_last_seen_at: dict[str, Any] = {}
+            anchor_item: dict[str, Any] | None = None
 
             last_ts_in_category = None
             tx_ids_90d: set[int] = set()
@@ -573,6 +702,7 @@ class Command(BaseCommand):
                         candidate_last_seen_at.setdefault(candidate_key, ts)
                     if last_ts_in_category is None:
                         last_ts_in_category = ts
+                        anchor_item = row
                     if ts >= since_90d:
                         tx_id = int(row["tx_id"])
                         tx_ids_90d.add(tx_id)
@@ -616,6 +746,12 @@ class Command(BaseCommand):
                 mapped = owned_feature_map.get(key)
                 if mapped:
                     feature_base[mapped] = int(count)
+            feature_base.update(
+                build_base_content_features(
+                    profile_map.get(user_id),
+                    product_signature(anchor_item),
+                )
+            )
 
             episode_records.append(
                 {
@@ -625,6 +761,9 @@ class Command(BaseCommand):
                     "category": category,
                     "t0_utc": t0.isoformat().replace("+00:00", "Z"),
                     "label": label,
+                    "label_source": label_source,
+                    "label_matched_by": label_matched_by,
+                    "label_event_step_id": int(label_event_step_id),
                     "split": split_name,
                     "candidate_types": list(candidate_types_by_category.get(category) or []),
                     **feature_base,
@@ -641,6 +780,7 @@ class Command(BaseCommand):
                 "candidate_owned_counter": dict(candidate_owned_counter),
                 "candidate_seen_90d_counter": dict(candidate_seen_90d_counter),
                 "candidate_days_since_last_seen_map": candidate_days_since_last_seen_map,
+                "anchor_item": dict(anchor_item) if isinstance(anchor_item, dict) else None,
             }
 
         if not episode_records:
@@ -690,6 +830,7 @@ class Command(BaseCommand):
                 for k, v in (aux.get("candidate_days_since_last_seen_map") or {}).items()
                 if str(k).strip()
             }
+            anchor_sig = product_signature(aux.get("anchor_item"))
             if label != "__none__" and label not in set(candidates):
                 label_outside_candidates += 1
             pos_map = {token: idx for idx, token in enumerate(RULE_CHAIN_BY_CATEGORY.get(category) or [])}
@@ -719,6 +860,13 @@ class Command(BaseCommand):
                         candidate_days_since_last_seen_map.get(candidate, -1)
                     ),
                 }
+                row.update(
+                    build_candidate_content_features(
+                        candidate_catalog_summaries.get((category, str(candidate))),
+                        profile_map.get(int(ep["user_id"])),
+                        anchor_sig,
+                    )
+                )
                 for key, value in ep.items():
                     if key in {
                         "episode_id",
@@ -744,6 +892,18 @@ class Command(BaseCommand):
         class_distribution = _class_distribution_for_splits(episode_records, split_map=split_map)
         positives = int(sum(1 for ep in episode_records if str(ep["label"]) != "__none__"))
         none_total = int(sum(1 for ep in episode_records if str(ep["label"]) == "__none__"))
+        label_source_distribution = dict(
+            sorted(Counter(str(ep.get("label_source") or "none") for ep in episode_records).items())
+        )
+        label_matched_by_distribution = dict(
+            sorted(
+                Counter(
+                    str(ep.get("label_matched_by") or "__none__")
+                    for ep in episode_records
+                    if str(ep.get("label_source") or "") == "step_completed_event"
+                ).items()
+            )
+        )
 
         baselines = _build_baselines(
             episodes=episode_records,
@@ -775,6 +935,7 @@ class Command(BaseCommand):
             "last3_category",
             "last4_category",
             "last5_category",
+            *ALL_CATEGORICAL_FEATURES,
         ]
         numeric_features = [
             "month_of_year",
@@ -796,6 +957,7 @@ class Command(BaseCommand):
             "candidate_seen_90d_count_in_category",
             "candidate_days_since_last_seen_in_category",
             *owned_feature_columns,
+            *ALL_NUMERIC_FEATURES,
         ]
         feature_columns = [*categorical_features, *numeric_features]
 
@@ -817,6 +979,8 @@ class Command(BaseCommand):
             "none_count": none_total,
             "none_rate": round(float(none_total / max(1, len(episode_records))), 6),
             "label_outside_candidate_set": int(label_outside_candidates),
+            "label_source_distribution": label_source_distribution,
+            "label_matched_by_distribution": label_matched_by_distribution,
             "raw_exposed_events": int(raw_exposed_total),
             "class_distribution": class_distribution,
             "candidate_types_by_category": candidate_types_by_category,

@@ -218,6 +218,56 @@ class RoadmapTelemetryTests(APITestCase):
         self.assertIsNotNone(latest_generated_same_step)
         self.assertLess(int(event.id), int(latest_generated_same_step.id))
 
+    def test_checkout_logs_semantic_content_match_for_alternative_same_type_product(self):
+        profile = CustomerProfile.objects.get(user=self.user)
+        profile.hair_profile = {"hair_type": "curly", "concerns": ["repair"]}
+        profile.save(update_fields=["hair_profile"])
+
+        self.p_conditioner.concerns = ["repair"]
+        self.p_conditioner.attrs = {"hair_type": "curly"}
+        self.p_conditioner.ingredients_inci = "water, glycerin, argan_oil"
+        self.p_conditioner.save(update_fields=["concerns", "attrs", "ingredients_inci"])
+
+        first = self._checkout(self.p_shampoo.id)
+        self.assertEqual(first.status_code, 201)
+
+        roadmap = self.client.get("/api/me/roadmap?category=haircare")
+        self.assertEqual(roadmap.status_code, 200)
+        next_step = (roadmap.data.get("summary") or {}).get("next_step") or {}
+        step_id = int(next_step["id"])
+
+        alt_conditioner = Product.objects.create(
+            name="Telemetry Conditioner Alt",
+            brand="B",
+            price=Decimal("10.00"),
+            category="haircare",
+            product_type="conditioner",
+            concerns=["repair"],
+            attrs={"hair_type": "curly"},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            ingredients_inci="water, glycerin, argan_oil, panthenol",
+            strength="low",
+            in_stock=True,
+        )
+
+        second = self._checkout(alt_conditioner.id)
+        self.assertEqual(second.status_code, 201)
+
+        event = RoadmapEvent.objects.filter(
+            user=self.user,
+            step_id=step_id,
+            event_type=RoadmapEvent.Type.STEP_COMPLETED,
+        ).order_by("-id").first()
+        self.assertIsNotNone(event)
+        self.assertEqual(str(event.context.get("matched_by")), "semantic_content_match")
+        match_meta = event.context.get("match_meta") or {}
+        self.assertEqual(int(match_meta.get("recommended_product_id")), int(self.p_conditioner.id))
+        self.assertEqual(int(match_meta.get("purchased_product_id")), int(alt_conditioner.id))
+        self.assertGreater(float(match_meta.get("semantic_score") or 0.0), 1.25)
+        self.assertIn("repair", list(match_meta.get("shared_concerns") or []))
+
     def test_checkout_path_emits_generation_events_before_any_exposure(self):
         response = self._checkout(self.p_shampoo.id)
         self.assertEqual(response.status_code, 201)

@@ -337,7 +337,10 @@ class CheckoutView(APIView):
                             step=step,
                             offer_assignment_id=applied_assignment_id,
                             transaction_id=txn.id,
-                            extra={"matched_by": match.get("matched_by")},
+                            extra={
+                                "matched_by": match.get("matched_by"),
+                                "match_meta": match.get("match_meta") or {},
+                            },
                         ),
                     )
                 except Exception:

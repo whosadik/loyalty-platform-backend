@@ -4,8 +4,8 @@ import tempfile
 from decimal import Decimal
 from pathlib import Path
 
-from django.core.management import call_command
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APITestCase
 
@@ -69,6 +69,8 @@ class ImportProductsXlsxTests(TestCase):
                     "supported_skin_types_raw",
                     "area_raw",
                     "volume_raw",
+                    "original_price",
+                    "discount",
                 ]
             )
             ws.append(
@@ -93,11 +95,13 @@ class ImportProductsXlsxTests(TestCase):
                     "Apply daily",
                     "Aqua, Niacinamide",
                     "Product description",
-                    "сыворотка",
-                    "увлажнение",
-                    "для всех типов кожи",
-                    "лицо",
-                    "30 мл",
+                    "serum",
+                    "hydration",
+                    "all",
+                    "face",
+                    "30 ml",
+                    "2499",
+                    "20",
                 ]
             )
             wb.save(xlsx_path)
@@ -117,6 +121,8 @@ class ImportProductsXlsxTests(TestCase):
         self.assertEqual(p.supported_skin_types, [])
         self.assertEqual(p.image_url, "https://example.com/img.jpg")
         self.assertEqual(p.description, "Product description")
+        self.assertEqual(p.raw_meta["original_price"], "2499")
+        self.assertEqual(p.raw_meta["discount"], 20)
 
 
 class ProductSearchApiTests(APITestCase):
@@ -178,3 +184,75 @@ class ProductSearchApiTests(APITestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.data), 1)
         self.assertEqual(resp.data[0]["brand"], "DermaLab")
+
+
+class ProductSaleApiTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(username="catalog_sale_u1", password="pass12345")
+        self.client.force_authenticate(self.user)
+
+        self.discounted = Product.objects.create(
+            name="Sale Serum",
+            brand="DermaLab",
+            price=Decimal("100.00"),
+            category=Product.Category.SKINCARE,
+            product_type="serum",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+            raw_meta={"original_price": "125.00"},
+        )
+        self.discount_only = Product.objects.create(
+            name="Discount Mask",
+            brand="Glowify",
+            price=Decimal("80.00"),
+            category=Product.Category.SKINCARE,
+            product_type="mask",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+            raw_meta={"discount": 20},
+        )
+        Product.objects.create(
+            name="Regular Cleanser",
+            brand="Aurum",
+            price=Decimal("70.00"),
+            category=Product.Category.SKINCARE,
+            product_type="cleanser",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+
+    def test_product_serializer_exposes_sale_fields(self):
+        resp = self.client.get(f"/api/products/{self.discounted.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["original_price"], "125.00")
+        self.assertEqual(resp.data["discount"], 20)
+        self.assertTrue(resp.data["has_discount"])
+
+        resp = self.client.get(f"/api/products/{self.discount_only.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["discount"], 20)
+        self.assertEqual(resp.data["original_price"], "100.00")
+        self.assertTrue(resp.data["has_discount"])
+
+    def test_sale_query_param_returns_only_discounted_products(self):
+        resp = self.client.get("/api/products/?sale=true")
+        self.assertEqual(resp.status_code, 200)
+
+        names = {item["name"] for item in resp.data}
+        self.assertEqual(names, {"Sale Serum", "Discount Mask"})
