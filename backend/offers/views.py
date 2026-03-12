@@ -14,6 +14,7 @@ from .models import Offer, OfferAssignment, CampaignBudget, OfferEvent
 from .serializers import RedeemOfferRequestSerializer, RedeemOfferResponseSerializer
 from offers.services import get_or_assign_next_offer 
 from offers.events import record_offer_event
+from offers.presentation import build_offer_assignment_payload, build_offer_product_cache
 from ml_logic.next_best_reward import compute_rfm, segment, pick_next_offer
 from ml_logic.routine_builder import Profile, build_routine
 from ml_logic.recommender import (
@@ -35,6 +36,9 @@ from backend.api_serializers import ApiErrorSerializer
 from audit.logging import log_event
 from audit.models import AuditEvent
 from roadmap_app.events import record_exposed_from_offer_assignment
+
+HOME_PROMO_BANNERS_DEFAULT_LIMIT = 6
+HOME_PROMO_BANNERS_MAX_LIMIT = 8
 
 def _ensure_loyalty_account(user):
     account, created = LoyaltyAccount.objects.get_or_create(user=user)
@@ -69,6 +73,112 @@ def _recalculate_tier(user, now):
         account.save(update_fields=["tier"])
 
     return account
+
+
+def _build_offer_context_steps(user):
+    profile_obj, _ = CustomerProfile.objects.get_or_create(user=user)
+    prof = Profile(
+        skin_type=profile_obj.skin_type,
+        goals=profile_obj.goals or [],
+        avoid_flags=profile_obj.avoid_flags or [],
+        budget=profile_obj.budget,
+    )
+
+    products_for_routine = list(
+        Product.objects.all().values(
+            "id", "name", "brand", "price",
+            "category", "product_type", "step",
+            "actives", "flags", "supported_skin_types",
+            "strength", "in_stock", "concerns", "attrs",
+        )
+    )
+    owned_ids = list(
+        OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
+    )
+    routine = build_routine(profile=prof, products=products_for_routine, top_k=3, owned_product_ids=owned_ids)
+    return [
+        item.get("step")
+        for item in (routine["am"] + routine["pm"])
+        if item.get("status") == "missing"
+    ] or None
+
+
+def _record_next_offer_assignment_log(request, assignment, context_steps):
+    target = assignment.target or {}
+    log_event(
+        request=request,
+        action=AuditEvent.Action.NEXT_OFFER_ASSIGNED,
+        entity_type="OfferAssignment",
+        entity_id=assignment.id,
+        status_code=200,
+        meta={
+            "picked_via": target.get("picked_via"),
+            "scope": target.get("scope"),
+            "value": target.get("value"),
+            "category": target.get("category"),
+            "product_type": target.get("product_type"),
+            "context_steps": context_steps,
+        },
+    )
+
+
+def _parse_home_promotions_limit(request):
+    raw_limit = request.query_params.get("limit")
+    if raw_limit is None:
+        return HOME_PROMO_BANNERS_DEFAULT_LIMIT
+    try:
+        parsed = int(raw_limit)
+    except (TypeError, ValueError):
+        return HOME_PROMO_BANNERS_DEFAULT_LIMIT
+    return max(1, min(parsed, HOME_PROMO_BANNERS_MAX_LIMIT))
+
+
+def _list_active_offer_assignments(user, *, now, limit=None):
+    qs = (
+        OfferAssignment.objects.filter(user=user, is_active=True, is_redeemed=False)
+        .select_related("offer", "offer__campaign")
+        .order_by("-assigned_at")
+    )
+    assignments = []
+    for assignment in qs[:50]:
+        if assignment.expires_at and assignment.expires_at <= now:
+            continue
+        assignments.append(assignment)
+
+    assignments.sort(
+        key=lambda assignment: (
+            assignment.offer.campaign.priority if assignment.offer.campaign_id else 9999,
+            -(assignment.assigned_at.timestamp() if assignment.assigned_at else 0),
+            -assignment.id,
+        )
+    )
+    if limit is not None:
+        return assignments[:limit]
+    return assignments
+
+
+def _serialize_offer_assignments(request, assignments, *, endpoint, include_assigned_at=False):
+    request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+    product_cache = build_offer_product_cache(assignments)
+    out = []
+    for assignment in assignments:
+        _, created = record_offer_event(
+            assignment,
+            OfferEvent.Type.EXPOSED,
+            request_id=request_id,
+            context={"endpoint": endpoint, "variant": "v1"},
+            return_created=True,
+        )
+        if created:
+            record_exposed_from_offer_assignment(assignment=assignment, request_id=request_id)
+        out.append(
+            build_offer_assignment_payload(
+                assignment,
+                include_assigned_at=include_assigned_at,
+                product_cache=product_cache,
+            )
+        )
+    return out
 
 class MeNextOfferView(APIView):
     permission_classes = [IsAuthenticated]
@@ -110,33 +220,7 @@ class MeNextOfferView(APIView):
         now = dj_timezone.now()
 
         # (опционально) контекст из рутины
-        profile_obj, _ = CustomerProfile.objects.get_or_create(user=user)
-        prof = Profile(
-            skin_type=profile_obj.skin_type,
-            goals=profile_obj.goals or [],
-            avoid_flags=profile_obj.avoid_flags or [],
-            budget=profile_obj.budget,
-        )
-
-        products_for_routine = list(
-            Product.objects.all().values(
-                "id","name","brand","price",
-                "category","product_type","step",
-                "actives","flags","supported_skin_types",
-                "strength","in_stock","concerns","attrs",
-            )
-        )
-        owned_ids = list(
-            OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True)
-        )
-
-        routine = build_routine(profile=prof, products=products_for_routine, top_k=3, owned_product_ids=owned_ids)
-
-        missing_steps = [
-            x.get("step")
-            for x in (routine["am"] + routine["pm"])
-            if x.get("status") == "missing"
-        ] or None
+        missing_steps = _build_offer_context_steps(user)
 
         with db_tx.atomic():
             existing = (
@@ -180,19 +264,49 @@ class MeNextOfferView(APIView):
         if created:
             record_exposed_from_offer_assignment(assignment=a, request_id=request_id)
 
-        return Response({
-            "assignment_id": a.id,
-            "offer": {
-                "id": a.offer.id,
-                "name": a.offer.name,
-                "type": a.offer.offer_type,
-                "value": str(a.offer.value),
-                "estimated_cost": str(a.offer.estimated_cost),
-            },
-            "target": a.target,
-            "reason": a.reason,
-            "expires_at": a.expires_at,
-        })
+        return Response(build_offer_assignment_payload(a, include_estimated_cost=True))
+
+
+class HomePromotionsView(APIView):
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [NextOfferRateThrottle]
+
+    @extend_schema(
+        tags=["Offers"],
+        description="Get a curated collection of home promotion banners for the current user.",
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        user = request.user
+        now = dj_timezone.now()
+        limit = _parse_home_promotions_limit(request)
+        context_steps = _build_offer_context_steps(user)
+
+        with db_tx.atomic():
+            existing = (
+                OfferAssignment.objects.filter(user=user, is_active=True, is_redeemed=False)
+                .order_by("-assigned_at")
+                .first()
+            )
+            assignment = get_or_assign_next_offer(user=user, now=now, context_steps=context_steps, post_ctx=None)
+
+        created_new = bool(assignment) and (existing is None or assignment.id != existing.id)
+        if created_new:
+            _record_next_offer_assignment_log(request, assignment, context_steps)
+
+        assignments = _list_active_offer_assignments(user, now=now, limit=limit)
+        return Response(
+            {
+                "ok": True,
+                "count": len(assignments),
+                "limit": limit,
+                "banners": _serialize_offer_assignments(
+                    request,
+                    assignments,
+                    endpoint="GET /api/me/home-promotions",
+                ),
+            }
+        )
 
 class RedeemOfferView(APIView):
     """
@@ -332,42 +446,15 @@ class MeOffersView(APIView):
 
     def get(self, request):
         now = datetime.now(dt_timezone.utc)
-        qs = (
-            OfferAssignment.objects.filter(user=request.user, is_active=True, is_redeemed=False)
-            .select_related("offer")
-            .order_by("-assigned_at")
+        assignments = _list_active_offer_assignments(request.user, now=now)
+        return Response(
+            _serialize_offer_assignments(
+                request,
+                assignments,
+                endpoint="GET /api/me/offers",
+                include_assigned_at=True,
+            )
         )
-
-        out = []
-        request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
-        for a in qs[:50]:
-            if a.expires_at and a.expires_at <= now:
-                continue
-            _, created = record_offer_event(
-                a,
-                OfferEvent.Type.EXPOSED,
-                request_id=request_id,
-                context={"endpoint": "GET /api/me/offers", "variant": "v1"},
-                return_created=True,
-            )
-            if created:
-                record_exposed_from_offer_assignment(assignment=a, request_id=request_id)
-            out.append(
-                {
-                    "assignment_id": a.id,
-                    "assigned_at": a.assigned_at,
-                    "expires_at": a.expires_at,
-                    "target": a.target,
-                    "reason": a.reason,
-                    "offer": {
-                        "id": a.offer.id,
-                        "name": a.offer.name,
-                        "type": a.offer.offer_type,
-                        "value": str(a.offer.value),
-                    },
-                }
-            )
-        return Response(out)
 
 class OfferPreviewView(APIView):
     permission_classes = [IsAuthenticated]

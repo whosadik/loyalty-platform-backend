@@ -1,0 +1,883 @@
+{
+  "version": "v4_candidate_ranking",
+  "label_protocol_version": "v5_exposure_funnel",
+  "generated_at_utc": "2026-03-12T06:24:30.379313Z",
+  "window_days": 180,
+  "window_since_utc": "2025-09-13T06:24:30.379313Z",
+  "window_until_utc": "2026-03-12T06:24:30.379313Z",
+  "label_window_days": 7,
+  "outcome_windows_days": [
+    7,
+    14,
+    30,
+    60
+  ],
+  "include_ga": false,
+  "dataset_format": "parquet",
+  "dataset_file": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\data\\ml\\roadmap_nextstep_v5_primary_target_14d_scalpchain_v2\\dataset.parquet",
+  "rows_total": 2334407,
+  "episodes_total": 355295,
+  "groups_total": 355295,
+  "positive_rows": 333285,
+  "positives": 333285,
+  "none_count": 22010,
+  "none_rate": 0.061949,
+  "label_outside_candidate_set": 0,
+  "label_source_distribution": {
+    "future_transaction": 127729,
+    "none": 22010,
+    "step_completed_event": 205556
+  },
+  "label_matched_by_distribution": {
+    "__none__": 73,
+    "fragrance_slot": 17794,
+    "product_type": 36193,
+    "recommended_product_id": 151496
+  },
+  "outcome_window_summary": {
+    "7": {
+      "episodes_total": 355295,
+      "fully_observed_episodes": 355295,
+      "clicked_episodes": 69350,
+      "completed_episodes": 205556,
+      "bought_any_episodes": 333220,
+      "primary_target_source_distribution": {
+        "step_completed_event": 205556,
+        "future_transaction": 127729,
+        "none": 22010
+      },
+      "completed_matched_by_distribution": {
+        "recommended_product_id": 151496,
+        "product_type": 36193,
+        "fragrance_slot": 17794,
+        "__none__": 73
+      }
+    },
+    "14": {
+      "episodes_total": 355295,
+      "fully_observed_episodes": 331782,
+      "clicked_episodes": 77792,
+      "completed_episodes": 244269,
+      "bought_any_episodes": 345641,
+      "primary_target_source_distribution": {
+        "step_completed_event": 244269,
+        "future_transaction": 101434,
+        "none": 9592
+      },
+      "completed_matched_by_distribution": {
+        "recommended_product_id": 178584,
+        "product_type": 44045,
+        "fragrance_slot": 21566,
+        "__none__": 74
+      }
+    },
+    "30": {
+      "episodes_total": 355295,
+      "fully_observed_episodes": 261678,
+      "clicked_episodes": 86904,
+      "completed_episodes": 278128,
+      "bought_any_episodes": 348704,
+      "primary_target_source_distribution": {
+        "step_completed_event": 278128,
+        "future_transaction": 70633,
+        "none": 6534
+      },
+      "completed_matched_by_distribution": {
+        "recommended_product_id": 201139,
+        "product_type": 51223,
+        "fragrance_slot": 25684,
+        "__none__": 82
+      }
+    },
+    "60": {
+      "episodes_total": 355295,
+      "fully_observed_episodes": 73878,
+      "clicked_episodes": 92710,
+      "completed_episodes": 286550,
+      "bought_any_episodes": 348992,
+      "primary_target_source_distribution": {
+        "step_completed_event": 286550,
+        "future_transaction": 62482,
+        "none": 6263
+      },
+      "completed_matched_by_distribution": {
+        "recommended_product_id": 206526,
+        "product_type": 53043,
+        "fragrance_slot": 26892,
+        "__none__": 89
+      }
+    }
+  },
+  "raw_exposed_events": 372663,
+  "class_distribution": {
+    "train": {
+      "__none__": 15331,
+      "foundation": 15176,
+      "cleanser": 14327,
+      "warm_day": 12492,
+      "shampoo": 12390,
+      "mascara": 11855,
+      "serum": 11561,
+      "blush": 10374,
+      "warm_evening": 10267,
+      "conditioner": 10009,
+      "moisturizer": 9821,
+      "spf": 9157,
+      "lipstick": 8922,
+      "toner": 8281,
+      "eyeshadow": 8244,
+      "hair_mask": 8123,
+      "mask": 7643,
+      "hair_oil": 7633,
+      "primer": 7519,
+      "cold_evening": 7375,
+      "eye_cream": 7251,
+      "cold_day": 7247,
+      "essence": 7101,
+      "setting_spray": 7078,
+      "scalp_serum": 6833,
+      "leave_in": 6524
+    },
+    "val": {
+      "__none__": 3378,
+      "foundation": 3283,
+      "cleanser": 3140,
+      "shampoo": 2677,
+      "warm_day": 2596,
+      "mascara": 2586,
+      "serum": 2453,
+      "warm_evening": 2243,
+      "blush": 2215,
+      "moisturizer": 2150,
+      "conditioner": 2146,
+      "spf": 1891,
+      "lipstick": 1887,
+      "eyeshadow": 1797,
+      "hair_mask": 1767,
+      "toner": 1704,
+      "mask": 1671,
+      "cold_evening": 1629,
+      "hair_oil": 1619,
+      "cold_day": 1590,
+      "primer": 1549,
+      "eye_cream": 1547,
+      "setting_spray": 1534,
+      "essence": 1455,
+      "leave_in": 1440,
+      "scalp_serum": 1414
+    },
+    "test": {
+      "__none__": 3301,
+      "foundation": 3233,
+      "cleanser": 3100,
+      "shampoo": 2698,
+      "warm_day": 2597,
+      "mascara": 2582,
+      "serum": 2485,
+      "warm_evening": 2249,
+      "blush": 2164,
+      "conditioner": 2143,
+      "moisturizer": 2131,
+      "lipstick": 1968,
+      "spf": 1898,
+      "toner": 1854,
+      "hair_mask": 1739,
+      "hair_oil": 1713,
+      "eyeshadow": 1689,
+      "mask": 1630,
+      "primer": 1603,
+      "setting_spray": 1590,
+      "essence": 1579,
+      "cold_day": 1540,
+      "eye_cream": 1539,
+      "cold_evening": 1529,
+      "scalp_serum": 1471,
+      "leave_in": 1375
+    }
+  },
+  "candidate_types_by_category": {
+    "skincare": [
+      "cleanser",
+      "serum",
+      "moisturizer",
+      "spf",
+      "toner",
+      "mask",
+      "eye_cream",
+      "essence"
+    ],
+    "haircare": [
+      "shampoo",
+      "conditioner",
+      "hair_mask",
+      "hair_oil",
+      "scalp_serum",
+      "leave_in"
+    ],
+    "makeup": [
+      "foundation",
+      "mascara",
+      "blush",
+      "lipstick",
+      "eyeshadow",
+      "primer",
+      "setting_spray"
+    ],
+    "fragrance": [
+      "warm_day",
+      "warm_evening",
+      "cold_day",
+      "cold_evening"
+    ]
+  },
+  "rules_chain_by_category": {
+    "skincare": [
+      "cleanser",
+      "serum",
+      "moisturizer",
+      "spf",
+      "toner",
+      "mask",
+      "eye_cream",
+      "essence"
+    ],
+    "haircare": [
+      "shampoo",
+      "conditioner",
+      "hair_mask",
+      "hair_oil",
+      "scalp_serum",
+      "leave_in"
+    ],
+    "makeup": [
+      "foundation",
+      "mascara",
+      "blush",
+      "lipstick",
+      "eyeshadow",
+      "primer",
+      "setting_spray"
+    ],
+    "fragrance": [
+      "warm_day",
+      "warm_evening",
+      "cold_day",
+      "cold_evening"
+    ]
+  },
+  "top_popularity_by_category": {
+    "skincare": [
+      "serum",
+      "moisturizer",
+      "mask",
+      "essence",
+      "eye_cream",
+      "cleanser",
+      "toner",
+      "spf"
+    ],
+    "haircare": [
+      "leave_in",
+      "scalp_serum",
+      "hair_mask",
+      "conditioner",
+      "hair_oil",
+      "shampoo"
+    ],
+    "makeup": [
+      "foundation",
+      "mascara",
+      "primer",
+      "setting_spray",
+      "lipstick",
+      "blush",
+      "eyeshadow"
+    ],
+    "fragrance": [
+      "warm_day",
+      "warm_evening",
+      "cold_day",
+      "cold_evening"
+    ]
+  },
+  "candidate_popularity_in_train_by_category": {
+    "skincare": {
+      "cleanser": 0.19066567,
+      "serum": 0.15385537,
+      "moisturizer": 0.13069921,
+      "spf": 0.12186261,
+      "toner": 0.11020468,
+      "mask": 0.10171409,
+      "eye_cream": 0.0964973,
+      "essence": 0.09450108
+    },
+    "haircare": {
+      "shampoo": 0.24052648,
+      "conditioner": 0.19430424,
+      "hair_mask": 0.15769141,
+      "hair_oil": 0.14817907,
+      "scalp_serum": 0.1326487,
+      "leave_in": 0.1266501
+    },
+    "makeup": {
+      "foundation": 0.21940782,
+      "mascara": 0.17139429,
+      "blush": 0.14998265,
+      "lipstick": 0.12899028,
+      "eyeshadow": 0.11918806,
+      "primer": 0.10870634,
+      "setting_spray": 0.10233056
+    },
+    "fragrance": {
+      "warm_day": 0.33418047,
+      "warm_evening": 0.27465825,
+      "cold_day": 0.19386854,
+      "cold_evening": 0.19729274
+    }
+  },
+  "top_owned_product_types_by_category": {
+    "fragrance": [
+      "perfume_oil",
+      "body_mist",
+      "edp",
+      "edt"
+    ],
+    "haircare": [
+      "leave_in",
+      "scalp_serum",
+      "hair_mask",
+      "conditioner",
+      "hair_oil",
+      "shampoo"
+    ],
+    "makeup": [
+      "foundation",
+      "mascara",
+      "primer",
+      "setting_spray",
+      "lipstick",
+      "blush",
+      "eyeshadow"
+    ],
+    "skincare": [
+      "serum",
+      "moisturizer",
+      "mask",
+      "essence",
+      "eye_cream",
+      "cleanser",
+      "toner",
+      "spf"
+    ]
+  },
+  "owned_feature_columns": [
+    "owned_count__fragrance__perfume_oil",
+    "owned_count__fragrance__body_mist",
+    "owned_count__fragrance__edp",
+    "owned_count__fragrance__edt",
+    "owned_count__haircare__leave_in",
+    "owned_count__haircare__scalp_serum",
+    "owned_count__haircare__hair_mask",
+    "owned_count__haircare__conditioner",
+    "owned_count__haircare__hair_oil",
+    "owned_count__haircare__shampoo",
+    "owned_count__makeup__foundation",
+    "owned_count__makeup__mascara",
+    "owned_count__makeup__primer",
+    "owned_count__makeup__setting_spray",
+    "owned_count__makeup__lipstick",
+    "owned_count__makeup__blush",
+    "owned_count__makeup__eyeshadow",
+    "owned_count__skincare__serum",
+    "owned_count__skincare__moisturizer",
+    "owned_count__skincare__mask",
+    "owned_count__skincare__essence",
+    "owned_count__skincare__eye_cream",
+    "owned_count__skincare__cleanser",
+    "owned_count__skincare__toner",
+    "owned_count__skincare__spf"
+  ],
+  "owned_feature_map": {
+    "owned_count__fragrance__perfume_oil": {
+      "category": "fragrance",
+      "product_type": "perfume_oil"
+    },
+    "owned_count__fragrance__body_mist": {
+      "category": "fragrance",
+      "product_type": "body_mist"
+    },
+    "owned_count__fragrance__edp": {
+      "category": "fragrance",
+      "product_type": "edp"
+    },
+    "owned_count__fragrance__edt": {
+      "category": "fragrance",
+      "product_type": "edt"
+    },
+    "owned_count__haircare__leave_in": {
+      "category": "haircare",
+      "product_type": "leave_in"
+    },
+    "owned_count__haircare__scalp_serum": {
+      "category": "haircare",
+      "product_type": "scalp_serum"
+    },
+    "owned_count__haircare__hair_mask": {
+      "category": "haircare",
+      "product_type": "hair_mask"
+    },
+    "owned_count__haircare__conditioner": {
+      "category": "haircare",
+      "product_type": "conditioner"
+    },
+    "owned_count__haircare__hair_oil": {
+      "category": "haircare",
+      "product_type": "hair_oil"
+    },
+    "owned_count__haircare__shampoo": {
+      "category": "haircare",
+      "product_type": "shampoo"
+    },
+    "owned_count__makeup__foundation": {
+      "category": "makeup",
+      "product_type": "foundation"
+    },
+    "owned_count__makeup__mascara": {
+      "category": "makeup",
+      "product_type": "mascara"
+    },
+    "owned_count__makeup__primer": {
+      "category": "makeup",
+      "product_type": "primer"
+    },
+    "owned_count__makeup__setting_spray": {
+      "category": "makeup",
+      "product_type": "setting_spray"
+    },
+    "owned_count__makeup__lipstick": {
+      "category": "makeup",
+      "product_type": "lipstick"
+    },
+    "owned_count__makeup__blush": {
+      "category": "makeup",
+      "product_type": "blush"
+    },
+    "owned_count__makeup__eyeshadow": {
+      "category": "makeup",
+      "product_type": "eyeshadow"
+    },
+    "owned_count__skincare__serum": {
+      "category": "skincare",
+      "product_type": "serum"
+    },
+    "owned_count__skincare__moisturizer": {
+      "category": "skincare",
+      "product_type": "moisturizer"
+    },
+    "owned_count__skincare__mask": {
+      "category": "skincare",
+      "product_type": "mask"
+    },
+    "owned_count__skincare__essence": {
+      "category": "skincare",
+      "product_type": "essence"
+    },
+    "owned_count__skincare__eye_cream": {
+      "category": "skincare",
+      "product_type": "eye_cream"
+    },
+    "owned_count__skincare__cleanser": {
+      "category": "skincare",
+      "product_type": "cleanser"
+    },
+    "owned_count__skincare__toner": {
+      "category": "skincare",
+      "product_type": "toner"
+    },
+    "owned_count__skincare__spf": {
+      "category": "skincare",
+      "product_type": "spf"
+    }
+  },
+  "feature_columns": [
+    "category",
+    "candidate_type",
+    "last1_product_type",
+    "last2_product_type",
+    "last3_product_type",
+    "last4_product_type",
+    "last5_product_type",
+    "last1_category",
+    "last2_category",
+    "last3_category",
+    "last4_category",
+    "last5_category",
+    "planned_target_product_type",
+    "profile_skin_type",
+    "profile_budget",
+    "profile_hair_type",
+    "profile_scalp_type",
+    "profile_hair_thickness",
+    "profile_makeup_finish_pref_primary",
+    "profile_makeup_coverage_pref_primary",
+    "profile_makeup_undertone",
+    "profile_makeup_tone_family",
+    "profile_fragrance_intensity_pref",
+    "anchor_product_type",
+    "anchor_hair_type",
+    "anchor_scalp_type",
+    "anchor_hair_thickness",
+    "anchor_finish",
+    "anchor_coverage",
+    "anchor_undertone",
+    "anchor_tone_family",
+    "anchor_scent_family",
+    "anchor_intensity",
+    "candidate_dominant_hair_type",
+    "candidate_dominant_scalp_type",
+    "candidate_dominant_hair_thickness",
+    "candidate_dominant_finish",
+    "candidate_dominant_coverage",
+    "candidate_dominant_undertone",
+    "candidate_dominant_tone_family",
+    "candidate_dominant_scent_family",
+    "candidate_dominant_intensity",
+    "month_of_year",
+    "day_of_week",
+    "days_since_last_purchase_in_category",
+    "tx_count_90d_category",
+    "tx_amount_90d_category",
+    "owned_slot_warm_day",
+    "owned_slot_warm_evening",
+    "owned_slot_cold_day",
+    "owned_slot_cold_evening",
+    "candidate_is_fragrance_slot",
+    "candidate_position_in_chain",
+    "candidate_popularity_in_train",
+    "candidate_matches_last1",
+    "candidate_matches_last3_any",
+    "candidate_seen_count_last5",
+    "candidate_owned_count_in_category",
+    "candidate_seen_90d_count_in_category",
+    "candidate_days_since_last_seen_in_category",
+    "anchor_position_in_chain",
+    "last1_position_in_chain",
+    "last2_position_in_chain",
+    "candidate_distance_from_anchor",
+    "candidate_distance_from_last1",
+    "candidate_distance_from_last2",
+    "candidate_abs_distance_from_anchor",
+    "candidate_abs_distance_from_last1",
+    "candidate_abs_distance_from_last2",
+    "candidate_is_same_as_anchor",
+    "candidate_is_after_anchor",
+    "candidate_is_before_anchor",
+    "candidate_is_immediate_followup_to_anchor",
+    "candidate_is_immediate_predecessor_to_anchor",
+    "candidate_is_same_as_last1",
+    "candidate_is_after_last1",
+    "candidate_is_before_last1",
+    "candidate_is_immediate_followup_to_last1",
+    "candidate_is_immediate_predecessor_to_last1",
+    "last1_after_last2_in_chain",
+    "last1_before_last2_in_chain",
+    "candidate_continues_last_transition_direction",
+    "candidate_reverses_last_transition_direction",
+    "planned_target_step_index",
+    "planned_target_position_in_chain",
+    "candidate_matches_planned_target",
+    "candidate_distance_from_planned_target",
+    "candidate_abs_distance_from_planned_target",
+    "candidate_is_after_planned_target",
+    "candidate_is_before_planned_target",
+    "candidate_is_immediate_followup_to_planned_target",
+    "candidate_is_immediate_predecessor_to_planned_target",
+    "owned_count__fragrance__perfume_oil",
+    "owned_count__fragrance__body_mist",
+    "owned_count__fragrance__edp",
+    "owned_count__fragrance__edt",
+    "owned_count__haircare__leave_in",
+    "owned_count__haircare__scalp_serum",
+    "owned_count__haircare__hair_mask",
+    "owned_count__haircare__conditioner",
+    "owned_count__haircare__hair_oil",
+    "owned_count__haircare__shampoo",
+    "owned_count__makeup__foundation",
+    "owned_count__makeup__mascara",
+    "owned_count__makeup__primer",
+    "owned_count__makeup__setting_spray",
+    "owned_count__makeup__lipstick",
+    "owned_count__makeup__blush",
+    "owned_count__makeup__eyeshadow",
+    "owned_count__skincare__serum",
+    "owned_count__skincare__moisturizer",
+    "owned_count__skincare__mask",
+    "owned_count__skincare__essence",
+    "owned_count__skincare__eye_cream",
+    "owned_count__skincare__cleanser",
+    "owned_count__skincare__toner",
+    "owned_count__skincare__spf",
+    "profile_goals_count",
+    "profile_avoid_flags_count",
+    "profile_hair_concerns_count",
+    "profile_makeup_finish_pref_count",
+    "profile_makeup_coverage_pref_count",
+    "profile_makeup_concerns_count",
+    "profile_fragrance_liked_families_count",
+    "profile_fragrance_liked_notes_count",
+    "anchor_concerns_count",
+    "anchor_actives_count",
+    "anchor_supported_skin_types_count",
+    "anchor_notes_count",
+    "anchor_inci_token_count",
+    "candidate_catalog_product_count",
+    "candidate_catalog_avg_concerns_count",
+    "candidate_catalog_avg_actives_count",
+    "candidate_catalog_avg_notes_count",
+    "candidate_catalog_avg_inci_token_count",
+    "candidate_profile_avoid_conflict_rate",
+    "candidate_profile_goal_match_rate",
+    "candidate_profile_skin_type_match_rate",
+    "candidate_profile_hair_concern_match_rate",
+    "candidate_profile_hair_type_match_rate",
+    "candidate_profile_scalp_type_match_rate",
+    "candidate_profile_hair_thickness_match_rate",
+    "candidate_profile_makeup_finish_match_rate",
+    "candidate_profile_makeup_coverage_match_rate",
+    "candidate_profile_makeup_undertone_match_rate",
+    "candidate_profile_makeup_tone_family_match_rate",
+    "candidate_profile_makeup_concern_match_rate",
+    "candidate_profile_fragrance_family_match_rate",
+    "candidate_profile_fragrance_note_match_rate",
+    "candidate_profile_fragrance_intensity_match_rate",
+    "candidate_anchor_shared_concern_rate",
+    "candidate_anchor_shared_active_rate",
+    "candidate_anchor_shared_inci_rate",
+    "candidate_anchor_active_conflict_rate"
+  ],
+  "categorical_features": [
+    "category",
+    "candidate_type",
+    "last1_product_type",
+    "last2_product_type",
+    "last3_product_type",
+    "last4_product_type",
+    "last5_product_type",
+    "last1_category",
+    "last2_category",
+    "last3_category",
+    "last4_category",
+    "last5_category",
+    "planned_target_product_type",
+    "profile_skin_type",
+    "profile_budget",
+    "profile_hair_type",
+    "profile_scalp_type",
+    "profile_hair_thickness",
+    "profile_makeup_finish_pref_primary",
+    "profile_makeup_coverage_pref_primary",
+    "profile_makeup_undertone",
+    "profile_makeup_tone_family",
+    "profile_fragrance_intensity_pref",
+    "anchor_product_type",
+    "anchor_hair_type",
+    "anchor_scalp_type",
+    "anchor_hair_thickness",
+    "anchor_finish",
+    "anchor_coverage",
+    "anchor_undertone",
+    "anchor_tone_family",
+    "anchor_scent_family",
+    "anchor_intensity",
+    "candidate_dominant_hair_type",
+    "candidate_dominant_scalp_type",
+    "candidate_dominant_hair_thickness",
+    "candidate_dominant_finish",
+    "candidate_dominant_coverage",
+    "candidate_dominant_undertone",
+    "candidate_dominant_tone_family",
+    "candidate_dominant_scent_family",
+    "candidate_dominant_intensity"
+  ],
+  "numeric_features": [
+    "month_of_year",
+    "day_of_week",
+    "days_since_last_purchase_in_category",
+    "tx_count_90d_category",
+    "tx_amount_90d_category",
+    "owned_slot_warm_day",
+    "owned_slot_warm_evening",
+    "owned_slot_cold_day",
+    "owned_slot_cold_evening",
+    "candidate_is_fragrance_slot",
+    "candidate_position_in_chain",
+    "candidate_popularity_in_train",
+    "candidate_matches_last1",
+    "candidate_matches_last3_any",
+    "candidate_seen_count_last5",
+    "candidate_owned_count_in_category",
+    "candidate_seen_90d_count_in_category",
+    "candidate_days_since_last_seen_in_category",
+    "anchor_position_in_chain",
+    "last1_position_in_chain",
+    "last2_position_in_chain",
+    "candidate_distance_from_anchor",
+    "candidate_distance_from_last1",
+    "candidate_distance_from_last2",
+    "candidate_abs_distance_from_anchor",
+    "candidate_abs_distance_from_last1",
+    "candidate_abs_distance_from_last2",
+    "candidate_is_same_as_anchor",
+    "candidate_is_after_anchor",
+    "candidate_is_before_anchor",
+    "candidate_is_immediate_followup_to_anchor",
+    "candidate_is_immediate_predecessor_to_anchor",
+    "candidate_is_same_as_last1",
+    "candidate_is_after_last1",
+    "candidate_is_before_last1",
+    "candidate_is_immediate_followup_to_last1",
+    "candidate_is_immediate_predecessor_to_last1",
+    "last1_after_last2_in_chain",
+    "last1_before_last2_in_chain",
+    "candidate_continues_last_transition_direction",
+    "candidate_reverses_last_transition_direction",
+    "planned_target_step_index",
+    "planned_target_position_in_chain",
+    "candidate_matches_planned_target",
+    "candidate_distance_from_planned_target",
+    "candidate_abs_distance_from_planned_target",
+    "candidate_is_after_planned_target",
+    "candidate_is_before_planned_target",
+    "candidate_is_immediate_followup_to_planned_target",
+    "candidate_is_immediate_predecessor_to_planned_target",
+    "owned_count__fragrance__perfume_oil",
+    "owned_count__fragrance__body_mist",
+    "owned_count__fragrance__edp",
+    "owned_count__fragrance__edt",
+    "owned_count__haircare__leave_in",
+    "owned_count__haircare__scalp_serum",
+    "owned_count__haircare__hair_mask",
+    "owned_count__haircare__conditioner",
+    "owned_count__haircare__hair_oil",
+    "owned_count__haircare__shampoo",
+    "owned_count__makeup__foundation",
+    "owned_count__makeup__mascara",
+    "owned_count__makeup__primer",
+    "owned_count__makeup__setting_spray",
+    "owned_count__makeup__lipstick",
+    "owned_count__makeup__blush",
+    "owned_count__makeup__eyeshadow",
+    "owned_count__skincare__serum",
+    "owned_count__skincare__moisturizer",
+    "owned_count__skincare__mask",
+    "owned_count__skincare__essence",
+    "owned_count__skincare__eye_cream",
+    "owned_count__skincare__cleanser",
+    "owned_count__skincare__toner",
+    "owned_count__skincare__spf",
+    "profile_goals_count",
+    "profile_avoid_flags_count",
+    "profile_hair_concerns_count",
+    "profile_makeup_finish_pref_count",
+    "profile_makeup_coverage_pref_count",
+    "profile_makeup_concerns_count",
+    "profile_fragrance_liked_families_count",
+    "profile_fragrance_liked_notes_count",
+    "anchor_concerns_count",
+    "anchor_actives_count",
+    "anchor_supported_skin_types_count",
+    "anchor_notes_count",
+    "anchor_inci_token_count",
+    "candidate_catalog_product_count",
+    "candidate_catalog_avg_concerns_count",
+    "candidate_catalog_avg_actives_count",
+    "candidate_catalog_avg_notes_count",
+    "candidate_catalog_avg_inci_token_count",
+    "candidate_profile_avoid_conflict_rate",
+    "candidate_profile_goal_match_rate",
+    "candidate_profile_skin_type_match_rate",
+    "candidate_profile_hair_concern_match_rate",
+    "candidate_profile_hair_type_match_rate",
+    "candidate_profile_scalp_type_match_rate",
+    "candidate_profile_hair_thickness_match_rate",
+    "candidate_profile_makeup_finish_match_rate",
+    "candidate_profile_makeup_coverage_match_rate",
+    "candidate_profile_makeup_undertone_match_rate",
+    "candidate_profile_makeup_tone_family_match_rate",
+    "candidate_profile_makeup_concern_match_rate",
+    "candidate_profile_fragrance_family_match_rate",
+    "candidate_profile_fragrance_note_match_rate",
+    "candidate_profile_fragrance_intensity_match_rate",
+    "candidate_anchor_shared_concern_rate",
+    "candidate_anchor_shared_active_rate",
+    "candidate_anchor_shared_inci_rate",
+    "candidate_anchor_active_conflict_rate"
+  ],
+  "sample_weight_policy": {
+    "step_completed_event_weight": 1.15,
+    "recommended_product_id_multiplier": 1.1,
+    "semantic_content_match_multiplier": 1.05,
+    "future_transaction_weight": 0.8,
+    "none_weight": 0.9,
+    "haircare_future_repeat_multiplier": 0.75,
+    "haircare_future_backward_multiplier": 0.85
+  },
+  "sample_weight_summary": {
+    "min": 0.6,
+    "max": 1.265,
+    "mean": 1.054909
+  },
+  "baselines": {
+    "splits": {
+      "val": {
+        "popularity": {
+          "rows": 53361,
+          "positive_episodes": 49983,
+          "label_outside_candidate_set": 0,
+          "recall_at_1": 0.234,
+          "recall_at_3": 0.577896,
+          "recall_at_5": 0.816017,
+          "ndcg_at_5": 0.528888
+        },
+        "markov": {
+          "rows": 53361,
+          "positive_episodes": 49983,
+          "label_outside_candidate_set": 0,
+          "recall_at_1": 0.2348,
+          "recall_at_3": 0.576836,
+          "recall_at_5": 0.815257,
+          "ndcg_at_5": 0.528808
+        }
+      },
+      "test": {
+        "popularity": {
+          "rows": 53400,
+          "positive_episodes": 50099,
+          "label_outside_candidate_set": 0,
+          "recall_at_1": 0.2321,
+          "recall_at_3": 0.571868,
+          "recall_at_5": 0.814048,
+          "ndcg_at_5": 0.52662
+        },
+        "markov": {
+          "rows": 53400,
+          "positive_episodes": 50099,
+          "label_outside_candidate_set": 0,
+          "recall_at_1": 0.231881,
+          "recall_at_3": 0.572946,
+          "recall_at_5": 0.813409,
+          "ndcg_at_5": 0.526322
+        }
+      }
+    }
+  },
+  "leakage_assertions": {
+    "features_only_use_transactions_lte_t0": true,
+    "checks_total": 355295,
+    "status": "passed"
+  },
+  "censoring_policy": {
+    "right_censoring_marked_by_window_columns": true,
+    "fully_observed_column_template": "window_{days}d_fully_observed"
+  }
+}

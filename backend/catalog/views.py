@@ -3,14 +3,15 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework import viewsets
 from django.db.models import Q
-from rest_framework.permissions import IsAdminUser, IsAuthenticated, SAFE_METHODS
+from rest_framework.permissions import AllowAny, IsAdminUser, SAFE_METHODS
 from rest_framework.views import APIView
 
 from .brand_payloads import get_brand_detail_payload, list_brand_summary_payloads
+from .home_hero import get_home_hero_payload
 from .models import Product
 from .new_fields import get_new_products_cutoff
 from .sale_fields import product_has_discount
-from .serializers import BrandDetailSerializer, BrandSummarySerializer, ProductSerializer
+from .serializers import BrandDetailSerializer, BrandSummarySerializer, HomeHeroSerializer, ProductSerializer
 
 
 class ProductPagination(PageNumberPagination):
@@ -25,7 +26,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.request.method in SAFE_METHODS:
-            return [IsAuthenticated()]
+            return [AllowAny()]
         return [IsAdminUser()]
 
     def get_queryset(self):
@@ -89,7 +90,7 @@ class ProductViewSet(viewsets.ModelViewSet):
 
 
 class BrandListView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request):
         payload = list_brand_summary_payloads()
@@ -97,10 +98,18 @@ class BrandListView(APIView):
 
 
 class BrandDetailView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [AllowAny]
 
     def get(self, request, brand_slug: str):
         payload = get_brand_detail_payload(brand_slug)
         if payload is None:
             raise NotFound("Brand not found.")
         return Response(BrandDetailSerializer(payload).data)
+
+
+class HomeHeroView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        payload = get_home_hero_payload()
+        return Response(HomeHeroSerializer(payload).data)

@@ -26,7 +26,7 @@ from roadmap_app.ml_next_step import (
 )
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 from roadmap_app.services import refresh_roadmap
-from transactions.models import Transaction, TransactionItem
+from transactions.models import OwnedProduct, Transaction, TransactionItem
 from users_app.models import CustomerProfile
 
 try:
@@ -1204,6 +1204,353 @@ class RoadmapNextStepV4CategoryGuardTests(TestCase):
         self.assertEqual(str(status.get("reason")), "category_disabled")
 
 
+class RoadmapNextStepV4HaircareScalpChainTests(TestCase):
+    def setUp(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        User = get_user_model()
+        self.user = User.objects.create_user(username="v4_haircare_scalp_u1", password="pass12345")
+        profile = CustomerProfile.objects.get(user=self.user)
+        profile.skin_type = "normal"
+        profile.goals = ["scalp_balance"]
+        profile.hair_profile = {
+            "hair_type": "wavy",
+            "scalp_type": "oily",
+            "hair_thickness": "medium",
+            "concerns": ["flakes", "itchiness", "oiliness"],
+        }
+        profile.makeup_profile = {}
+        profile.fragrance_profile = {}
+        profile.save(
+            update_fields=[
+                "skin_type",
+                "goals",
+                "hair_profile",
+                "makeup_profile",
+                "fragrance_profile",
+            ]
+        )
+
+        self.p_shampoo = Product.objects.create(
+            name="Scalp Chain Shampoo",
+            brand="B",
+            price=Decimal("12.00"),
+            category="haircare",
+            product_type="shampoo",
+            concerns=["oiliness", "flakes"],
+            actives=["salicylic_acid", "niacinamide"],
+            attrs={"hair_type": "wavy", "scalp_type": "oily", "hair_thickness": "medium"},
+            ingredients_inci="water, salicylic acid, niacinamide",
+            in_stock=True,
+        )
+        self.p_scalp_serum = Product.objects.create(
+            name="Scalp Chain Serum",
+            brand="B",
+            price=Decimal("19.00"),
+            category="haircare",
+            product_type="scalp_serum",
+            concerns=["oiliness", "flakes", "itchiness"],
+            actives=["salicylic_acid", "niacinamide", "tea_tree"],
+            attrs={"hair_type": "wavy", "scalp_type": "oily", "hair_thickness": "medium"},
+            ingredients_inci="water, salicylic acid, niacinamide, tea tree",
+            in_stock=True,
+        )
+        self.p_conditioner = Product.objects.create(
+            name="Scalp Chain Conditioner",
+            brand="B",
+            price=Decimal("14.00"),
+            category="haircare",
+            product_type="conditioner",
+            concerns=["damage", "dryness"],
+            actives=["keratin"],
+            attrs={"hair_type": "wavy", "scalp_type": "normal", "hair_thickness": "medium"},
+            ingredients_inci="water, keratin, panthenol",
+            in_stock=True,
+        )
+
+        self.plan = RoadmapPlan.objects.create(user=self.user, category="haircare", is_active=True, meta={})
+        self.step = RoadmapStep.objects.create(
+            plan=self.plan,
+            step_index=2,
+            product_type="scalp_serum",
+            status=RoadmapStep.Status.RECOMMENDED,
+        )
+
+    def _create_exposed(self, at_dt):
+        event = RoadmapEvent.objects.create(
+            user=self.user,
+            plan=self.plan,
+            step=self.step,
+            event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            context={"category": "haircare", "sources": ["roadmap_api"]},
+        )
+        RoadmapEvent.objects.filter(id=event.id).update(created_at=at_dt)
+
+    def _create_tx(self, product: Product, at_dt, idem_key: str):
+        tx = Transaction.objects.create(
+            user=self.user,
+            total_amount=Decimal("12.00"),
+            channel="web",
+            idempotency_key=idem_key,
+        )
+        Transaction.objects.filter(id=tx.id).update(created_at=at_dt)
+        TransactionItem.objects.create(
+            transaction=tx,
+            product=product,
+            quantity=1,
+            unit_price=Decimal("12.00"),
+        )
+
+    def test_dataset_reorders_scalp_serum_chain_after_shampoo(self):
+        t0 = timezone.now() - timedelta(days=14)
+        self._create_exposed(t0)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=1), "v4-scalp-chain-ds-1")
+        self._create_tx(self.p_scalp_serum, t0 + timedelta(days=2), "v4-scalp-chain-ds-2")
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            scalp_row = frame[frame["candidate_type"].astype(str) == "scalp_serum"].iloc[0]
+            conditioner_row = frame[frame["candidate_type"].astype(str) == "conditioner"].iloc[0]
+
+            self.assertEqual(int(scalp_row["candidate_position_in_chain"]), 1)
+            self.assertEqual(int(conditioner_row["candidate_position_in_chain"]), 2)
+            self.assertEqual(int(scalp_row["candidate_is_immediate_followup_to_anchor"]), 1)
+            self.assertEqual(int(conditioner_row["candidate_is_immediate_followup_to_anchor"]), 0)
+            self.assertEqual(int(scalp_row["candidate_matches_planned_target"]), 1)
+
+    def test_dataset_includes_scalp_objective_features(self):
+        t0 = timezone.now() - timedelta(days=14)
+        self._create_exposed(t0)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=1), "v4-scalp-obj-ds-1")
+        self._create_tx(self.p_scalp_serum, t0 + timedelta(days=2), "v4-scalp-obj-ds-2")
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            scalp_row = frame[frame["candidate_type"].astype(str) == "scalp_serum"].iloc[0]
+            conditioner_row = frame[frame["candidate_type"].astype(str) == "conditioner"].iloc[0]
+
+            self.assertIn("profile_has_scalp_objective", frame.columns)
+            self.assertIn("candidate_profile_scalp_objective_match_rate", frame.columns)
+            self.assertIn("candidate_scalp_concern_focus_rate", frame.columns)
+            self.assertIn("candidate_is_scalp_specialty", frame.columns)
+            self.assertEqual(int(scalp_row["profile_has_scalp_objective"]), 1)
+            self.assertEqual(int(scalp_row["anchor_has_scalp_focus"]), 1)
+            self.assertEqual(int(scalp_row["candidate_is_scalp_specialty"]), 1)
+            self.assertEqual(int(conditioner_row["candidate_is_scalp_specialty"]), 0)
+            self.assertGreater(
+                float(scalp_row["candidate_profile_scalp_objective_match_rate"]),
+                float(conditioner_row["candidate_profile_scalp_objective_match_rate"]),
+            )
+            self.assertGreater(
+                float(scalp_row["candidate_scalp_concern_focus_rate"]),
+                float(conditioner_row["candidate_scalp_concern_focus_rate"]),
+            )
+
+    def test_runtime_reorders_scalp_serum_chain_after_shampoo(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=1), "v4-scalp-chain-rt-1")
+
+        class DummyArtifactModel:
+            def __init__(self):
+                self.seen = None
+
+            def predict(self, X):
+                self.seen = X.copy()
+                return pd.to_numeric(
+                    X["candidate_is_immediate_followup_to_anchor"],
+                    errors="coerce",
+                ).fillna(0.0).to_numpy()
+
+        dummy = DummyArtifactModel()
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": dummy,
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+                "candidate_position_in_chain",
+                "candidate_is_immediate_followup_to_anchor",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [
+                "candidate_position_in_chain",
+                "candidate_is_immediate_followup_to_anchor",
+            ],
+            "candidate_types_by_category": {"haircare": ["conditioner", "scalp_serum", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"conditioner": 0.5, "scalp_serum": 0.2, "hair_mask": 0.3}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+            rows = predict_next_product_types(
+                user=self.user,
+                context_product_ids=[],
+                category="haircare",
+                planned_target_product_type="scalp_serum",
+                planned_target_step_index=2,
+                candidate_types=["conditioner", "scalp_serum", "hair_mask"],
+            )
+
+        self.assertEqual(rows[0]["candidate_type"], "scalp_serum")
+        self.assertIsNotNone(dummy.seen)
+        scalp_row = dummy.seen[dummy.seen["candidate_type"].astype(str) == "scalp_serum"].iloc[0]
+        conditioner_row = dummy.seen[dummy.seen["candidate_type"].astype(str) == "conditioner"].iloc[0]
+        self.assertEqual(int(scalp_row["candidate_position_in_chain"]), 1)
+        self.assertEqual(int(conditioner_row["candidate_position_in_chain"]), 2)
+        self.assertEqual(int(scalp_row["candidate_is_immediate_followup_to_anchor"]), 1)
+        self.assertEqual(int(conditioner_row["candidate_is_immediate_followup_to_anchor"]), 0)
+
+    def test_runtime_scalp_rerank_promotes_scalp_serum_for_scalp_target(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=1), "v4-scalp-rerank-1")
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"conditioner": 1.0, "scalp_serum": 0.2, "hair_mask": 0.3}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["conditioner", "scalp_serum", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"conditioner": 0.5, "scalp_serum": 0.2, "hair_mask": 0.3}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with override_settings(ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED=True):
+            with patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+                rows = predict_next_product_types(
+                    user=self.user,
+                    context_product_ids=[],
+                    category="haircare",
+                    planned_target_product_type="scalp_serum",
+                    planned_target_step_index=2,
+                    candidate_types=["conditioner", "scalp_serum", "hair_mask"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "scalp_serum")
+        self.assertIn("haircare_scalp_rerank", rows[0]["runtime_policies"])
+        self.assertGreater(float(rows[0]["runtime_policy_biases"]["haircare_scalp_rerank"]), 0.0)
+
+    def test_runtime_scalp_rerank_does_not_override_conditioner_control(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=1), "v4-scalp-rerank-2")
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"conditioner": 1.0, "scalp_serum": 0.2, "hair_mask": 0.3}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["conditioner", "scalp_serum", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"conditioner": 0.5, "scalp_serum": 0.2, "hair_mask": 0.3}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with override_settings(ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED=True):
+            with patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+                rows = predict_next_product_types(
+                    user=self.user,
+                    context_product_ids=[],
+                    category="haircare",
+                    planned_target_product_type="conditioner",
+                    planned_target_step_index=2,
+                    candidate_types=["conditioner", "scalp_serum", "hair_mask"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "conditioner")
+
+
 class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
     def _create_makeup_products(self, suffix: str) -> None:
         Product.objects.create(
@@ -1243,20 +1590,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
             product_type="serum",
             in_stock=True,
         )
-        Product.objects.create(
-            name=f"Skincare Moisturizer {suffix}",
-            brand="B",
-            category="skincare",
-            product_type="moisturizer",
-            in_stock=True,
-        )
-        Product.objects.create(
-            name=f"Skincare SPF {suffix}",
-            brand="B",
-            category="skincare",
-            product_type="spf",
-            in_stock=True,
-        )
+
 
     def _create_haircare_products(self, suffix: str) -> None:
         Product.objects.create(
@@ -1365,6 +1699,8 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         self.assertEqual(str(ml_meta.get("fallback_reason")), "partial_rollout_not_selected")
         self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
         self.assertFalse(bool(ml_meta.get("rollout_selected")))
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "foundation")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index")), 1)
         predict_mock.assert_not_called()
 
     def test_selected_makeup_users_can_reach_model_used(self):
@@ -1415,6 +1751,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
             ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
             ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=[],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["shampoo"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["1"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="",
@@ -1439,8 +1776,225 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         self.assertTrue(bool(ml_meta.get("rollout_selected")))
         self.assertEqual(str(ml_meta.get("partial_match_product_type")), "shampoo")
         self.assertEqual(int(ml_meta.get("partial_match_step_index")), 1)
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "shampoo")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index")), 1)
         self.assertIsNone(ml_meta.get("fallback_reason"))
         predict_mock.assert_called_once()
+
+    def test_purchase_context_progression_can_select_hair_mask_partial_candidate(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_hair_purchase_ctx_u1", password="pass12345")
+        self._create_haircare_products("purchase-ctx")
+        shampoo = Product.objects.get(category="haircare", product_type="shampoo", name__contains="purchase-ctx")
+        conditioner = Product.objects.get(
+            category="haircare",
+            product_type="conditioner",
+            name__contains="purchase-ctx",
+        )
+
+        now = timezone.now()
+        OwnedProduct.objects.create(
+            user=user,
+            product=shampoo,
+            quantity_total=1,
+            is_active=True,
+            last_acquired_at=now - timedelta(days=7),
+        )
+        OwnedProduct.objects.create(
+            user=user,
+            product=conditioner,
+            quantity_total=1,
+            is_active=True,
+            last_acquired_at=now,
+        )
+
+        def _artifact_summary(path: str | None):
+            raw = str(path or "")
+            if raw == "C:/tmp/roadmap_nextstep_semantic_v4.pkl":
+                return {
+                    "model_version": "semantic_v4_canary",
+                    "selected_feature_set": "full",
+                }
+            return {
+                "model_version": "active_v4",
+                "selected_feature_set": "baseline_only",
+            }
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_FORCE_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["hair_mask"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["3"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=0,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_purchase_ctx_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="C:/tmp/roadmap_nextstep_semantic_v4.pkl",
+            ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH="",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+        ) as active_mock, patch(
+            "roadmap_app.services.predict_next_product_types_for_model_path",
+            return_value=[{"candidate_type": "hair_mask", "score": 0.97}],
+        ) as candidate_mock, patch(
+            "roadmap_app.services.nextstep_model_artifact_summary",
+            side_effect=_artifact_summary,
+        ):
+            plan = refresh_roadmap(
+                user,
+                category="haircare",
+                post_ctx={
+                    "categories": ["haircare"],
+                    "product_ids": [int(conditioner.id)],
+                },
+            )
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "model_used")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
+        self.assertTrue(bool(ml_meta.get("rollout_selected")))
+        self.assertEqual(str(ml_meta.get("model_slot")), "partial_candidate")
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "hair_mask")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index")), 3)
+        self.assertEqual(str(ml_meta.get("partial_match_product_type")), "hair_mask")
+        self.assertEqual(int(ml_meta.get("partial_match_step_index")), 3)
+        self.assertEqual(str(((plan.meta or {}).get("context") or {}).get("refresh_caller")), "update_roadmap_from_purchase")
+        active_mock.assert_not_called()
+        candidate_mock.assert_called_once()
+
+    def test_purchase_context_only_partial_does_not_run_on_cold_refresh(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_hair_purchase_only_cold_u1", password="pass12345")
+        self._create_haircare_products("purchase-only-cold")
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_FORCE_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["shampoo"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=0,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_purchase_only_cold_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="C:/tmp/roadmap_nextstep_semantic_v4.pkl",
+            ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH="",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+        ) as active_mock, patch(
+            "roadmap_app.services.predict_next_product_types_for_model_path",
+        ) as candidate_mock:
+            plan = refresh_roadmap(user, category="haircare", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "fallback")
+        self.assertEqual(str(ml_meta.get("fallback_reason")), "partial_rollout_not_selected")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
+        self.assertFalse(bool(ml_meta.get("rollout_selected")))
+        self.assertEqual(str(ml_meta.get("rollout_reason")), "purchase_context_only")
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "shampoo")
+        active_mock.assert_not_called()
+        candidate_mock.assert_not_called()
+
+    def test_purchase_context_partial_does_not_materialize_when_no_actionable_step(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_hair_purchase_complete_u1", password="pass12345")
+        owned_products = {}
+        for product_type in [
+            "shampoo",
+            "conditioner",
+            "hair_mask",
+            "hair_oil",
+            "scalp_serum",
+            "leave_in",
+        ]:
+            product = Product.objects.create(
+                name=f"Haircare {product_type} complete",
+                brand="B",
+                category="haircare",
+                product_type=product_type,
+                in_stock=True,
+            )
+            owned_products[product_type] = product
+            OwnedProduct.objects.create(
+                user=user,
+                product=product,
+                quantity_total=1,
+                is_active=True,
+            )
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_FORCE_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["hair_mask"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["3"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=0,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_purchase_complete_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="C:/tmp/roadmap_nextstep_semantic_v4.pkl",
+            ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH="",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+        ) as active_mock, patch(
+            "roadmap_app.services.predict_next_product_types_for_model_path",
+        ) as candidate_mock:
+            plan = refresh_roadmap(
+                user,
+                category="haircare",
+                post_ctx={
+                    "categories": ["haircare"],
+                    "product_ids": [
+                        int(owned_products["shampoo"].id),
+                        int(owned_products["leave_in"].id),
+                    ],
+                },
+            )
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "disabled")
+        self.assertEqual(str(ml_meta.get("disabled_reason")), "no_actionable_step")
+        self.assertEqual(str(ml_meta.get("rollout_reason")), "no_actionable_step")
+        self.assertEqual(str(ml_meta.get("model_slot")), "active")
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index") or 0), 0)
+        active_mock.assert_not_called()
+        candidate_mock.assert_not_called()
 
     def test_partial_rollout_can_serve_candidate_model_path(self):
         User = get_user_model()
@@ -1466,6 +2020,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
             ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
             ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=[],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["shampoo"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["1"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
@@ -1498,10 +2053,147 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         self.assertEqual(str(ml_meta.get("model_path")), "C:/tmp/roadmap_nextstep_semantic_v4.pkl")
         self.assertEqual(str(ml_meta.get("model_version")), "semantic_v4_canary")
         self.assertEqual(str(ml_meta.get("selected_feature_set")), "full")
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "shampoo")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index")), 1)
         self.assertFalse(bool(shadow_meta.get("enabled")))
         self.assertEqual(str(shadow_meta.get("reason")), "shadow_same_as_active")
         active_mock.assert_not_called()
         candidate_mock.assert_called_once()
+
+    def test_partial_rollout_can_override_full_enable_when_force_enabled_for_category(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_force_enable_u1", password="pass12345")
+        self._create_haircare_products("force-enable")
+
+        def _artifact_summary(path: str | None):
+            raw = str(path or "")
+            if raw == "C:/tmp/roadmap_nextstep_semantic_v4.pkl":
+                return {
+                    "model_version": "semantic_v4_canary",
+                    "selected_feature_set": "full",
+                }
+            return {
+                "model_version": "active_v4",
+                "selected_feature_set": "baseline_only",
+            }
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=[],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_FORCE_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["shampoo"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_force_enable_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="C:/tmp/roadmap_nextstep_semantic_v4.pkl",
+            ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH="",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            return_value={
+                "passed": True,
+                "final_status": "ENABLE",
+                "current_decision": "ENABLE",
+                "reason": "passed",
+                "hold_reason": None,
+                "category": "haircare",
+                "recommendation_7d": "ENABLE",
+                "recommendation_30d": "ENABLE",
+                "stability_gate_failures": [],
+                "guard_7d": {"passed": True, "reason": "passed"},
+                "guard_30d": {"passed": True, "reason": "passed"},
+            },
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+        ) as active_mock, patch(
+            "roadmap_app.services.predict_next_product_types_for_model_path",
+            return_value=[{"candidate_type": "shampoo", "score": 0.96}],
+        ) as candidate_mock, patch(
+            "roadmap_app.services.nextstep_model_artifact_summary",
+            side_effect=_artifact_summary,
+        ):
+            plan = refresh_roadmap(user, category="haircare", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "model_used")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
+        self.assertTrue(bool(ml_meta.get("rollout_selected")))
+        self.assertEqual(str(ml_meta.get("model_slot")), "partial_candidate")
+        self.assertEqual(str(ml_meta.get("model_path")), "C:/tmp/roadmap_nextstep_semantic_v4.pkl")
+        self.assertEqual(str(ml_meta.get("model_version")), "semantic_v4_canary")
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "shampoo")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index")), 1)
+        active_mock.assert_not_called()
+        candidate_mock.assert_called_once()
+
+    def test_partial_rollout_can_override_to_active_model_for_target_product_type(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_hair_override_u1", password="pass12345")
+        self._create_haircare_products("override")
+
+        def _artifact_summary(path: str | None):
+            raw = str(path or "")
+            if raw == "C:/tmp/roadmap_nextstep_semantic_v4.pkl":
+                return {
+                    "model_version": "semantic_v4_canary",
+                    "selected_feature_set": "full",
+                }
+            return {
+                "model_version": "active_v4",
+                "selected_feature_set": "baseline_only",
+            }
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=[],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["shampoo"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_ACTIVE_MODEL_PRODUCT_TYPES=["shampoo"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_override_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="C:/tmp/roadmap_nextstep_semantic_v4.pkl",
+            ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH="",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+            return_value=[{"candidate_type": "shampoo", "score": 0.94}],
+        ) as active_mock, patch(
+            "roadmap_app.services.predict_next_product_types_for_model_path",
+        ) as candidate_mock, patch(
+            "roadmap_app.services.nextstep_model_artifact_summary",
+            side_effect=_artifact_summary,
+        ):
+            plan = refresh_roadmap(user, category="haircare", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        self.assertEqual(str(ml_meta.get("decision")), "model_used")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
+        self.assertEqual(str(ml_meta.get("model_slot")), "partial_active_override")
+        self.assertEqual(str(ml_meta.get("model_version")), "active_v4")
+        self.assertEqual(str(ml_meta.get("partial_model_override_reason")), "active_model_product_type")
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "shampoo")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index")), 1)
+        active_mock.assert_called_once()
+        candidate_mock.assert_not_called()
 
     def test_non_makeup_category_is_unaffected_by_partial_makeup_rollout(self):
         User = get_user_model()
@@ -1602,6 +2294,225 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         self.assertEqual(len(shadow_meta.get("predictions") or []), 1)
         primary_mock.assert_called_once()
         shadow_mock.assert_called_once()
+
+
+class RoadmapNextStepV4HaircareLeaveInRerankTests(TestCase):
+    def setUp(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        User = get_user_model()
+        self.user = User.objects.create_user(username="v4_haircare_leavein_u1", password="pass12345")
+        profile = CustomerProfile.objects.get(user=self.user)
+        profile.skin_type = "normal"
+        profile.goals = ["definition", "frizz_control"]
+        profile.avoid_flags = ["heavy_oils"]
+        profile.hair_profile = {
+            "hair_type": "curly",
+            "scalp_type": "normal",
+            "hair_thickness": "thick",
+            "concerns": ["frizz", "definition", "dryness"],
+        }
+        profile.makeup_profile = {}
+        profile.fragrance_profile = {}
+        profile.save(
+            update_fields=[
+                "skin_type",
+                "goals",
+                "avoid_flags",
+                "hair_profile",
+                "makeup_profile",
+                "fragrance_profile",
+            ]
+        )
+
+        self.p_shampoo = Product.objects.create(
+            name="LeaveIn Shampoo",
+            brand="B",
+            price=Decimal("12.00"),
+            category="haircare",
+            product_type="shampoo",
+            concerns=["dryness", "frizz"],
+            actives=["glycerin"],
+            attrs={"hair_type": "curly", "scalp_type": "normal", "hair_thickness": "thick"},
+            ingredients_inci="water, glycerin, aloe vera",
+            in_stock=True,
+        )
+        self.p_conditioner = Product.objects.create(
+            name="LeaveIn Conditioner",
+            brand="B",
+            price=Decimal("13.00"),
+            category="haircare",
+            product_type="conditioner",
+            concerns=["dryness", "frizz", "detangling"],
+            actives=["glycerin", "aloe"],
+            attrs={"hair_type": "curly", "scalp_type": "normal", "hair_thickness": "thick"},
+            ingredients_inci="water, glycerin, aloe vera, shea butter",
+            in_stock=True,
+        )
+        self.p_mask = Product.objects.create(
+            name="LeaveIn Mask",
+            brand="B",
+            price=Decimal("17.00"),
+            category="haircare",
+            product_type="hair_mask",
+            concerns=["dryness", "frizz", "definition"],
+            actives=["glycerin", "shea_butter"],
+            attrs={"hair_type": "curly", "scalp_type": "normal", "hair_thickness": "thick"},
+            ingredients_inci="water, glycerin, shea butter, coconut oil",
+            in_stock=True,
+        )
+        self.p_leavein = Product.objects.create(
+            name="LeaveIn Curl Cream",
+            brand="B",
+            price=Decimal("16.00"),
+            category="haircare",
+            product_type="leave_in",
+            concerns=["frizz", "definition", "dryness"],
+            actives=["glycerin", "aloe", "linseed"],
+            attrs={"hair_type": "curly", "scalp_type": "normal", "hair_thickness": "thick"},
+            ingredients_inci="water, glycerin, aloe vera, linseed extract",
+            in_stock=True,
+        )
+        self.p_hair_oil = Product.objects.create(
+            name="LeaveIn Hair Oil",
+            brand="B",
+            price=Decimal("17.00"),
+            category="haircare",
+            product_type="hair_oil",
+            concerns=["shine", "seal", "frizz"],
+            actives=["argan_oil", "jojoba_oil"],
+            attrs={"hair_type": "curly", "scalp_type": "normal", "hair_thickness": "thick"},
+            ingredients_inci="cyclopentasiloxane, jojoba oil, argan oil",
+            in_stock=True,
+        )
+
+    def _create_tx(self, product: Product, at_dt, idem_key: str):
+        tx = Transaction.objects.create(
+            user=self.user,
+            total_amount=Decimal("12.00"),
+            channel="web",
+            idempotency_key=idem_key,
+        )
+        Transaction.objects.filter(id=tx.id).update(created_at=at_dt)
+        TransactionItem.objects.create(
+            transaction=tx,
+            product=product,
+            quantity=1,
+            unit_price=Decimal("12.00"),
+        )
+
+    def test_runtime_leavein_rerank_promotes_leave_in_for_leavein_target(self):
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=20), "v4-leavein-rerank-1")
+        self._create_tx(self.p_conditioner, t0 - timedelta(days=12), "v4-leavein-rerank-2")
+        self._create_tx(self.p_mask, t0 - timedelta(days=4), "v4-leavein-rerank-3")
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"hair_oil": 1.0, "leave_in": 0.1, "conditioner": 0.3}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["hair_oil", "leave_in", "conditioner"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"hair_oil": 0.5, "leave_in": 0.2, "conditioner": 0.3}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with override_settings(ROADMAP_NEXTSTEP_V4_HAIRCARE_LEAVEIN_RERANK_ENABLED=True):
+            with patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+                rows = predict_next_product_types(
+                    user=self.user,
+                    context_product_ids=[],
+                    category="haircare",
+                    planned_target_product_type="leave_in",
+                    planned_target_step_index=4,
+                    candidate_types=["hair_oil", "leave_in", "conditioner"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "leave_in")
+        self.assertIn("haircare_leavein_rerank", rows[0]["runtime_policies"])
+        self.assertGreater(float(rows[0]["runtime_policy_biases"]["haircare_leavein_rerank"]), 0.0)
+
+    def test_runtime_leavein_rerank_does_not_override_hair_oil_target(self):
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=20), "v4-leavein-rerank-4")
+        self._create_tx(self.p_conditioner, t0 - timedelta(days=12), "v4-leavein-rerank-5")
+        self._create_tx(self.p_mask, t0 - timedelta(days=4), "v4-leavein-rerank-6")
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"hair_oil": 1.0, "leave_in": 0.1, "conditioner": 0.3}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["hair_oil", "leave_in", "conditioner"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"hair_oil": 0.5, "leave_in": 0.2, "conditioner": 0.3}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with override_settings(ROADMAP_NEXTSTEP_V4_HAIRCARE_LEAVEIN_RERANK_ENABLED=True):
+            with patch("roadmap_app.ml_next_step._load_model", return_value=artifact):
+                rows = predict_next_product_types(
+                    user=self.user,
+                    context_product_ids=[],
+                    category="haircare",
+                    planned_target_product_type="hair_oil",
+                    planned_target_step_index=4,
+                    candidate_types=["hair_oil", "leave_in", "conditioner"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "hair_oil")
 
 
 class RoadmapNextStepV4TrainingTests(TestCase):

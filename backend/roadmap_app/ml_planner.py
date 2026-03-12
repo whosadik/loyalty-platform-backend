@@ -533,6 +533,7 @@ def generate_planner_chain(
                     candidate_catalog_summaries.get((category, candidate)),
                     profile_sig,
                     anchor_sig,
+                    candidate_type=candidate,
                 )
             )
             row_payloads.append(row)

@@ -205,7 +205,7 @@ def _load_products_for_recs() -> list[dict[str, Any]]:
             return cached
 
     data = list(
-        Product.objects.all().values(
+        Product.objects.filter(in_stock=True, price__isnull=False).values(
             "id","name","brand","price","category","product_type",
             "concerns","attrs","raw_meta","actives","flags","supported_skin_types","strength","in_stock",
         )

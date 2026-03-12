@@ -1,6 +1,6 @@
 ﻿from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import timedelta
 
 from django.db import transaction as db_tx
@@ -80,6 +80,19 @@ def _raise_validation(message: str) -> None:
     err = ValidationError(message)
     err.detail = {"ok": False, "message": message}
     raise err
+
+
+def _product_unit_price_or_raise(prod: Product) -> Decimal:
+    raw_price = getattr(prod, "price", None)
+    if raw_price in (None, ""):
+        _raise_validation(f"Product {int(prod.id)} has no valid price")
+    try:
+        unit_price = Decimal(str(raw_price))
+    except (InvalidOperation, TypeError, ValueError):
+        _raise_validation(f"Product {int(prod.id)} has no valid price")
+    if not unit_price.is_finite():
+        _raise_validation(f"Product {int(prod.id)} has no valid price")
+    return unit_price
 
 
 class CheckoutView(APIView):
@@ -165,7 +178,7 @@ class CheckoutView(APIView):
                 qty = int(it["quantity"])
                 # ensure product exists
                 prod = Product.objects.select_for_update().get(id=product_id)
-                unit_price = Decimal(str(prod.price))
+                unit_price = _product_unit_price_or_raise(prod)
 
                 ti = TransactionItem.objects.create(
                     transaction=txn,
@@ -573,7 +586,13 @@ class CheckoutPreviewView(APIView):
             prod = products.get(it["product"])
             if not prod:
                 return Response({"ok": False, "message": f"Unknown product_id={it['product']}"}, status=400)
-            lines.append(Line(product=prod, quantity=int(it["quantity"]), unit_price=Decimal(str(prod.price))))
+            lines.append(
+                Line(
+                    product=prod,
+                    quantity=int(it["quantity"]),
+                    unit_price=_product_unit_price_or_raise(prod),
+                )
+            )
 
         account, _ = LoyaltyAccount.objects.get_or_create(user=request.user)
         if account.tier_id is None:

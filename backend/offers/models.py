@@ -67,10 +67,14 @@ class CampaignBudget(models.Model):
     weekly_spent = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     week_start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     allowed_categories = models.JSONField(default=list, blank=True)  # ["skincare","makeup",...]
     allowed_steps = models.JSONField(default=list, blank=True)       # ["spf","serum",...]
+    tiers = models.JSONField(default=list, blank=True)
+    promo_text = models.TextField(blank=True, default="")
+    banner_url = models.URLField(blank=True, default="")
 
     def __str__(self) -> str:
         return f"{self.name} budget"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from offers.services import get_or_assign_next_offer
 from roadmap_app.events import record_exposed_from_offer_assignment
 from roadmap_app.models import RoadmapPlan, RoadmapStep
 from roadmap_app.services import update_roadmap_from_purchase
+from transactions.models import OwnedProduct
 
 
 class RoadmapRuntimeIntegrityTests(TestCase):
@@ -97,6 +99,63 @@ class RoadmapRuntimeIntegrityTests(TestCase):
         self.assertEqual(int(roadmap_ctx["step_id"]), int(next_step.id))
         self.assertEqual(int(roadmap_ctx["step_index"]), int(next_step.step_index))
         self.assertEqual(str(roadmap_ctx["next_product_type"]), str(next_step.product_type))
+
+    def test_update_roadmap_from_purchase_advances_haircare_to_next_rule_step(self):
+        shampoo = Product.objects.create(
+            name="Integrity Hair Shampoo",
+            brand="B",
+            price=Decimal("11.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        conditioner = Product.objects.create(
+            name="Integrity Hair Conditioner",
+            brand="B",
+            price=Decimal("12.00"),
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Integrity Hair Mask",
+            brand="B",
+            price=Decimal("14.00"),
+            category="haircare",
+            product_type="hair_mask",
+            in_stock=True,
+        )
+
+        now = timezone.now()
+        OwnedProduct.objects.create(
+            user=self.user,
+            product=shampoo,
+            quantity_total=1,
+            is_active=True,
+            last_acquired_at=now - timedelta(days=5),
+        )
+        OwnedProduct.objects.create(
+            user=self.user,
+            product=conditioner,
+            quantity_total=1,
+            is_active=True,
+            last_acquired_at=now,
+        )
+
+        updated = update_roadmap_from_purchase(
+            self.user,
+            {
+                "categories": ["haircare"],
+                "product_ids": [int(conditioner.id)],
+            },
+        )
+
+        self.assertIsNotNone(updated)
+        next_step = updated["next_missing_step"]
+        roadmap_ctx = updated["roadmap_ctx"]
+        self.assertIsNotNone(next_step)
+        self.assertEqual(str(next_step.product_type), "hair_mask")
+        self.assertEqual(str(roadmap_ctx["next_product_type"]), "hair_mask")
 
     def test_get_or_assign_next_offer_copies_step_identity_into_reason(self):
         campaign = self._campaign("integrity_default")

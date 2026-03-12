@@ -1,10 +1,11 @@
 import os
 from datetime import timedelta
+from time import perf_counter
 
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
-from django.db.models import Count, DecimalField, ExpressionWrapper, F, Sum
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, Max, Sum
 from django.utils import timezone
 
 from drf_spectacular.types import OpenApiTypes
@@ -18,10 +19,13 @@ from audit.models import AuditEvent
 from backend.permissions import HasStaffPermission
 from loyalty.models import LoyaltyLedgerEntry
 from offers.admin_metrics import offers_events_kpis, offers_promo_efficiency_30d
-from offers.models import OfferAssignment, OfferEvent
+from offers.models import Offer, OfferAssignment, OfferEvent
 from recs_analytics.admin_metrics import recs_experiments_metrics, recs_metrics_30d
 from recs_analytics.models import RecommendationEvent
 from transactions.models import Transaction, TransactionItem
+
+
+PROCESS_STARTED_AT = timezone.now()
 
 
 class AdminHealthView(APIView):
@@ -29,44 +33,487 @@ class AdminHealthView(APIView):
 
     @extend_schema(
         tags=["Admin"],
-        description="Health check: database + cache + basic counters.",
+        description="Health check with live service status, latency and subsystem activity.",
     )
     def get(self, request):
-        db_ok = True
-        db_error = None
-        try:
-            with connection.cursor() as cur:
-                cur.execute("SELECT 1;")
-                cur.fetchone()
-        except Exception as e:
-            db_ok = False
-            db_error = str(e)
+        now = timezone.now()
+        services = [
+            _db_health_service(now),
+            _cache_health_service(now),
+            _transactions_health_service(now),
+            _offers_health_service(now),
+            _audit_health_service(now),
+            _recommendations_health_service(now),
+        ]
 
-        cache_ok = True
-        cache_error = None
-        try:
-            key = f"health:{timezone.now().timestamp()}"
-            cache.set(key, "ok", timeout=10)
-            cache_ok = cache.get(key) == "ok"
-        except Exception as e:
-            cache_ok = False
-            cache_error = str(e)
-
-        counts = {
-            "transactions": Transaction.objects.count(),
-            "offer_assignments": OfferAssignment.objects.count(),
-            "offer_events": OfferEvent.objects.count(),
-            "audit_events": AuditEvent.objects.count(),
+        summary = {
+            "healthy_services": sum(1 for service in services if service["status"] == "ok"),
+            "degraded_services": sum(1 for service in services if service["status"] == "degraded"),
+            "down_services": sum(1 for service in services if service["status"] == "down"),
+            "total_services": len(services),
         }
+        overall_status = _overall_health_status(services)
+        counts = {
+            "transactions": int(_service_metric(services, "transactions", "total_count") or 0),
+            "offer_assignments": int(_service_metric(services, "offers", "total_assignments") or 0),
+            "offer_events": int(_service_metric(services, "offers", "total_events") or 0),
+            "audit_events": int(_service_metric(services, "audit", "total_count") or 0),
+            "recommendation_events": int(_service_metric(services, "recommendations", "total_count") or 0),
+        }
+
+        db_service = _service_by_name(services, "db") or {}
+        cache_service = _service_by_name(services, "cache") or {}
+        uptime_seconds = max(int((now - PROCESS_STARTED_AT).total_seconds()), 0)
 
         return Response(
             {
-                "ok": db_ok and cache_ok,
-                "db": {"ok": db_ok, "error": db_error},
-                "cache": {"ok": cache_ok, "error": cache_error},
+                "ok": overall_status == "ok",
+                "overall_status": overall_status,
+                "generated_at": now.isoformat(),
+                "server_time": now.isoformat(),
+                "summary": summary,
+                "app": {
+                    "pid": os.getpid(),
+                    "db_name": connection.settings_dict.get("NAME", "default"),
+                    "uptime_seconds": uptime_seconds,
+                    "uptime_human": _format_duration(uptime_seconds),
+                },
+                "db": {
+                    "ok": db_service.get("status") == "ok",
+                    "error": db_service.get("error"),
+                    "latency_ms": db_service.get("latency_ms"),
+                },
+                "cache": {
+                    "ok": cache_service.get("status") == "ok",
+                    "error": cache_service.get("error"),
+                    "latency_ms": cache_service.get("latency_ms"),
+                },
                 "counts": counts,
-                "server_time": timezone.now().isoformat(),
+                "services": services,
             }
+        )
+
+
+def _safe_iso(value):
+    return value.isoformat() if value else None
+
+
+def _format_duration(total_seconds):
+    seconds = max(int(total_seconds or 0), 0)
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if secs or not parts:
+        parts.append(f"{secs}s")
+    return " ".join(parts[:3])
+
+
+def _format_age(now, value):
+    if not value:
+        return "n/a"
+    return f"{_format_duration((now - value).total_seconds())} ago"
+
+
+def _format_money(amount):
+    try:
+        return f"{round(float(amount or 0), 2)} KZT"
+    except (TypeError, ValueError):
+        return "0 KZT"
+
+
+def _build_service(*, name, label, status, latency_ms, detail, last_check, highlights, metrics, error=None):
+    return {
+        "name": name,
+        "label": label,
+        "status": status,
+        "latency_ms": latency_ms,
+        "detail": detail,
+        "last_check": _safe_iso(last_check),
+        "highlights": highlights,
+        "metrics": metrics,
+        "error": error,
+    }
+
+
+def _service_by_name(services, name):
+    for service in services:
+        if service.get("name") == name:
+            return service
+    return None
+
+
+def _service_metric(services, name, key):
+    service = _service_by_name(services, name) or {}
+    metrics = service.get("metrics") or {}
+    return metrics.get(key)
+
+
+def _overall_health_status(services):
+    if any(service.get("status") == "down" for service in services):
+        return "down"
+    if any(service.get("status") == "degraded" for service in services):
+        return "degraded"
+    return "ok"
+
+
+def _db_health_service(now):
+    started = perf_counter()
+    try:
+        with connection.cursor() as cur:
+            cur.execute("SELECT 1;")
+            cur.fetchone()
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+        return _build_service(
+            name="db",
+            label="Database",
+            status="ok",
+            latency_ms=latency_ms,
+            detail="Primary database responds to SELECT 1.",
+            last_check=now,
+            highlights=[
+                {"label": "Latency", "value": f"{latency_ms} ms"},
+                {"label": "Engine", "value": connection.vendor},
+                {"label": "Database", "value": str(connection.settings_dict.get("NAME", "default"))},
+            ],
+            metrics={
+                "backend": connection.vendor,
+                "database": connection.settings_dict.get("NAME", "default"),
+            },
+        )
+    except Exception as exc:
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+        return _build_service(
+            name="db",
+            label="Database",
+            status="down",
+            latency_ms=latency_ms,
+            detail="Database health check failed.",
+            last_check=now,
+            highlights=[
+                {"label": "Latency", "value": f"{latency_ms} ms"},
+                {"label": "Error", "value": str(exc)},
+            ],
+            metrics={},
+            error=str(exc),
+        )
+
+
+def _cache_health_service(now):
+    started = perf_counter()
+    try:
+        key = f"health:{now.timestamp()}"
+        cache.set(key, "ok", timeout=10)
+        cache_ok = cache.get(key) == "ok"
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+        status = "ok" if cache_ok else "down"
+        detail = "Cache round-trip completed." if cache_ok else "Cache returned unexpected value."
+        error = None if cache_ok else "cache_round_trip_failed"
+        return _build_service(
+            name="cache",
+            label="Cache",
+            status=status,
+            latency_ms=latency_ms,
+            detail=detail,
+            last_check=now,
+            highlights=[
+                {"label": "Latency", "value": f"{latency_ms} ms"},
+                {"label": "Backend", "value": str(settings.CACHES.get("default", {}).get("BACKEND", "unknown"))},
+                {"label": "Round-trip", "value": "ok" if cache_ok else "failed"},
+            ],
+            metrics={
+                "backend": settings.CACHES.get("default", {}).get("BACKEND", "unknown"),
+                "round_trip_ok": cache_ok,
+            },
+            error=error,
+        )
+    except Exception as exc:
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+        return _build_service(
+            name="cache",
+            label="Cache",
+            status="down",
+            latency_ms=latency_ms,
+            detail="Cache health check failed.",
+            last_check=now,
+            highlights=[
+                {"label": "Latency", "value": f"{latency_ms} ms"},
+                {"label": "Error", "value": str(exc)},
+            ],
+            metrics={},
+            error=str(exc),
+        )
+
+
+def _transactions_health_service(now):
+    started = perf_counter()
+    try:
+        since_24h = now - timedelta(hours=24)
+        since_7d = now - timedelta(days=7)
+        total_count = Transaction.objects.count()
+        count_24h = Transaction.objects.filter(created_at__gte=since_24h).count()
+        count_7d = Transaction.objects.filter(created_at__gte=since_7d).count()
+        revenue_7d = Transaction.objects.filter(created_at__gte=since_7d).aggregate(s=Sum("total_amount"))["s"] or 0
+        online_7d = Transaction.objects.filter(created_at__gte=since_7d, channel="online").count()
+        offline_7d = Transaction.objects.filter(created_at__gte=since_7d, channel="offline").count()
+        last_created_at = Transaction.objects.aggregate(last_created_at=Max("created_at"))["last_created_at"]
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+
+        if total_count == 0:
+            status = "degraded"
+            detail = "No transactions recorded yet."
+        elif last_created_at and last_created_at < now - timedelta(days=14):
+            status = "degraded"
+            detail = f"Last transaction was {_format_age(now, last_created_at)}."
+        else:
+            status = "ok"
+            detail = f"{count_24h} transactions in the last 24h."
+
+        return _build_service(
+            name="transactions",
+            label="Transactions",
+            status=status,
+            latency_ms=latency_ms,
+            detail=detail,
+            last_check=last_created_at or now,
+            highlights=[
+                {"label": "Total", "value": str(total_count)},
+                {"label": "24h", "value": str(count_24h)},
+                {"label": "7d revenue", "value": _format_money(revenue_7d)},
+            ],
+            metrics={
+                "total_count": total_count,
+                "count_24h": count_24h,
+                "count_7d": count_7d,
+                "online_7d": online_7d,
+                "offline_7d": offline_7d,
+                "revenue_7d": float(revenue_7d or 0),
+                "last_transaction_at": _safe_iso(last_created_at),
+            },
+        )
+    except Exception as exc:
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+        return _build_service(
+            name="transactions",
+            label="Transactions",
+            status="down",
+            latency_ms=latency_ms,
+            detail="Transaction metrics query failed.",
+            last_check=now,
+            highlights=[
+                {"label": "Latency", "value": f"{latency_ms} ms"},
+                {"label": "Error", "value": str(exc)},
+            ],
+            metrics={},
+            error=str(exc),
+        )
+
+
+def _offers_health_service(now):
+    started = perf_counter()
+    try:
+        since_24h = now - timedelta(hours=24)
+        since_7d = now - timedelta(days=7)
+        active_offers = Offer.objects.filter(is_active=True).count()
+        active_campaigns = OfferAssignment.objects.filter(is_active=True).values("offer__campaign_id").distinct().count()
+        total_assignments = OfferAssignment.objects.count()
+        active_assignments = OfferAssignment.objects.filter(is_active=True, is_redeemed=False).count()
+        total_events = OfferEvent.objects.count()
+        events_24h = OfferEvent.objects.filter(created_at__gte=since_24h).count()
+        redeemed_7d = OfferEvent.objects.filter(
+            created_at__gte=since_7d,
+            event_type=OfferEvent.Type.REDEEMED,
+        ).count()
+        last_event_at = OfferEvent.objects.aggregate(last_event_at=Max("created_at"))["last_event_at"]
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+
+        if active_offers == 0 and total_assignments == 0:
+            status = "degraded"
+            detail = "No active offers are configured."
+        elif total_assignments == 0:
+            status = "degraded"
+            detail = "Offers exist but nothing has been assigned yet."
+        elif last_event_at and last_event_at < now - timedelta(days=14):
+            status = "degraded"
+            detail = f"Offer activity is stale: last event {_format_age(now, last_event_at)}."
+        else:
+            status = "ok"
+            detail = f"{events_24h} offer events in the last 24h."
+
+        return _build_service(
+            name="offers",
+            label="Offers",
+            status=status,
+            latency_ms=latency_ms,
+            detail=detail,
+            last_check=last_event_at or now,
+            highlights=[
+                {"label": "Active offers", "value": str(active_offers)},
+                {"label": "Assignments", "value": str(total_assignments)},
+                {"label": "Redeemed 7d", "value": str(redeemed_7d)},
+            ],
+            metrics={
+                "active_offers": active_offers,
+                "active_campaigns": active_campaigns,
+                "total_assignments": total_assignments,
+                "active_assignments": active_assignments,
+                "total_events": total_events,
+                "events_24h": events_24h,
+                "redeemed_7d": redeemed_7d,
+                "last_event_at": _safe_iso(last_event_at),
+            },
+        )
+    except Exception as exc:
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+        return _build_service(
+            name="offers",
+            label="Offers",
+            status="down",
+            latency_ms=latency_ms,
+            detail="Offer metrics query failed.",
+            last_check=now,
+            highlights=[
+                {"label": "Latency", "value": f"{latency_ms} ms"},
+                {"label": "Error", "value": str(exc)},
+            ],
+            metrics={},
+            error=str(exc),
+        )
+
+
+def _audit_health_service(now):
+    started = perf_counter()
+    try:
+        since_24h = now - timedelta(hours=24)
+        total_count = AuditEvent.objects.count()
+        events_24h = AuditEvent.objects.filter(created_at__gte=since_24h).count()
+        error_events_24h = AuditEvent.objects.filter(created_at__gte=since_24h, status_code__gte=500).count()
+        last_event_at = AuditEvent.objects.aggregate(last_event_at=Max("created_at"))["last_event_at"]
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+
+        if total_count == 0:
+            status = "degraded"
+            detail = "Audit log has no events yet."
+        elif error_events_24h > 0:
+            status = "degraded"
+            detail = f"{error_events_24h} audit events with 5xx status in the last 24h."
+        elif last_event_at and last_event_at < now - timedelta(days=14):
+            status = "degraded"
+            detail = f"Audit activity is stale: last event {_format_age(now, last_event_at)}."
+        else:
+            status = "ok"
+            detail = f"{events_24h} audit events in the last 24h."
+
+        return _build_service(
+            name="audit",
+            label="Audit",
+            status=status,
+            latency_ms=latency_ms,
+            detail=detail,
+            last_check=last_event_at or now,
+            highlights=[
+                {"label": "Total", "value": str(total_count)},
+                {"label": "24h", "value": str(events_24h)},
+                {"label": "5xx / 24h", "value": str(error_events_24h)},
+            ],
+            metrics={
+                "total_count": total_count,
+                "events_24h": events_24h,
+                "error_events_24h": error_events_24h,
+                "last_event_at": _safe_iso(last_event_at),
+            },
+        )
+    except Exception as exc:
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+        return _build_service(
+            name="audit",
+            label="Audit",
+            status="down",
+            latency_ms=latency_ms,
+            detail="Audit metrics query failed.",
+            last_check=now,
+            highlights=[
+                {"label": "Latency", "value": f"{latency_ms} ms"},
+                {"label": "Error", "value": str(exc)},
+            ],
+            metrics={},
+            error=str(exc),
+        )
+
+
+def _recommendations_health_service(now):
+    started = perf_counter()
+    try:
+        since_24h = now - timedelta(hours=24)
+        total_count = RecommendationEvent.objects.count()
+        impressions_24h = RecommendationEvent.objects.filter(
+            created_at__gte=since_24h,
+            action=RecommendationEvent.Action.IMPRESSION,
+        ).count()
+        clicks_24h = RecommendationEvent.objects.filter(
+            created_at__gte=since_24h,
+            action=RecommendationEvent.Action.CLICK,
+        ).count()
+        purchases_24h = RecommendationEvent.objects.filter(
+            created_at__gte=since_24h,
+            action=RecommendationEvent.Action.PURCHASE_ATTRIBUTED,
+        ).count()
+        ctr_24h = round((clicks_24h / impressions_24h) * 100, 2) if impressions_24h else 0.0
+        last_event_at = RecommendationEvent.objects.aggregate(last_event_at=Max("created_at"))["last_event_at"]
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+
+        if total_count == 0:
+            status = "degraded"
+            detail = "No recommendation telemetry yet."
+        elif last_event_at and last_event_at < now - timedelta(days=14):
+            status = "degraded"
+            detail = f"Recommendation telemetry is stale: last event {_format_age(now, last_event_at)}."
+        else:
+            status = "ok"
+            detail = f"{impressions_24h} recommendation impressions in the last 24h."
+
+        return _build_service(
+            name="recommendations",
+            label="Recommendations",
+            status=status,
+            latency_ms=latency_ms,
+            detail=detail,
+            last_check=last_event_at or now,
+            highlights=[
+                {"label": "Total", "value": str(total_count)},
+                {"label": "Impr. 24h", "value": str(impressions_24h)},
+                {"label": "CTR 24h", "value": f"{ctr_24h}%"},
+            ],
+            metrics={
+                "total_count": total_count,
+                "impressions_24h": impressions_24h,
+                "clicks_24h": clicks_24h,
+                "purchases_24h": purchases_24h,
+                "ctr_24h": ctr_24h,
+                "last_event_at": _safe_iso(last_event_at),
+            },
+        )
+    except Exception as exc:
+        latency_ms = round((perf_counter() - started) * 1000, 2)
+        return _build_service(
+            name="recommendations",
+            label="Recommendations",
+            status="down",
+            latency_ms=latency_ms,
+            detail="Recommendation metrics query failed.",
+            last_check=now,
+            highlights=[
+                {"label": "Latency", "value": f"{latency_ms} ms"},
+                {"label": "Error", "value": str(exc)},
+            ],
+            metrics={},
+            error=str(exc),
         )
 
 
@@ -205,6 +652,66 @@ def _top_categories_30d(*, now):
     return out
 
 
+def _overview_trend(*, tx7, tx30, recs7, recs30):
+    trend = []
+    if tx7 or recs7:
+        trend.append(
+            {
+                "day": "7d",
+                "ctr": round(float((recs7 or {}).get("ctr") or 0) * 100, 2),
+                "cr": round(float((recs7 or {}).get("cr") or 0) * 100, 2),
+                "users": int((tx7 or {}).get("unique_buyers") or 0),
+            }
+        )
+    if tx30 or recs30:
+        trend.append(
+            {
+                "day": "30d",
+                "ctr": round(float((recs30 or {}).get("ctr") or 0) * 100, 2),
+                "cr": round(float((recs30 or {}).get("cr") or 0) * 100, 2),
+                "users": int((tx30 or {}).get("unique_buyers") or 0),
+            }
+        )
+    return trend
+
+
+def _overview_top_offers(*, events_kpis):
+    out = []
+    for index, row in enumerate((events_kpis or {}).get("by_campaign_30d") or []):
+        out.append(
+            {
+                "id": str(row.get("campaign_name") or index + 1),
+                "name": str(row.get("campaign_name") or f"Campaign {index + 1}"),
+                "type": "campaign",
+                "cr": float(row.get("redemption_rate_exposed") or 0),
+                "exposed": int(row.get("exposed") or 0),
+                "clicked": int(row.get("clicked") or 0),
+                "redeemed": int(row.get("redeemed") or 0),
+            }
+        )
+    return out[:5]
+
+
+def _overview_kpis(*, tx7, tx30, recs7, recs30, offers7, offers30, retention):
+    return {
+        "7d": {
+            "ctr": float((recs7 or {}).get("ctr") or 0),
+            "cr": float((recs7 or {}).get("cr") or 0),
+            "unique_buyers": int((tx7 or {}).get("unique_buyers") or 0),
+            "promo_redemption": float((offers7 or {}).get("redemption_rate_exposed") or 0),
+        },
+        "30d": {
+            "ctr": float((recs30 or {}).get("ctr") or 0),
+            "cr": float((recs30 or {}).get("cr") or 0),
+            "unique_buyers": int((tx30 or {}).get("unique_buyers") or 0),
+            "promo_redemption": float((offers30 or {}).get("redemption_rate_exposed") or 0),
+        },
+        "90d": {
+            "active_users": int((retention or {}).get("active_users_90d") or 0),
+        },
+    }
+
+
 def _overview_alerts_and_actions(*, tx30, recs30, offers30):
     alerts = []
     actions = []
@@ -308,6 +815,8 @@ class AdminOverviewView(APIView):
         offers_30d = _offers_lifecycle_block(since30)
         recs_7d = _recs_block(since7)
         recs_30d = _recs_block(since30)
+        retention = _repeat_purchase_block(now)
+        events_kpis = offers_events_kpis()
         alerts, actions = _overview_alerts_and_actions(tx30=tx_30d, recs30=recs_30d, offers30=offers_30d)
 
         payload = {
@@ -324,16 +833,27 @@ class AdminOverviewView(APIView):
             "offers": {
                 "7d": offers_7d,
                 "30d": offers_30d,
-                "events_kpis": offers_events_kpis(),
+                "events_kpis": events_kpis,
                 "promo_efficiency_30d": offers_promo_efficiency_30d(),
             },
-            "retention": _repeat_purchase_block(now),
+            "retention": retention,
             "recs": {
                 "7d": recs_7d,
                 "30d": recs_30d,
                 "details_30d": recs_details,
                 "experiments_30d": recs_details.get("by_experiment", {}),
             },
+            "kpis": _overview_kpis(
+                tx7=tx_7d,
+                tx30=tx_30d,
+                recs7=recs_7d,
+                recs30=recs_30d,
+                offers7=offers_7d,
+                offers30=offers_30d,
+                retention=retention,
+            ),
+            "trend": _overview_trend(tx7=tx_7d, tx30=tx_30d, recs7=recs_7d, recs30=recs_30d),
+            "top_offers": _overview_top_offers(events_kpis=events_kpis),
             "alerts": alerts,
             "recommended_actions": actions,
             "top_categories": _top_categories_30d(now=now),

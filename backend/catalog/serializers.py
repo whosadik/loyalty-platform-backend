@@ -99,3 +99,17 @@ class BrandDetailSerializer(BrandSummarySerializer):
     top_product_types = serializers.ListField(child=serializers.CharField())
     new_products_count = serializers.IntegerField()
     sale_products_count = serializers.IntegerField()
+
+
+class HomeHeroSlideSerializer(serializers.Serializer):
+    id = serializers.CharField()
+    eyebrow = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    title = serializers.CharField()
+    description = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    button_text = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    button_to = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+
+
+class HomeHeroSerializer(serializers.Serializer):
+    ok = serializers.BooleanField()
+    slides = HomeHeroSlideSerializer(many=True)

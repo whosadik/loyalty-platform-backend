@@ -148,6 +148,24 @@ def _default_rollout_meta() -> dict[str, Any]:
     }
 
 
+def _partial_rollout_percent(category: str | None = None) -> int:
+    category_norm = str(category or "").strip().lower()
+    category_percent = None
+    if category_norm:
+        setting_name = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_PERCENT"
+        category_percent = getattr(settings, setting_name, None)
+    raw_percent = category_percent if category_percent not in (None, "") else getattr(
+        settings,
+        "ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT",
+        0,
+    )
+    try:
+        percent = int(raw_percent or 0)
+    except Exception:
+        percent = 0
+    return max(0, min(100, percent))
+
+
 def _stable_rollout_bucket(user, *, category: str, salt: str) -> int:
     user_key = getattr(user, "pk", None)
     if user_key in (None, ""):
@@ -176,6 +194,9 @@ def _category_partial_rollout_state(
     category: str,
     chain: list[str],
     purchased_types: list[str],
+    refresh_caller: str = "refresh_roadmap",
+    planned_target_product_type: str | None = None,
+    planned_target_step_index: int | None = None,
 ) -> dict[str, Any]:
     state = _default_rollout_meta()
     category_norm = str(category or "").strip().lower()
@@ -190,13 +211,7 @@ def _category_partial_rollout_state(
         return state
 
     state["rollout_mode"] = "partial"
-    percent = max(
-        0,
-        min(
-            100,
-            int(getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT", 0) or 0),
-        ),
-    )
+    percent = _partial_rollout_percent(category_norm)
     salt = str(
         getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_SALT", "roadmap_nextstep_v4_partial_v1")
         or "roadmap_nextstep_v4_partial_v1"
@@ -210,12 +225,19 @@ def _category_partial_rollout_state(
 
     allow_product_types, allow_step_indexes = _partial_rollout_allowlists(category_norm)
 
-    if chain:
+    if int(planned_target_step_index or 0) > 0:
+        step_index = int(planned_target_step_index or 0)
+    elif chain:
         anchor = min(len(chain), max(0, len(purchased_types)))
         step_index = min(max(1, anchor + 1), len(chain))
-        step_product_type = str(chain[step_index - 1] or "").strip().lower()
     else:
         step_index = None
+
+    if str(planned_target_product_type or "").strip():
+        step_product_type = str(planned_target_product_type or "").strip().lower()
+    elif step_index is not None and 1 <= int(step_index) <= len(chain):
+        step_product_type = str(chain[int(step_index) - 1] or "").strip().lower()
+    else:
         step_product_type = ""
 
     if allow_product_types and step_product_type and step_product_type in allow_product_types:
@@ -241,6 +263,16 @@ def _category_partial_rollout_state(
             state["rollout_reason"] = "allowlist_no_match"
         return state
 
+    purchase_context_only_categories = _normalized_token_set(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES", [])
+    )
+    if (
+        category_norm in purchase_context_only_categories
+        and str(refresh_caller or "").strip() != "update_roadmap_from_purchase"
+    ):
+        state["rollout_reason"] = "purchase_context_only"
+        return state
+
     if int(state["rollout_bucket"]) >= int(percent):
         state["rollout_reason"] = "bucket_out_of_range"
         return state
@@ -258,6 +290,24 @@ def _partial_candidate_model_path(category: str | None = None) -> str:
         if category_value:
             return category_value
     return str(getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_MODEL_PATH", "") or "").strip()
+
+
+def _partial_force_enabled(category: str | None = None) -> bool:
+    category_norm = str(category or "").strip().lower()
+    if not category_norm:
+        return False
+    enabled_categories = _normalized_token_set(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_FORCE_ENABLED_CATEGORIES", [])
+    )
+    return category_norm in enabled_categories
+
+
+def _partial_active_model_product_types(category: str | None = None) -> set[str]:
+    category_norm = str(category or "").strip().lower()
+    if not category_norm:
+        return set()
+    setting_name = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_ACTIVE_MODEL_PRODUCT_TYPES"
+    return _normalized_token_set(getattr(settings, setting_name, []))
 
 
 def _default_ml_mode_and_path() -> tuple[str, str]:
@@ -433,7 +483,7 @@ def _context_product_ids(user, post_ctx: dict[str, Any] | None, limit: int = 50)
 def _distinct_catalog_types(category: str, *, exclude: set[str] | None = None, limit: int = 30) -> list[str]:
     exclude = exclude or set()
     rows = (
-        Product.objects.filter(category=category, in_stock=True)
+        Product.objects.filter(category=category, in_stock=True, price__isnull=False)
         .exclude(product_type__in=list(exclude))
         .values_list("product_type", flat=True)
         .distinct()[: int(limit)]
@@ -680,6 +730,22 @@ def _planner_candidate_universe(
     return _unique(purchased_types + owned_types_ordered + rules["base"] + rules["optional"])
 
 
+def _contiguous_rule_progress_prefix(
+    *,
+    category: str,
+    owned_types_ordered: list[str],
+) -> list[str]:
+    if category == "fragrance":
+        return []
+    owned_types_set = {str(x) for x in owned_types_ordered if str(x).strip()}
+    prefix: list[str] = []
+    for product_type in _unique(CATEGORY_RULES[category]["base"] + CATEGORY_RULES[category]["optional"]):
+        if product_type not in owned_types_set:
+            break
+        prefix.append(str(product_type))
+    return prefix
+
+
 def _build_chain(
     *,
     user,
@@ -687,6 +753,7 @@ def _build_chain(
     purchased_types: list[str],
     owned_types_ordered: list[str],
     context_product_ids: list[int],
+    refresh_caller: str = "refresh_roadmap",
 ) -> tuple[list[str], dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     rules = CATEGORY_RULES[category]
     min_steps = int(rules["min_steps"])
@@ -698,8 +765,20 @@ def _build_chain(
         chain = _unique(purchased_slots + FRAGRANCE_DEFAULT_CHAIN + owned_slots)
         target_len = max(min_steps, min(max_steps, len(chain)))
         chain = chain[:target_len]
+        anchor = min(len(chain), max(0, len(purchased_types)))
     else:
-        chain = _unique(purchased_types + rules["base"] + rules["optional"] + owned_types_ordered)
+        purchase_context = str(refresh_caller or "").strip() == "update_roadmap_from_purchase"
+        rule_chain = _unique(rules["base"] + rules["optional"])
+        if purchase_context:
+            progress_prefix = _contiguous_rule_progress_prefix(
+                category=category,
+                owned_types_ordered=owned_types_ordered,
+            )
+            anchor = min(len(rule_chain), len(progress_prefix))
+            chain = _unique(rule_chain + purchased_types + owned_types_ordered)
+        else:
+            chain = _unique(purchased_types + rule_chain + owned_types_ordered)
+            anchor = min(len(chain), max(0, len(purchased_types)))
         recent_types = list(
             TransactionItem.objects.filter(transaction__user=user, product__category=category)
             .order_by("-transaction__created_at", "-id")
@@ -727,9 +806,16 @@ def _build_chain(
             **default_rollout_meta,
         }
 
-    anchor = min(len(chain), max(0, len(purchased_types)))
-    planned_target_product_type = str(chain[anchor]) if anchor < len(chain) else ""
-    planned_target_step_index = int(anchor + 1) if anchor < len(chain) else 0
+    owned_types_set = {str(x) for x in owned_types_ordered if str(x).strip()}
+    purchased_types_set = {str(x) for x in purchased_types if str(x).strip()}
+    planned_target_product_type = ""
+    planned_target_step_index = 0
+    for idx, product_type in enumerate(chain, start=1):
+        status = _status_for_type(str(product_type), owned_types_set, purchased_types_set)
+        if status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}:
+            planned_target_product_type = str(product_type)
+            planned_target_step_index = int(idx)
+            break
 
     use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
@@ -739,8 +825,14 @@ def _build_chain(
         "disabled_reason": "ml_disabled",
         "guard": None,
         "category_guard": None,
+        "planned_target_product_type": planned_target_product_type,
+        "planned_target_step_index": planned_target_step_index,
         **default_rollout_meta,
     }
+    if not planned_target_product_type:
+        ml_runtime["disabled_reason"] = "no_actionable_step"
+        ml_runtime["rollout_reason"] = "no_actionable_step"
+        return chain, source_by_type, ml_predictions, ml_runtime
     if not use_v4 and not use_v3:
         return chain, source_by_type, ml_predictions, ml_runtime
 
@@ -805,22 +897,33 @@ def _build_chain(
             category=category,
             chain=chain,
             purchased_types=purchased_types,
+            refresh_caller=refresh_caller,
+            planned_target_product_type=planned_target_product_type,
+            planned_target_step_index=planned_target_step_index,
         )
         active_model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or "")
         partial_model_path = _partial_candidate_model_path(category)
+        partial_active_override_types = _partial_active_model_product_types(category)
         partial_selected = bool(rollout_meta.get("rollout_selected"))
         partial_active = str(rollout_meta.get("rollout_mode") or "") == "partial"
+        partial_force_enabled = bool(partial_active and _partial_force_enabled(category))
         served_model_path = active_model_path
         served_model_slot = "active"
+        partial_model_override_reason = ""
         if partial_active and partial_selected and partial_model_path:
             served_model_path = partial_model_path
             served_model_slot = "partial_candidate"
+            if planned_target_product_type and planned_target_product_type in partial_active_override_types:
+                served_model_path = active_model_path
+                served_model_slot = "partial_active_override"
+                partial_model_override_reason = "active_model_product_type"
         served_artifact = nextstep_model_artifact_summary(served_model_path)
         served_model_meta = {
             "model_path": served_model_path,
             "model_version": str((served_artifact or {}).get("model_version") or ""),
             "selected_feature_set": str((served_artifact or {}).get("selected_feature_set") or ""),
             "model_slot": served_model_slot,
+            "partial_model_override_reason": partial_model_override_reason or None,
         }
 
         if final_status == "DISABLE":
@@ -837,12 +940,14 @@ def _build_chain(
                 "disabled_reason": disabled_reason,
                 "guard": None,
                 "category_guard": category_guard,
+                "planned_target_product_type": planned_target_product_type,
+                "planned_target_step_index": planned_target_step_index,
                 **served_model_meta,
                 **rollout_meta_disabled,
             }
             return chain, source_by_type, ml_predictions, ml_runtime
 
-        if final_status == "ENABLE":
+        if final_status == "ENABLE" and not partial_force_enabled:
             rollout_meta = {
                 **_default_rollout_meta(),
                 "rollout_mode": "full",
@@ -864,6 +969,8 @@ def _build_chain(
                 "disabled_reason": None,
                 "guard": None,
                 "category_guard": category_guard,
+                "planned_target_product_type": planned_target_product_type,
+                "planned_target_step_index": planned_target_step_index,
                 **served_model_meta,
                 **rollout_meta,
             }
@@ -875,6 +982,8 @@ def _build_chain(
                 "disabled_reason": None,
                 "guard": None,
                 "category_guard": category_guard,
+                "planned_target_product_type": planned_target_product_type,
+                "planned_target_step_index": planned_target_step_index,
                 **served_model_meta,
                 **rollout_meta,
             }
@@ -1068,7 +1177,11 @@ def _recommend_candidates_for_type(
     if filtered:
         return filtered
 
-    db_qs = Product.objects.filter(category=category, in_stock=True).exclude(id__in=list(blocked))
+    db_qs = Product.objects.filter(
+        category=category,
+        in_stock=True,
+        price__isnull=False,
+    ).exclude(id__in=list(blocked))
     if not (category == "fragrance" and product_type in FRAGRANCE_SLOTS):
         db_qs = db_qs.filter(product_type=product_type)
     fallback_rows = list(db_qs.values("id", "category", "product_type", "brand", "attrs", "raw_meta").order_by("id")[: max_suggestions * 2])
@@ -1095,7 +1208,7 @@ def _recommend_candidates_for_type(
     # Ultimate fallback for slot mode: do not enforce slot filter to avoid empty roadmap recommendations.
     if category == "fragrance" and product_type in FRAGRANCE_SLOTS:
         fallback_rows = list(
-            Product.objects.filter(category=category, in_stock=True)
+            Product.objects.filter(category=category, in_stock=True, price__isnull=False)
             .exclude(id__in=list(blocked))
             .values("id", "category", "product_type", "brand", "attrs")
             .order_by("id")[:max_suggestions]
@@ -1231,6 +1344,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             purchased_types=purchased_types,
             owned_types_ordered=owned_types_ordered,
             context_product_ids=context_product_ids,
+            refresh_caller=refresh_caller,
         )
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
@@ -1351,8 +1465,10 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     shadow_reason = "disabled"
     shadow_predictions: list[dict[str, Any]] = []
     shadow_artifact = None
-    shadow_planned_target_product_type = str(ml_runtime.get("planned_target_product_type") or "")
-    shadow_planned_target_step_index = int(ml_runtime.get("planned_target_step_index") or 0)
+    active_planned_target_product_type = str(ml_runtime.get("planned_target_product_type") or "")
+    active_planned_target_step_index = int(ml_runtime.get("planned_target_step_index") or 0)
+    shadow_planned_target_product_type = active_planned_target_product_type
+    shadow_planned_target_step_index = active_planned_target_step_index
     if shadow_enabled:
         shadow_reason = "ok"
         shadow_artifact = nextstep_model_artifact_summary(shadow_model_path)
@@ -1386,6 +1502,54 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         "chain": list((planner_result or {}).get("chain") or []),
         "trace": list((planner_result or {}).get("trace") or [])[:10],
     }
+    runtime_policy_names: set[str] = set()
+    runtime_policy_max_abs_bias: dict[str, float] = {}
+    for prediction_row in ml_predictions:
+        if not isinstance(prediction_row, dict):
+            continue
+        for raw_policy in prediction_row.get("runtime_policies") or []:
+            policy_name = str(raw_policy or "").strip()
+            if policy_name:
+                runtime_policy_names.add(policy_name)
+        raw_biases = prediction_row.get("runtime_policy_biases")
+        if not isinstance(raw_biases, dict):
+            continue
+        for raw_policy_name, raw_bias_value in raw_biases.items():
+            policy_name = str(raw_policy_name or "").strip()
+            if not policy_name:
+                continue
+            try:
+                bias_value = abs(float(raw_bias_value or 0.0))
+            except Exception:
+                continue
+            prev_value = float(runtime_policy_max_abs_bias.get(policy_name, 0.0))
+            if bias_value > prev_value:
+                runtime_policy_max_abs_bias[policy_name] = float(round(bias_value, 6))
+
+    shadow_runtime_policy_names: set[str] = set()
+    shadow_runtime_policy_max_abs_bias: dict[str, float] = {}
+    for prediction_row in shadow_predictions:
+        if not isinstance(prediction_row, dict):
+            continue
+        for raw_policy in prediction_row.get("runtime_policies") or []:
+            policy_name = str(raw_policy or "").strip()
+            if policy_name:
+                shadow_runtime_policy_names.add(policy_name)
+        raw_biases = prediction_row.get("runtime_policy_biases")
+        if not isinstance(raw_biases, dict):
+            continue
+        for raw_policy_name, raw_bias_value in raw_biases.items():
+            policy_name = str(raw_policy_name or "").strip()
+            if not policy_name:
+                continue
+            try:
+                bias_value = abs(float(raw_bias_value or 0.0))
+            except Exception:
+                continue
+            prev_value = float(shadow_runtime_policy_max_abs_bias.get(policy_name, 0.0))
+            if bias_value > prev_value:
+                shadow_runtime_policy_max_abs_bias[policy_name] = float(round(bias_value, 6))
+
     meta = {
         "generation_state": "ok",
         "source": "roadmap_planner_v1" if planner_served else "roadmap_v1",
@@ -1412,8 +1576,16 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "model_version": served_model_version,
             "selected_feature_set": served_feature_set,
             "model_slot": served_model_slot,
-            "planned_target_product_type": shadow_planned_target_product_type,
-            "planned_target_step_index": shadow_planned_target_step_index,
+            "partial_model_override_reason": ml_runtime.get("partial_model_override_reason"),
+            "planned_target_product_type": active_planned_target_product_type,
+            "planned_target_step_index": active_planned_target_step_index,
+            "runtime_policies": sorted(runtime_policy_names),
+            "runtime_policy_max_abs_bias": {
+                str(k): float(v)
+                for k, v in sorted(runtime_policy_max_abs_bias.items(), key=lambda kv: kv[0])
+            },
+            "runtime_policy_meta_source": "runtime",
+            "runtime_policy_meta_updated_at": now.isoformat(),
             "shadow": {
                 "enabled": bool(shadow_enabled),
                 "reason": shadow_reason,
@@ -1422,6 +1594,11 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
                 "selected_feature_set": str((shadow_artifact or {}).get("selected_feature_set") or ""),
                 "planned_target_product_type": shadow_planned_target_product_type,
                 "planned_target_step_index": shadow_planned_target_step_index,
+                "runtime_policies": sorted(shadow_runtime_policy_names),
+                "runtime_policy_max_abs_bias": {
+                    str(k): float(v)
+                    for k, v in sorted(shadow_runtime_policy_max_abs_bias.items(), key=lambda kv: kv[0])
+                },
                 "predictions": shadow_predictions[:10],
             },
         },

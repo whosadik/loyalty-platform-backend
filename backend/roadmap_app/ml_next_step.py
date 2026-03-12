@@ -25,6 +25,7 @@ from roadmap_app.content_features import (
     build_candidate_catalog_summaries,
     build_candidate_content_features,
     build_chain_transition_features,
+    effective_nextstep_rules_chain,
     build_nextstep_plan_state_features,
     product_signature,
     profile_signature,
@@ -834,7 +835,24 @@ def _normalize_predictions(raw: Any) -> list[dict[str, Any]]:
                 score = _to_float(
                     item.get("score", item.get("prob", item.get("confidence", 0.0)))
                 )
-                out.append({"candidate_type": candidate, "product_type": candidate, "score": score})
+                normalized_row = {"candidate_type": candidate, "product_type": candidate, "score": score}
+                if "raw_score" in item:
+                    normalized_row["raw_score"] = _to_float(item.get("raw_score"))
+                if "runtime_bias" in item:
+                    normalized_row["runtime_bias"] = _to_float(item.get("runtime_bias"))
+                if isinstance(item.get("runtime_policy_biases"), dict):
+                    normalized_row["runtime_policy_biases"] = {
+                        str(k): _to_float(v)
+                        for k, v in item["runtime_policy_biases"].items()
+                        if str(k).strip()
+                    }
+                if isinstance(item.get("runtime_policies"), list):
+                    normalized_row["runtime_policies"] = [
+                        str(x).strip() for x in item["runtime_policies"] if str(x).strip()
+                    ]
+                if "model_type" in item:
+                    normalized_row["model_type"] = str(item.get("model_type") or "").strip()
+                out.append(normalized_row)
                 continue
 
             if isinstance(item, (list, tuple)) and len(item) >= 2:
@@ -868,13 +886,28 @@ def _normalize_predictions(raw: Any) -> list[dict[str, Any]]:
         if not candidate or candidate in seen:
             continue
         seen.add(candidate)
-        dedup.append(
-            {
-                "candidate_type": candidate,
-                "product_type": candidate,
-                "score": float(row.get("score", 0.0)),
+        normalized_row = {
+            "candidate_type": candidate,
+            "product_type": candidate,
+            "score": float(row.get("score", 0.0)),
+        }
+        if "raw_score" in row:
+            normalized_row["raw_score"] = _to_float(row.get("raw_score"))
+        if "runtime_bias" in row:
+            normalized_row["runtime_bias"] = _to_float(row.get("runtime_bias"))
+        if isinstance(row.get("runtime_policy_biases"), dict):
+            normalized_row["runtime_policy_biases"] = {
+                str(k): _to_float(v)
+                for k, v in row["runtime_policy_biases"].items()
+                if str(k).strip()
             }
-        )
+        if isinstance(row.get("runtime_policies"), list):
+            normalized_row["runtime_policies"] = [
+                str(x).strip() for x in row["runtime_policies"] if str(x).strip()
+            ]
+        if "model_type" in row:
+            normalized_row["model_type"] = str(row.get("model_type") or "").strip()
+        dedup.append(normalized_row)
     return dedup
 
 
@@ -928,6 +961,116 @@ def _apply_runtime_progression_bias(
             bias -= 0.14 * freshness
         elif int(row.get("candidate_is_before_anchor", 0) or 0) == 1:
             bias -= 0.08 * freshness
+
+        adjusted_scores.append(float(base_score) + float(bias))
+        biases.append(float(round(bias, 6)))
+    return adjusted_scores, biases
+
+
+def _apply_runtime_scalp_planned_target_rerank(
+    *,
+    category: str,
+    rows: list[dict[str, Any]],
+    score_list: list[float],
+) -> tuple[list[float], list[float]]:
+    if not bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED", False)):
+        return score_list, [0.0 for _ in score_list]
+    if str(category or "").strip().lower() != "haircare":
+        return score_list, [0.0 for _ in score_list]
+    if not rows or len(rows) != len(score_list):
+        return score_list, [0.0 for _ in score_list]
+
+    head = rows[0]
+    planned_target = str(head.get("planned_target_product_type") or "").strip().lower()
+    if planned_target != "scalp_serum":
+        return score_list, [0.0 for _ in score_list]
+
+    profile_has_scalp_objective = int(head.get("profile_has_scalp_objective", 0) or 0)
+    anchor_has_scalp_focus = int(head.get("anchor_has_scalp_focus", 0) or 0)
+    anchor_product_type = str(head.get("anchor_product_type") or "").strip().lower()
+    if not profile_has_scalp_objective:
+        return score_list, [0.0 for _ in score_list]
+    if not anchor_has_scalp_focus and anchor_product_type != "shampoo":
+        return score_list, [0.0 for _ in score_list]
+
+    adjusted_scores: list[float] = []
+    biases: list[float] = []
+    for row, base_score in zip(rows, score_list):
+        candidate = str(row.get("candidate_type") or row.get("product_type") or "").strip().lower()
+        bias = 0.0
+        matches_target = int(row.get("candidate_matches_planned_target", 0) or 0) == 1
+        is_scalp_specialty = int(row.get("candidate_is_scalp_specialty", 0) or 0) == 1
+        scalp_objective_match = _to_float(row.get("candidate_profile_scalp_objective_match_rate"))
+        scalp_focus = max(
+            _to_float(row.get("candidate_scalp_concern_focus_rate")),
+            _to_float(row.get("candidate_scalp_active_focus_rate")),
+        )
+
+        if candidate == "scalp_serum" and matches_target and is_scalp_specialty:
+            bias += 0.85
+            bias += 0.25 * min(1.0, scalp_objective_match)
+            bias += 0.15 * min(1.0, scalp_focus)
+        elif candidate in {"conditioner", "hair_mask", "hair_oil", "leave_in"} and not is_scalp_specialty:
+            bias -= 0.18
+        elif candidate == "shampoo":
+            bias -= 0.08
+
+        adjusted_scores.append(float(base_score) + float(bias))
+        biases.append(float(round(bias, 6)))
+    return adjusted_scores, biases
+
+
+def _apply_runtime_leavein_planned_target_rerank(
+    *,
+    category: str,
+    rows: list[dict[str, Any]],
+    score_list: list[float],
+) -> tuple[list[float], list[float]]:
+    if not bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_LEAVEIN_RERANK_ENABLED", False)):
+        return score_list, [0.0 for _ in score_list]
+    if str(category or "").strip().lower() != "haircare":
+        return score_list, [0.0 for _ in score_list]
+    if not rows or len(rows) != len(score_list):
+        return score_list, [0.0 for _ in score_list]
+
+    head = rows[0]
+    planned_target = str(head.get("planned_target_product_type") or "").strip().lower()
+    if planned_target != "leave_in":
+        return score_list, [0.0 for _ in score_list]
+
+    profile_hair_type = str(head.get("profile_hair_type") or "").strip().lower()
+    anchor_product_type = str(head.get("anchor_product_type") or "").strip().lower()
+    if profile_hair_type not in {"curly", "wavy", "coily"} and anchor_product_type not in {"hair_mask", "conditioner"}:
+        return score_list, [0.0 for _ in score_list]
+
+    adjusted_scores: list[float] = []
+    biases: list[float] = []
+    for row, base_score in zip(rows, score_list):
+        candidate = str(row.get("candidate_type") or row.get("product_type") or "").strip().lower()
+        bias = 0.0
+        matches_target = int(row.get("candidate_matches_planned_target", 0) or 0) == 1
+        goal_match = _to_float(row.get("candidate_profile_goal_match_rate"))
+        concern_match = _to_float(row.get("candidate_profile_hair_concern_match_rate"))
+        hair_type_match = _to_float(row.get("candidate_profile_hair_type_match_rate"))
+        thickness_match = _to_float(row.get("candidate_profile_hair_thickness_match_rate"))
+        anchor_shared = max(
+            _to_float(row.get("candidate_anchor_shared_concern_rate")),
+            _to_float(row.get("candidate_anchor_shared_active_rate")),
+        )
+
+        if candidate == "leave_in" and matches_target:
+            bias += 1.05
+            bias += 0.20 * min(1.0, goal_match)
+            bias += 0.18 * min(1.0, concern_match)
+            bias += 0.12 * min(1.0, hair_type_match)
+            bias += 0.08 * min(1.0, thickness_match)
+            if anchor_product_type in {"hair_mask", "conditioner"}:
+                bias += 0.12
+            bias += 0.08 * min(1.0, anchor_shared)
+        elif candidate == "hair_oil":
+            bias -= 0.22
+        elif candidate in {"conditioner", "hair_mask", "shampoo"}:
+            bias -= 0.06
 
         adjusted_scores.append(float(base_score) + float(bias))
         biases.append(float(round(bias, 6)))
@@ -1151,11 +1294,18 @@ def _predict_with_v4_artifact_from_sources(
                 continue
             base[col_name] = int(owned_counts_all.get((cat, ptype), 0))
 
-    rules_chain = [
-        str(x).strip().lower()
-        for x in ((artifact.get("rules_chain_by_category") or {}).get(category) or [])
-        if str(x)
-    ]
+    anchor_source_item = normalized_context_products[0] if normalized_context_products else anchor_item
+    rules_chain = effective_nextstep_rules_chain(
+        category=category,
+        rules_chain=[
+            str(x).strip().lower()
+            for x in ((artifact.get("rules_chain_by_category") or {}).get(category) or [])
+            if str(x)
+        ],
+        planned_target_product_type=planned_target_type_norm,
+        profile_sig=profile_sig,
+        anchor_product_type=anchor_source_item.get("product_type") if isinstance(anchor_source_item, dict) else "",
+    )
     pos_by_candidate = {token: idx for idx, token in enumerate(rules_chain)}
     pop_map_raw = (artifact.get("candidate_popularity_in_train_by_category") or {}).get(category) or {}
     pop_map: dict[str, float] = {str(k).strip().lower(): _to_float(v) for k, v in pop_map_raw.items()}
@@ -1168,7 +1318,6 @@ def _predict_with_v4_artifact_from_sources(
             and str(row.get("product_type") or "").strip().lower() in candidate_set
         ]
     )
-    anchor_source_item = normalized_context_products[0] if normalized_context_products else anchor_item
     anchor_sig = product_signature(anchor_source_item)
 
     context_candidate_tokens = [
@@ -1217,6 +1366,7 @@ def _predict_with_v4_artifact_from_sources(
                 candidate_catalog_summaries.get((category, candidate)),
                 profile_sig,
                 anchor_sig,
+                candidate_type=candidate,
             )
         )
         row.update(
@@ -1296,18 +1446,54 @@ def _predict_with_v4_artifact_from_sources(
             else:
                 score_list.append(float(raw_score))
 
-    score_list, runtime_biases = _apply_runtime_progression_bias(
+    score_list, progression_biases = _apply_runtime_progression_bias(
         category=category,
         rows=rows,
         score_list=score_list,
         days_since_last_purchase=days_since_last_purchase,
         has_context_anchor=has_context_anchor,
     )
+    score_list, scalp_biases = _apply_runtime_scalp_planned_target_rerank(
+        category=category,
+        rows=rows,
+        score_list=score_list,
+    )
+    score_list, leavein_biases = _apply_runtime_leavein_planned_target_rerank(
+        category=category,
+        rows=rows,
+        score_list=score_list,
+    )
+    policy_bias_components: dict[str, list[float]] = {
+        "haircare_progression_bias": progression_biases,
+        "haircare_scalp_rerank": scalp_biases,
+        "haircare_leavein_rerank": leavein_biases,
+    }
+    runtime_biases = [
+        float(
+            round(
+                float(progression_biases[idx])
+                + float(scalp_biases[idx])
+                + float(leavein_biases[idx]),
+                6,
+            )
+        )
+        for idx in range(len(score_list))
+    ]
     temperature = _to_float(artifact.get("temperature", 1.0)) or 1.0
     prob_list = _group_softmax(score_list, temperature)
 
     rows_out: list[dict[str, Any]] = []
     for idx, candidate in enumerate(candidates):
+        runtime_policy_biases: dict[str, float] = {}
+        runtime_policies: list[str] = []
+        for policy_name, component_values in policy_bias_components.items():
+            if idx >= len(component_values):
+                continue
+            component_bias = float(round(float(component_values[idx]), 6))
+            if abs(component_bias) <= 1e-9:
+                continue
+            runtime_policy_biases[str(policy_name)] = component_bias
+            runtime_policies.append(str(policy_name))
         rows_out.append(
             {
                 "candidate_type": candidate,
@@ -1315,6 +1501,8 @@ def _predict_with_v4_artifact_from_sources(
                 "score": float(prob_list[idx]),
                 "raw_score": float(score_list[idx]),
                 "runtime_bias": float(runtime_biases[idx]) if idx < len(runtime_biases) else 0.0,
+                "runtime_policy_biases": runtime_policy_biases,
+                "runtime_policies": runtime_policies,
                 "model_type": model_type,
             }
         )

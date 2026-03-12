@@ -28,6 +28,9 @@ def _budget_price_cap(budget: str) -> float | None:
 def _passes_global_filters(p: dict[str, Any], prof: UserProfile) -> bool:
     if p.get("in_stock") is False:
         return False
+    price = p.get("price")
+    if price in (None, ""):
+        return False
 
     # avoid flags
     pf = set(p.get("flags") or [])
@@ -36,13 +39,12 @@ def _passes_global_filters(p: dict[str, Any], prof: UserProfile) -> bool:
 
     # budget cap (если цена есть)
     cap = _budget_price_cap(prof.budget)
-    price = p.get("price")
-    if cap is not None and price is not None:
+    if cap is not None:
         try:
             if float(price) > cap:
                 return False
         except Exception:
-            pass
+            return False
 
     return True
 

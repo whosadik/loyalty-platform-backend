@@ -29,6 +29,7 @@ from roadmap_app.content_features import (
     build_candidate_catalog_summaries,
     build_candidate_content_features,
     build_chain_transition_features,
+    effective_nextstep_rules_chain,
     build_nextstep_plan_state_features,
     product_signature,
     profile_signature,
@@ -160,6 +161,11 @@ def _episode_sample_weight(
             weight *= 0.75
         elif dist != -99 and dist <= 0:
             weight *= 0.85
+    if category_norm == "haircare" and label_norm == "scalp_serum":
+        if source == "step_completed_event":
+            weight *= 1.20
+        else:
+            weight *= 1.05
 
     return round(float(max(0.30, min(2.00, weight))), 6)
 
@@ -1111,6 +1117,7 @@ class Command(BaseCommand):
                 for k, v in (aux.get("buy_any_labels_by_window") or {}).items()
             }
             anchor_sig = product_signature(aux.get("anchor_item"))
+            profile_sig = profile_map.get(int(ep["user_id"])) or {}
             anchor_chain_token = (
                 recent_candidate_tokens[0]
                 if recent_candidate_tokens
@@ -1122,7 +1129,14 @@ class Command(BaseCommand):
             planned_target_step_index = int(ep.get("planned_target_step_index") or 0)
             if label != "__none__" and label not in set(candidates):
                 label_outside_candidates += 1
-            pos_map = {token: idx for idx, token in enumerate(RULE_CHAIN_BY_CATEGORY.get(category) or [])}
+            effective_rules_chain = effective_nextstep_rules_chain(
+                category=category,
+                rules_chain=RULE_CHAIN_BY_CATEGORY.get(category) or [],
+                planned_target_product_type=planned_target_product_type,
+                profile_sig=profile_sig,
+                anchor_product_type=anchor_chain_token,
+            )
+            pos_map = {token: idx for idx, token in enumerate(effective_rules_chain)}
             for candidate in candidates:
                 seen_count_last5 = int(sum(1 for token in recent_candidate_tokens if token == candidate))
                 sample_weight = _episode_sample_weight(
@@ -1194,13 +1208,14 @@ class Command(BaseCommand):
                 row.update(
                     build_candidate_content_features(
                         candidate_catalog_summaries.get((category, str(candidate))),
-                        profile_map.get(int(ep["user_id"])),
+                        profile_sig,
                         anchor_sig,
+                        candidate_type=str(candidate),
                     )
                 )
                 row.update(
                     build_chain_transition_features(
-                        rules_chain=RULE_CHAIN_BY_CATEGORY.get(category) or [],
+                        rules_chain=effective_rules_chain,
                         candidate_type=str(candidate),
                         anchor_product_type=anchor_chain_token,
                         last1_product_type=last1_chain_token,
@@ -1209,7 +1224,7 @@ class Command(BaseCommand):
                 )
                 row.update(
                     build_nextstep_plan_state_features(
-                        rules_chain=RULE_CHAIN_BY_CATEGORY.get(category) or [],
+                        rules_chain=effective_rules_chain,
                         candidate_type=str(candidate),
                         planned_target_product_type=planned_target_product_type,
                         planned_target_step_index=planned_target_step_index,
@@ -1393,6 +1408,7 @@ class Command(BaseCommand):
                 "none_weight": 0.90,
                 "haircare_future_repeat_multiplier": 0.75,
                 "haircare_future_backward_multiplier": 0.85,
+                "haircare_scalp_serum_multiplier": 1.20,
             },
             "sample_weight_summary": {
                 "min": round(float(df["sample_weight"].min()), 6),

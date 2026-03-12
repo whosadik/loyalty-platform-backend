@@ -3,6 +3,7 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from roadmap_app.models import RoadmapPlan, RoadmapStep
+from roadmap_app.step_presentation import build_roadmap_step_presentation
 from roadmap_app.services import build_plan_summary, get_next_missing_step
 
 
@@ -123,6 +124,11 @@ def serialize_roadmap_step_snapshot(
         return None
 
     presentation = get_roadmap_step_presentation(step.product_type)
+    step_presentation = build_roadmap_step_presentation(
+        step.product_type,
+        title=presentation["title"],
+        description=presentation["description"],
+    )
     resolved_plan_id = plan_id if plan_id is not None else getattr(step, "plan_id", None)
     resolved_category = category
     if resolved_category is None:
@@ -139,6 +145,7 @@ def serialize_roadmap_step_snapshot(
         "status": str(step.status or ""),
         "title": presentation["title"],
         "description": presentation["description"],
+        "presentation": step_presentation,
         "why": list(step.why or []),
         "cadence": str(step.cadence or ""),
         "recommended_product_id": int(step.recommended_product_id) if step.recommended_product_id else None,
@@ -172,6 +179,15 @@ class RoadmapRecommendedProductSerializer(serializers.Serializer):
     points_earned = serializers.IntegerField(required=False)
 
 
+class RoadmapStepPresentationSerializer(serializers.Serializer):
+    title = serializers.CharField()
+    description = serializers.CharField()
+    points = serializers.IntegerField()
+    why = serializers.CharField()
+    improves = serializers.CharField()
+    benefit = serializers.CharField()
+
+
 class RoadmapStepSnapshotSerializer(serializers.Serializer):
     id = serializers.IntegerField(required=False)
     step_id = serializers.IntegerField(required=False)
@@ -182,6 +198,7 @@ class RoadmapStepSnapshotSerializer(serializers.Serializer):
     status = serializers.CharField()
     title = serializers.CharField()
     description = serializers.CharField()
+    presentation = RoadmapStepPresentationSerializer(required=False)
     why = serializers.ListField(child=serializers.CharField(), required=False)
     cadence = serializers.CharField(required=False, allow_blank=True)
     recommended_product_id = serializers.IntegerField(required=False, allow_null=True)

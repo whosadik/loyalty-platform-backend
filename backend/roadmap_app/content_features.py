@@ -39,6 +39,8 @@ BASE_NUMERIC_FEATURES = [
     "profile_goals_count",
     "profile_avoid_flags_count",
     "profile_hair_concerns_count",
+    "profile_scalp_objective_count",
+    "profile_has_scalp_objective",
     "profile_makeup_finish_pref_count",
     "profile_makeup_coverage_pref_count",
     "profile_makeup_concerns_count",
@@ -46,6 +48,9 @@ BASE_NUMERIC_FEATURES = [
     "profile_fragrance_liked_notes_count",
     "anchor_concerns_count",
     "anchor_actives_count",
+    "anchor_scalp_concern_count",
+    "anchor_scalp_active_count",
+    "anchor_has_scalp_focus",
     "anchor_supported_skin_types_count",
     "anchor_notes_count",
     "anchor_inci_token_count",
@@ -73,6 +78,8 @@ CANDIDATE_NUMERIC_FEATURES = [
     "candidate_profile_goal_match_rate",
     "candidate_profile_skin_type_match_rate",
     "candidate_profile_hair_concern_match_rate",
+    "candidate_profile_scalp_objective_match_rate",
+    "candidate_profile_scalp_concern_match_rate",
     "candidate_profile_hair_type_match_rate",
     "candidate_profile_scalp_type_match_rate",
     "candidate_profile_hair_thickness_match_rate",
@@ -88,6 +95,9 @@ CANDIDATE_NUMERIC_FEATURES = [
     "candidate_anchor_shared_active_rate",
     "candidate_anchor_shared_inci_rate",
     "candidate_anchor_active_conflict_rate",
+    "candidate_scalp_concern_focus_rate",
+    "candidate_scalp_active_focus_rate",
+    "candidate_is_scalp_specialty",
 ]
 
 CHAIN_TRANSITION_NUMERIC_FEATURES = [
@@ -135,9 +145,43 @@ NEXTSTEP_PLAN_STATE_NUMERIC_FEATURES = [
 ALL_CATEGORICAL_FEATURES = [*BASE_CATEGORICAL_FEATURES, *CANDIDATE_CATEGORICAL_FEATURES]
 ALL_NUMERIC_FEATURES = [*BASE_NUMERIC_FEATURES, *CANDIDATE_NUMERIC_FEATURES]
 
+HAIRCARE_SCALP_REORDER_TOKENS = {
+    "scalp_balance",
+    "oiliness",
+    "flakes",
+    "itchiness",
+    "build_up",
+}
+
+SCALP_OBJECTIVE_TOKENS = {
+    *HAIRCARE_SCALP_REORDER_TOKENS,
+    "dandruff",
+    "scalp_health",
+}
+
+SCALP_ACTIVE_TOKENS = {
+    "salicylic_acid",
+    "niacinamide",
+    "tea_tree",
+    "zinc_pca",
+    "ketoconazole",
+    "piroctone_olamine",
+}
+
 
 def _safe_dict(value: Any) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
+
+
+def _ordered_overlap(tokens: list[str], allowed: set[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token not in allowed or token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    return out
 
 
 def slug_token(raw: Any, *, default: str = "__none__") -> str:
@@ -181,6 +225,40 @@ def tokenize_inci(value: Any, *, limit: int = 24) -> list[str]:
         out.append(item)
         if len(out) >= limit:
             break
+    return out
+
+
+def effective_nextstep_rules_chain(
+    *,
+    category: str | None,
+    rules_chain: list[str] | tuple[str, ...] | None,
+    planned_target_product_type: str | None = None,
+    profile_sig: dict[str, Any] | None = None,
+    anchor_product_type: str | None = None,
+) -> list[str]:
+    category_norm = slug_token(category, default="")
+    chain = [slug_token(item, default="") for item in (rules_chain or []) if slug_token(item, default="")]
+    if category_norm != "haircare" or not chain:
+        return chain
+
+    planned_target = slug_token(planned_target_product_type, default="")
+    anchor_product = slug_token(anchor_product_type, default="")
+    profile = profile_sig or {}
+    scalp_type = slug_token(profile.get("scalp_type"), default="")
+    profile_tokens = set(normalize_tokens(profile.get("goals"))) | set(normalize_tokens(profile.get("hair_concerns")))
+
+    promote_scalp_serum = planned_target == "scalp_serum"
+    if not promote_scalp_serum and anchor_product == "shampoo":
+        if scalp_type == "oily" or bool(profile_tokens & HAIRCARE_SCALP_REORDER_TOKENS):
+            promote_scalp_serum = True
+    if not promote_scalp_serum:
+        return chain
+    if "shampoo" not in chain or "scalp_serum" not in chain:
+        return chain
+
+    out = [token for token in chain if token != "scalp_serum"]
+    insert_at = min(out.index("shampoo") + 1, len(out))
+    out.insert(insert_at, "scalp_serum")
     return out
 
 
@@ -390,6 +468,13 @@ def build_base_content_features(profile_sig: dict[str, Any] | None, anchor_sig: 
     out = {col: "__none__" for col in BASE_CATEGORICAL_FEATURES}
     out.update({col: 0.0 for col in BASE_NUMERIC_FEATURES})
 
+    profile_scalp_objectives = _ordered_overlap(
+        list(profile_sig.get("goals") or []) + list(profile_sig.get("hair_concerns") or []),
+        SCALP_OBJECTIVE_TOKENS,
+    )
+    anchor_scalp_concerns = _ordered_overlap(list(anchor_sig.get("concerns") or []), SCALP_OBJECTIVE_TOKENS)
+    anchor_scalp_actives = _ordered_overlap(list(anchor_sig.get("actives") or []), SCALP_ACTIVE_TOKENS)
+
     out["profile_skin_type"] = str(profile_sig.get("skin_type") or "__none__")
     out["profile_budget"] = str(profile_sig.get("budget") or "__none__")
     out["profile_hair_type"] = str(profile_sig.get("hair_type") or "__none__")
@@ -410,6 +495,8 @@ def build_base_content_features(profile_sig: dict[str, Any] | None, anchor_sig: 
     out["profile_goals_count"] = int(len(profile_sig.get("goals") or []))
     out["profile_avoid_flags_count"] = int(len(profile_sig.get("avoid_flags") or []))
     out["profile_hair_concerns_count"] = int(len(profile_sig.get("hair_concerns") or []))
+    out["profile_scalp_objective_count"] = int(len(profile_scalp_objectives))
+    out["profile_has_scalp_objective"] = int(bool(profile_scalp_objectives))
     out["profile_makeup_finish_pref_count"] = int(len(profile_sig.get("makeup_finish_pref") or []))
     out["profile_makeup_coverage_pref_count"] = int(len(profile_sig.get("makeup_coverage_pref") or []))
     out["profile_makeup_concerns_count"] = int(len(profile_sig.get("makeup_concerns") or []))
@@ -428,6 +515,9 @@ def build_base_content_features(profile_sig: dict[str, Any] | None, anchor_sig: 
     out["anchor_intensity"] = str(anchor_sig.get("intensity") or "__none__")
     out["anchor_concerns_count"] = int(len(anchor_sig.get("concerns") or []))
     out["anchor_actives_count"] = int(len(anchor_sig.get("actives") or []))
+    out["anchor_scalp_concern_count"] = int(len(anchor_scalp_concerns))
+    out["anchor_scalp_active_count"] = int(len(anchor_scalp_actives))
+    out["anchor_has_scalp_focus"] = int(bool(anchor_scalp_concerns or anchor_scalp_actives))
     out["anchor_supported_skin_types_count"] = int(len(anchor_sig.get("supported_skin_types") or []))
     out["anchor_notes_count"] = int(len(anchor_sig.get("notes") or []))
     out["anchor_inci_token_count"] = int(len(anchor_sig.get("inci_tokens") or []))
@@ -438,11 +528,19 @@ def build_candidate_content_features(
     candidate_summary: dict[str, Any] | None,
     profile_sig: dict[str, Any] | None,
     anchor_sig: dict[str, Any] | None,
+    *,
+    candidate_type: str | None = None,
 ) -> dict[str, Any]:
     profile_sig = profile_sig or {}
     anchor_sig = anchor_sig or {}
     summary = candidate_summary or _empty_summary()
     total = int(summary.get("product_count") or 0)
+    candidate_token = slug_token(candidate_type, default="")
+    profile_scalp_objectives = _ordered_overlap(
+        list(profile_sig.get("goals") or []) + list(profile_sig.get("hair_concerns") or []),
+        SCALP_OBJECTIVE_TOKENS,
+    )
+    profile_scalp_concerns = _ordered_overlap(list(profile_sig.get("hair_concerns") or []), SCALP_OBJECTIVE_TOKENS)
 
     out = {col: "__none__" for col in CANDIDATE_CATEGORICAL_FEATURES}
     out.update({col: 0.0 for col in CANDIDATE_NUMERIC_FEATURES})
@@ -476,6 +574,16 @@ def build_candidate_content_features(
     out["candidate_profile_hair_concern_match_rate"] = _rate(
         summary.get("concerns") or Counter(),
         list(profile_sig.get("hair_concerns") or []),
+        total,
+    )
+    out["candidate_profile_scalp_objective_match_rate"] = _rate(
+        summary.get("concerns") or Counter(),
+        profile_scalp_objectives,
+        total,
+    )
+    out["candidate_profile_scalp_concern_match_rate"] = _rate(
+        summary.get("concerns") or Counter(),
+        profile_scalp_concerns,
         total,
     )
     out["candidate_profile_hair_type_match_rate"] = _rate(
@@ -549,6 +657,21 @@ def build_candidate_content_features(
         total,
     )
     out["candidate_anchor_active_conflict_rate"] = _conflict_rate(summary, anchor_sig)
+    out["candidate_scalp_concern_focus_rate"] = _rate(
+        summary.get("concerns") or Counter(),
+        list(SCALP_OBJECTIVE_TOKENS),
+        total,
+    )
+    out["candidate_scalp_active_focus_rate"] = _rate(
+        summary.get("actives") or Counter(),
+        list(SCALP_ACTIVE_TOKENS),
+        total,
+    )
+    out["candidate_is_scalp_specialty"] = int(
+        candidate_token == "scalp_serum"
+        or float(out["candidate_scalp_concern_focus_rate"]) >= 0.5
+        or float(out["candidate_scalp_active_focus_rate"]) >= 0.5
+    )
     return out
 
 

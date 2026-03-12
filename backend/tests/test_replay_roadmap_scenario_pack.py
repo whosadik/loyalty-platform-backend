@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 
 class PlannedTargetModel:
@@ -33,6 +33,10 @@ class ConditionerBiasModel:
 
 
 class ReplayRoadmapScenarioPackTests(TestCase):
+    @override_settings(
+        ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED=False,
+        ROADMAP_NEXTSTEP_V4_HAIRCARE_LEAVEIN_RERANK_ENABLED=False,
+    )
     def test_replay_reports_expected_and_outcome_hit_rates(self):
         with TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

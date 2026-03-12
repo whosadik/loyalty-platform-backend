@@ -419,6 +419,25 @@ class AuthApiFlowTests(APITestCase):
         self.assertEqual(resp.data["profile"]["phone"], "+7 777 123 45 67")
         self.assertEqual(resp.data["profile"]["city"], "Almaty")
 
+    def test_verified_user_can_get_profile_taxonomy(self):
+        self.client.force_login(self.user)
+        token = build_email_verification_token(self.user)
+        verify_resp = self.client.post(
+            "/api/auth/verify-email",
+            {"token": token},
+            format="json",
+        )
+        self.assertEqual(verify_resp.status_code, 200)
+
+        resp = self.client.get("/api/me/profile-taxonomy")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["ok"])
+        taxonomy = resp.data["taxonomy"]
+        self.assertTrue(any(item["value"] == "normal" for item in taxonomy["skin_types"]))
+        self.assertTrue(any(item["value"] == "hydration" for item in taxonomy["goals"]))
+        self.assertTrue(any(item["value"] == "medium" for item in taxonomy["budget_options"]))
+        self.assertGreaterEqual(len(taxonomy["steps"]), 4)
+
     def test_password_reset_request_sends_email_for_existing_user(self):
         csrf = self._fetch_csrf()
         resp = self.client.post(

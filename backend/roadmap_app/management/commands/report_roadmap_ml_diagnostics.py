@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from collections import Counter, defaultdict
 from datetime import timedelta
 from pathlib import Path
@@ -47,6 +48,155 @@ def _normalize_product_ids(value: Any) -> list[int]:
         except Exception:
             continue
     return out
+
+
+def _normalize_runtime_policies(value: Any) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in _safe_list(value):
+        policy = str(item or "").strip()
+        if not policy or policy in seen:
+            continue
+        seen.add(policy)
+        out.append(policy)
+    out.sort()
+    return out
+
+
+def _normalized_token_set(value: Any) -> set[str]:
+    out: set[str] = set()
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = []
+    for raw in values:
+        token = str(raw or "").strip().lower()
+        if token:
+            out.add(token)
+    return out
+
+
+def _normalized_int_set(value: Any) -> set[int]:
+    out: set[int] = set()
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        values = []
+    for raw in values:
+        parsed = _to_int(raw)
+        if parsed is None or int(parsed) <= 0:
+            continue
+        out.add(int(parsed))
+    return out
+
+
+def _current_partial_candidate_model_path(category: str) -> str:
+    category_norm = str(category or "").strip().lower()
+    if category_norm:
+        category_setting = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_MODEL_PATH"
+        category_value = str(getattr(settings, category_setting, "") or "").strip()
+        if category_value:
+            return category_value
+    return str(getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_MODEL_PATH", "") or "").strip()
+
+
+def _current_partial_rollout_bucket(*, user_id: int, category: str, salt: str) -> int:
+    raw = f"{str(salt)}:{str(category)}:{int(user_id)}".encode("utf-8")
+    digest = hashlib.sha1(raw).hexdigest()[:8]
+    return int(digest, 16) % 100
+
+
+def _current_partial_rollout_percent(category: str) -> int:
+    category_norm = str(category or "").strip().lower()
+    category_percent = None
+    if category_norm:
+        setting_name = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_PERCENT"
+        category_percent = getattr(settings, setting_name, None)
+    raw_percent = (
+        category_percent
+        if category_percent not in (None, "")
+        else getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT", 0)
+    )
+    try:
+        percent = int(raw_percent or 0)
+    except Exception:
+        percent = 0
+    return max(0, min(100, percent))
+
+
+def _projected_partial_slot_for_plan(
+    *,
+    user_id: int,
+    category: str,
+    planned_target_product_type: str,
+    planned_target_step_index: int,
+    refresh_caller: str = "",
+) -> str | None:
+    category_norm = str(category or "").strip().lower()
+    if not category_norm:
+        return None
+    enabled_categories = _normalized_token_set(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES", [])
+    )
+    if category_norm not in enabled_categories:
+        return None
+
+    percent = _current_partial_rollout_percent(category_norm)
+    if percent <= 0:
+        return None
+
+    product_setting = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_PRODUCT_TYPES"
+    step_setting = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_STEP_INDEXES"
+    override_setting = (
+        f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_ACTIVE_MODEL_PRODUCT_TYPES"
+    )
+    allow_product_types = _normalized_token_set(getattr(settings, product_setting, []))
+    allow_step_indexes = _normalized_int_set(getattr(settings, step_setting, []))
+    target_product_type = str(planned_target_product_type or "").strip().lower()
+    target_step_index = int(planned_target_step_index or 0)
+
+    product_match = bool(target_product_type and target_product_type in allow_product_types)
+    step_match = bool(target_step_index > 0 and target_step_index in allow_step_indexes)
+
+    if allow_product_types and allow_step_indexes:
+        allowlist_passed = product_match or step_match
+    elif allow_product_types:
+        allowlist_passed = product_match
+    elif allow_step_indexes:
+        allowlist_passed = step_match
+    else:
+        allowlist_passed = False
+    if not allowlist_passed:
+        return None
+
+    purchase_context_only_categories = _normalized_token_set(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES", [])
+    )
+    if (
+        category_norm in purchase_context_only_categories
+        and str(refresh_caller or "").strip() != "update_roadmap_from_purchase"
+    ):
+        return None
+
+    salt = str(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_SALT", "roadmap_nextstep_v4_partial_v1")
+        or "roadmap_nextstep_v4_partial_v1"
+    ).strip()
+    if _current_partial_rollout_bucket(user_id=user_id, category=category_norm, salt=salt) >= percent:
+        return None
+
+    active_override_types = _normalized_token_set(getattr(settings, override_setting, []))
+    if target_product_type and target_product_type in active_override_types:
+        return "partial_active_override"
+
+    if _current_partial_candidate_model_path(category_norm):
+        return "partial_candidate"
+
+    return "active"
 
 
 def _to_int(value: Any) -> int | None:
@@ -689,6 +839,198 @@ def _build_markdown(payload: dict[str, Any]) -> str:
             ],
         )
     )
+    projected_slots = _safe_dict(runtime.get("projected_partial_slots"))
+    lines.append("### projected partial slots")
+    lines.append(
+        _md_table(
+            ["model_slot", "projected_plans"],
+            [[k, v] for k, v in sorted(_safe_dict(projected_slots.get("slot_counts")).items(), key=lambda kv: (-kv[1], kv[0]))],
+        )
+    )
+    lines.append("### projected partial slots by category")
+    lines.append(
+        _md_table(
+            ["category", "slot_counts"],
+            [
+                [
+                    cat,
+                    ", ".join(
+                        f"{slot}:{count}" for slot, count in sorted(_safe_dict(row).items(), key=lambda kv: (-kv[1], kv[0]))
+                    )
+                    or "-",
+                ]
+                for cat, row in sorted(_safe_dict(projected_slots.get("by_category")).items())
+            ],
+        )
+    )
+    lines.append("### projected partial slots by planned target")
+    lines.append(
+        _md_table(
+            ["category", "model_slot", "planned_target_product_type", "plans"],
+            [
+                [
+                    row.get("category"),
+                    row.get("model_slot"),
+                    row.get("planned_target_product_type"),
+                    row.get("plans", 0),
+                ]
+                for row in _safe_list(projected_slots.get("by_slot_and_planned_target"))[:20]
+            ],
+        )
+    )
+    lines.append("### projected outcome by partial slot")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "model_slot",
+                "plans",
+                "step_exposed",
+                "step_completed",
+                "step_completion_rate_pct",
+                "offer_redeem_rate_pct",
+            ],
+            [
+                [
+                    row.get("category"),
+                    row.get("model_slot"),
+                    row.get("plans", 0),
+                    row.get("step_exposed", 0),
+                    row.get("step_completed", 0),
+                    f"{_safe_number(row.get('step_completion_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('offer_redeem_rate')) * 100.0:.2f}",
+                ]
+                for row in _safe_list(projected_slots.get("projected_outcomes_by_slot"))[:15]
+            ],
+        )
+    )
+    lines.append("### projected outcome by partial slot and planned target")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "model_slot",
+                "planned_target_product_type",
+                "plans",
+                "step_exposed",
+                "step_completed",
+                "step_completion_rate_pct",
+            ],
+            [
+                [
+                    row.get("category"),
+                    row.get("model_slot"),
+                    row.get("planned_target_product_type"),
+                    row.get("plans", 0),
+                    row.get("step_exposed", 0),
+                    row.get("step_completed", 0),
+                    f"{_safe_number(row.get('step_completion_rate')) * 100.0:.2f}",
+                ]
+                for row in _safe_list(projected_slots.get("projected_outcomes_by_slot_and_planned_target"))[:20]
+            ],
+        )
+    )
+    runtime_policies = _safe_dict(runtime.get("runtime_policies"))
+    lines.append("### runtime policies")
+    lines.append(
+        _md_table(
+            ["policy", "all_plans", "model_used_plans"],
+            [
+                [
+                    policy,
+                    _safe_dict(runtime_policies.get("policy_counts_all_plans")).get(policy, 0),
+                    count,
+                ]
+                for policy, count in sorted(
+                    _safe_dict(runtime_policies.get("policy_counts")).items(),
+                    key=lambda kv: (-kv[1], kv[0]),
+                )
+            ],
+        )
+    )
+    lines.append("### runtime policy coverage")
+    lines.append(
+        _md_table(
+            ["metric", "value"],
+            [
+                ["all_plans_with_any_policy", runtime_policies.get("all_plans_with_any_policy", 0)],
+                ["model_used_plans_with_any_policy", runtime_policies.get("plans_with_any_policy", 0)],
+            ],
+        )
+    )
+    lines.append("### runtime policy meta sources")
+    lines.append(
+        _md_table(
+            ["source", "all_plans_with_any_policy", "model_used_plans_with_any_policy"],
+            [
+                [
+                    source,
+                    _safe_dict(runtime_policies.get("source_counts_all_plans")).get(source, 0),
+                    count,
+                ]
+                for source, count in sorted(
+                    _safe_dict(runtime_policies.get("source_counts")).items(),
+                    key=lambda kv: (-kv[1], kv[0]),
+                )
+            ],
+        )
+    )
+    lines.append("### runtime policy coverage by decision")
+    lines.append(
+        _md_table(
+            ["decision", "plans_with_any_policy"],
+            [
+                [decision, count]
+                for decision, count in sorted(
+                    _safe_dict(runtime_policies.get("all_plans_with_any_policy_by_decision")).items(),
+                    key=lambda kv: (-kv[1], kv[0]),
+                )
+            ],
+        )
+    )
+    lines.append("### runtime policies by category")
+    lines.append(
+        _md_table(
+            ["category", "policy_counts"],
+            [
+                [
+                    cat,
+                    ", ".join(
+                        f"{policy}:{count}"
+                        for policy, count in sorted(_safe_dict(row).items(), key=lambda kv: (-kv[1], kv[0]))
+                    )
+                    or "-",
+                ]
+                for cat, row in sorted(_safe_dict(runtime_policies.get("by_category")).items())
+            ],
+        )
+    )
+    lines.append("### model-used outcome by runtime policy")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "runtime_policy",
+                "plans",
+                "step_exposed",
+                "step_completed",
+                "step_completion_rate_pct",
+                "offer_redeem_rate_pct",
+            ],
+            [
+                [
+                    row.get("category"),
+                    row.get("runtime_policy"),
+                    row.get("plans", 0),
+                    row.get("step_exposed", 0),
+                    row.get("step_completed", 0),
+                    f"{_safe_number(row.get('step_completion_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('offer_redeem_rate')) * 100.0:.2f}",
+                ]
+                for row in _safe_list(runtime_policies.get("model_used_outcomes_by_policy"))[:15]
+            ],
+        )
+    )
     shadow = _safe_dict(runtime.get("shadow"))
     shadow_top1 = _safe_dict(shadow.get("top1_comparison"))
     lines.append("### shadow comparison")
@@ -1154,7 +1496,10 @@ class Command(BaseCommand):
         plan_model_slot: dict[int, str] = {}
         plan_planned_target_product_type: dict[int, str] = {}
         plan_planned_target_step_index: dict[int, int] = {}
+        plan_refresh_caller: dict[int, str] = {}
         plan_context_product_ids: dict[int, list[int]] = {}
+        plan_runtime_policies: dict[int, list[str]] = {}
+        plan_runtime_policy_meta_source: dict[int, str] = {}
         plan_model_version: dict[int, str] = {}
         cohort_by_plan: dict[int, str] = {}
         decision_counts: Counter[str] = Counter()
@@ -1164,6 +1509,13 @@ class Command(BaseCommand):
         served_model_slot_counts: Counter[str] = Counter()
         served_model_version_counts: Counter[str] = Counter()
         served_model_slot_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        runtime_policy_counts: Counter[str] = Counter()
+        runtime_policy_source_counts: Counter[str] = Counter()
+        runtime_policy_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        runtime_policy_counts_all_plans: Counter[str] = Counter()
+        runtime_policy_source_counts_all_plans: Counter[str] = Counter()
+        runtime_policy_all_plan_ids: set[int] = set()
+        runtime_policy_all_plan_counts_by_decision: Counter[str] = Counter()
         shadow_reason_counts: Counter[str] = Counter()
         shadow_model_version_counts: Counter[str] = Counter()
         shadow_meta_plan_ids: set[int] = set()
@@ -1197,8 +1549,12 @@ class Command(BaseCommand):
                 str(ml.get("planned_target_product_type") or "").strip().lower() or "__none__"
             )
             plan_planned_target_step_index[pid] = int(_to_int(ml.get("planned_target_step_index")) or 0)
-            plan_context_product_ids[pid] = _normalize_product_ids(
-                _safe_dict(meta.get("context")).get("post_ctx_product_ids")
+            context_meta = _safe_dict(meta.get("context"))
+            plan_refresh_caller[pid] = str(context_meta.get("refresh_caller") or "").strip().lower()
+            plan_context_product_ids[pid] = _normalize_product_ids(context_meta.get("post_ctx_product_ids"))
+            plan_runtime_policies[pid] = _normalize_runtime_policies(ml.get("runtime_policies"))
+            plan_runtime_policy_meta_source[pid] = (
+                str(ml.get("runtime_policy_meta_source") or "").strip().lower() or "__missing__"
             )
             plan_model_version[pid] = (
                 str(ml.get("model_version") or "__missing_model_version__").strip()
@@ -1215,6 +1571,21 @@ class Command(BaseCommand):
                 served_model_slot_counts[plan_model_slot[pid]] += 1
                 served_model_version_counts[plan_model_version[pid]] += 1
                 served_model_slot_by_category[cat][plan_model_slot[pid]] += 1
+                runtime_policies_for_plan = plan_runtime_policies.get(pid) or []
+                if runtime_policies_for_plan:
+                    runtime_policy_source_counts[str(plan_runtime_policy_meta_source.get(pid) or "__missing__")] += 1
+                for runtime_policy in runtime_policies_for_plan:
+                    runtime_policy_counts[str(runtime_policy)] += 1
+                    runtime_policy_by_category[cat][str(runtime_policy)] += 1
+            runtime_policies_for_any_plan = plan_runtime_policies.get(pid) or []
+            if runtime_policies_for_any_plan:
+                runtime_policy_all_plan_ids.add(pid)
+                runtime_policy_source_counts_all_plans[
+                    str(plan_runtime_policy_meta_source.get(pid) or "__missing__")
+                ] += 1
+                runtime_policy_all_plan_counts_by_decision[str(decision)] += 1
+            for runtime_policy in runtime_policies_for_any_plan:
+                runtime_policy_counts_all_plans[str(runtime_policy)] += 1
 
             if shadow:
                 shadow_top1_by_plan[pid] = str(_top_prediction_token(shadow.get("predictions")) or "")
@@ -1906,6 +2277,27 @@ class Command(BaseCommand):
             else:
                 partial_candidate_plan_ids[cat] |= set(slice_plan_sets.get(cat, {}).get(stype, {}).get(sval, set()))
 
+        projected_partial_slot_plan_ids: dict[str, dict[str, set[int]]] = defaultdict(lambda: defaultdict(set))
+        projected_partial_slot_counts: Counter[str] = Counter()
+        projected_partial_slot_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+        projected_partial_slot_target_counts: Counter[tuple[str, str, str]] = Counter()
+        for pid in sorted(analysis_plan_ids):
+            cat = str(plan_category.get(pid) or "")
+            projected_slot = _projected_partial_slot_for_plan(
+                user_id=int(plan_user.get(pid) or 0),
+                category=cat,
+                planned_target_product_type=str(plan_planned_target_product_type.get(pid) or ""),
+                planned_target_step_index=int(plan_planned_target_step_index.get(pid) or 0),
+                refresh_caller=str(plan_refresh_caller.get(pid) or ""),
+            )
+            if not projected_slot or projected_slot == "active":
+                continue
+            planned_target = str(plan_planned_target_product_type.get(pid) or "__none__")
+            projected_partial_slot_plan_ids[cat][projected_slot].add(pid)
+            projected_partial_slot_counts[projected_slot] += 1
+            projected_partial_slot_by_category[cat][projected_slot] += 1
+            projected_partial_slot_target_counts[(cat, projected_slot, planned_target)] += 1
+
         recommendations: dict[str, dict[str, Any]] = {}
         executive_summary: dict[str, dict[str, Any]] = {}
 
@@ -1960,8 +2352,10 @@ class Command(BaseCommand):
             *,
             policy: str,
             category_partial_allow: dict[str, set[int]] | None = None,
+            forced_model_plan_ids: set[int] | None = None,
         ) -> dict[str, Any]:
             category_partial_allow = category_partial_allow or {}
+            forced_model_plan_ids = forced_model_plan_ids or set()
             model_counts: dict[str, float] = defaultdict(float)
             control_counts: dict[str, float] = defaultdict(float)
             model_plans = 0
@@ -1970,9 +2364,9 @@ class Command(BaseCommand):
             for pid in sorted(analysis_plan_ids):
                 cat = str(plan_category.get(pid) or "__unknown__")
                 actual = str(cohort_by_plan.get(pid) or "")
-                use_model = actual == "model_used"
+                use_model = actual == "model_used" or pid in forced_model_plan_ids
                 allowed_subset = category_partial_allow.get(cat)
-                if allowed_subset is not None and actual == "model_used":
+                if allowed_subset is not None and actual == "model_used" and pid not in forced_model_plan_ids:
                     use_model = pid in allowed_subset
                 target = model_counts if use_model else control_counts
                 if use_model:
@@ -2028,6 +2422,29 @@ class Command(BaseCommand):
                 "control_plans": int(control_plans),
             }
 
+        haircare_leavein_projected_plan_ids = {
+            pid
+            for pid in analysis_plan_ids
+            if str(plan_category.get(pid) or "") == "haircare"
+            and "haircare_leavein_rerank" in set(plan_runtime_policies.get(pid) or [])
+        }
+        configured_partial_mix_plan_ids = {
+            pid
+            for slot_map in projected_partial_slot_plan_ids.values()
+            for ids in slot_map.values()
+            for pid in ids
+        }
+        configured_partial_candidate_plan_ids = {
+            pid
+            for slot_map in projected_partial_slot_plan_ids.values()
+            for pid in slot_map.get("partial_candidate", set())
+        }
+        configured_partial_active_override_plan_ids = {
+            pid
+            for slot_map in projected_partial_slot_plan_ids.values()
+            for pid in slot_map.get("partial_active_override", set())
+        }
+
         policy_simulation = [
             _simulate_policy(policy="Policy A - current"),
             _simulate_policy(
@@ -2042,10 +2459,45 @@ class Command(BaseCommand):
                 policy="Policy D - haircare partial",
                 category_partial_allow={"haircare": set(partial_candidate_plan_ids.get("haircare", set()))},
             ),
+            _simulate_policy(
+                policy="Policy E - haircare leave_in projected",
+                forced_model_plan_ids=haircare_leavein_projected_plan_ids,
+            ),
+            _simulate_policy(
+                policy="Policy F - configured partial candidate only",
+                forced_model_plan_ids=configured_partial_candidate_plan_ids,
+            ),
+            _simulate_policy(
+                policy="Policy G - configured partial active override only",
+                forced_model_plan_ids=configured_partial_active_override_plan_ids,
+            ),
+            _simulate_policy(
+                policy="Policy H - configured partial mix canary",
+                forced_model_plan_ids=configured_partial_mix_plan_ids,
+            ),
         ]
 
         served_model_slot_outcomes: dict[tuple[str, str], dict[str, Any]] = defaultdict(_new_bucket)
         served_model_slot_target_outcomes: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(_new_bucket)
+        projected_partial_slot_outcomes: dict[tuple[str, str], dict[str, Any]] = defaultdict(_new_bucket)
+        projected_partial_slot_target_outcomes: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(_new_bucket)
+        runtime_policy_outcomes: dict[tuple[str, str], dict[str, Any]] = defaultdict(_new_bucket)
+        runtime_policy_plan_ids: set[int] = set()
+        for cat, slot_map in projected_partial_slot_plan_ids.items():
+            for model_slot, plan_ids in slot_map.items():
+                for pid in sorted(plan_ids):
+                    uid = int(plan_user.get(pid))
+                    planned_target = str(plan_planned_target_product_type.get(pid) or "__none__")
+                    slot_bucket = projected_partial_slot_outcomes[(str(cat), str(model_slot))]
+                    slot_bucket["plans"].add(pid)
+                    slot_bucket["users"].add(uid)
+                    target_bucket = projected_partial_slot_target_outcomes[(str(cat), str(model_slot), planned_target)]
+                    target_bucket["plans"].add(pid)
+                    target_bucket["users"].add(uid)
+                    for metric_key, metric_value in (plan_metrics.get(pid) or {}).items():
+                        numeric_value = float(metric_value or 0.0)
+                        slot_bucket[str(metric_key)] += numeric_value
+                        target_bucket[str(metric_key)] += numeric_value
         for pid in sorted(model_plan_ids):
             cat = str(plan_category.get(pid) or "__unknown__")
             uid = int(plan_user.get(pid))
@@ -2064,6 +2516,15 @@ class Command(BaseCommand):
                 numeric_value = float(metric_value or 0.0)
                 slot_bucket[str(metric_key)] += numeric_value
                 target_bucket[str(metric_key)] += numeric_value
+            runtime_policies_for_plan = plan_runtime_policies.get(pid) or []
+            if runtime_policies_for_plan:
+                runtime_policy_plan_ids.add(pid)
+            for runtime_policy in runtime_policies_for_plan:
+                policy_bucket = runtime_policy_outcomes[(cat, str(runtime_policy))]
+                policy_bucket["plans"].add(pid)
+                policy_bucket["users"].add(uid)
+                for metric_key, metric_value in (plan_metrics.get(pid) or {}).items():
+                    policy_bucket[str(metric_key)] += float(metric_value or 0.0)
 
         served_model_slot_outcome_rows = [
             {
@@ -2088,9 +2549,66 @@ class Command(BaseCommand):
                 key=lambda kv: (-int(len(kv[1]["plans"])), kv[0][0], kv[0][1], kv[0][2]),
             )
         ]
+        projected_partial_slot_outcome_rows = [
+            {
+                "category": str(category),
+                "model_slot": str(model_slot),
+                **_serialize_bucket(bucket),
+            }
+            for (category, model_slot), bucket in sorted(
+                projected_partial_slot_outcomes.items(),
+                key=lambda kv: (-int(len(kv[1]["plans"])), kv[0][0], kv[0][1]),
+            )
+        ]
+        projected_partial_slot_target_outcome_rows = [
+            {
+                "category": str(category),
+                "model_slot": str(model_slot),
+                "planned_target_product_type": str(planned_target),
+                **_serialize_bucket(bucket),
+            }
+            for (category, model_slot, planned_target), bucket in sorted(
+                projected_partial_slot_target_outcomes.items(),
+                key=lambda kv: (-int(len(kv[1]["plans"])), kv[0][0], kv[0][1], kv[0][2]),
+            )
+        ]
+        runtime_policy_outcome_rows = [
+            {
+                "category": str(category),
+                "runtime_policy": str(runtime_policy),
+                **_serialize_bucket(bucket),
+            }
+            for (category, runtime_policy), bucket in sorted(
+                runtime_policy_outcomes.items(),
+                key=lambda kv: (-int(len(kv[1]["plans"])), kv[0][0], kv[0][1]),
+            )
+        ]
         served_model_slot_by_category_summary = {
             str(cat): {str(slot): int(count) for slot, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))}
             for cat, counter in sorted(served_model_slot_by_category.items(), key=lambda kv: kv[0])
+        }
+        projected_partial_slot_by_category_summary = {
+            str(cat): {str(slot): int(count) for slot, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))}
+            for cat, counter in sorted(projected_partial_slot_by_category.items(), key=lambda kv: kv[0])
+        }
+        projected_partial_slot_target_rows = [
+            {
+                "category": str(category),
+                "model_slot": str(model_slot),
+                "planned_target_product_type": str(planned_target),
+                "plans": int(count),
+            }
+            for (category, model_slot, planned_target), count in sorted(
+                projected_partial_slot_target_counts.items(),
+                key=lambda kv: (-int(kv[1]), kv[0][0], kv[0][1], kv[0][2]),
+            )
+        ]
+        runtime_policy_by_category_summary = {
+            str(cat): {
+                str(policy): int(count)
+                for policy, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+            }
+            for cat, counter in sorted(runtime_policy_by_category.items(), key=lambda kv: kv[0])
         }
 
         category_summary_rows: list[dict[str, Any]] = []
@@ -2550,6 +3068,42 @@ class Command(BaseCommand):
                     "model_used_outcomes_by_slot": served_model_slot_outcome_rows[:25],
                     "model_used_outcomes_by_slot_and_planned_target": served_model_slot_target_outcome_rows[:50],
                 },
+                "projected_partial_slots": {
+                    "slot_counts": {
+                        str(k): int(v)
+                        for k, v in sorted(projected_partial_slot_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "by_category": projected_partial_slot_by_category_summary,
+                    "by_slot_and_planned_target": projected_partial_slot_target_rows[:50],
+                    "projected_outcomes_by_slot": projected_partial_slot_outcome_rows[:25],
+                    "projected_outcomes_by_slot_and_planned_target": projected_partial_slot_target_outcome_rows[:50],
+                },
+                "runtime_policies": {
+                    "all_plans_with_any_policy": int(len(runtime_policy_all_plan_ids)),
+                    "plans_with_any_policy": int(len(runtime_policy_plan_ids)),
+                    "all_plans_with_any_policy_by_decision": {
+                        str(k): int(v)
+                        for k, v in sorted(runtime_policy_all_plan_counts_by_decision.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "policy_counts_all_plans": {
+                        str(k): int(v)
+                        for k, v in sorted(runtime_policy_counts_all_plans.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "policy_counts": {
+                        str(k): int(v)
+                        for k, v in sorted(runtime_policy_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "source_counts_all_plans": {
+                        str(k): int(v)
+                        for k, v in sorted(runtime_policy_source_counts_all_plans.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "source_counts": {
+                        str(k): int(v)
+                        for k, v in sorted(runtime_policy_source_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "by_category": runtime_policy_by_category_summary,
+                    "model_used_outcomes_by_policy": runtime_policy_outcome_rows[:50],
+                },
                 "shadow": {
                     "plans_with_shadow_meta": int(len(shadow_meta_plan_ids)),
                     "shadow_enabled_plans": int(len(shadow_enabled_plan_ids)),
@@ -2619,6 +3173,7 @@ class Command(BaseCommand):
                 "Default cohort-mode=fresh excludes missing_ml_meta from active model vs control comparison.",
                 "Policy simulation is offline what-if analysis over observed plans; runtime behavior is unchanged.",
                 "Artifact inventory shows active runtime model summaries plus optional candidate paths passed via CLI.",
+                "Runtime policy buckets are multi-attributed: one model-used plan can contribute to multiple runtime_policies when multiple policies fire.",
                 "Shadow comparison uses stored active and shadow prediction lists from RoadmapPlan.meta.ml.",
                 "Shadow vs outcome compares top-1 active/shadow predictions to the first STEP_COMPLETED product_type after the latest PLAN_REFRESHED for that plan.",
                 "Candidate-path compare is a read-only simulation against --nextstep-candidate-model-path and does not write shadow metadata.",

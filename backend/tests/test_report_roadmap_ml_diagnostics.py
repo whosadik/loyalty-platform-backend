@@ -7,6 +7,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
+from django.test.utils import override_settings
 
 from offers.models import CampaignBudget, Offer, OfferAssignment, OfferEvent
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
@@ -181,6 +182,13 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         self.fail(
             f"served slot target row not found: {category}/{model_slot}/{planned_target_product_type}"
         )
+
+    def _runtime_policy_row(self, payload: dict, *, category: str, runtime_policy: str) -> dict:
+        rows = payload["runtime_observability"].get("runtime_policies", {}).get("model_used_outcomes_by_policy", [])
+        for row in rows:
+            if row.get("category") == category and row.get("runtime_policy") == runtime_policy:
+                return row
+        self.fail(f"runtime policy row not found: {category}/{runtime_policy}")
 
     def _shadow_outcome_by_top1_row(self, payload: dict, *, category: str, shadow_top1: str) -> dict:
         rows = payload["runtime_observability"]["shadow"].get("outcome_by_shadow_top1", [])
@@ -854,3 +862,337 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         self.assertIn("### model-used outcome by served slot", markdown)
         self.assertIn("### model-used outcome by served slot and planned target", markdown)
         self.assertIn("haircare | partial_candidate | conditioner", markdown)
+
+    def test_report_includes_runtime_policy_usage_and_outcomes(self):
+        u_scalp = self._user("diag_policy_scalp")
+        u_leavein = self._user("diag_policy_leavein")
+        u_fallback = self._user("diag_policy_fallback")
+
+        plan_scalp, steps_scalp = self._plan(
+            user=u_scalp,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "scalp_serum")],
+            ml_extra={
+                "runtime_policies": ["haircare_scalp_rerank", "haircare_progression_bias"],
+                "runtime_policy_meta_source": "runtime",
+                "planned_target_product_type": "scalp_serum",
+            },
+        )
+        plan_leavein, steps_leavein = self._plan(
+            user=u_leavein,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "leave_in")],
+            ml_extra={
+                "runtime_policies": ["haircare_leavein_rerank"],
+                "runtime_policy_meta_source": "backfill_projection",
+                "planned_target_product_type": "leave_in",
+            },
+        )
+        self._plan(
+            user=u_fallback,
+            decision="fallback",
+            category="haircare",
+            steps=[(1, "leave_in")],
+            ml_extra={
+                "runtime_policies": ["haircare_leavein_rerank"],
+                "runtime_policy_meta_source": "backfill_projection",
+                "planned_target_product_type": "leave_in",
+            },
+        )
+
+        self._emit_step_events(user=u_scalp, plan=plan_scalp, step=steps_scalp[0], exposed=2, completed=1)
+        self._emit_step_events(user=u_leavein, plan=plan_leavein, step=steps_leavein[0], exposed=4, completed=3)
+
+        payload = self._run_report_json(control="disabled", categories="haircare", min_sample=1)
+        runtime_policies = payload["runtime_observability"]["runtime_policies"]
+
+        self.assertEqual(runtime_policies["all_plans_with_any_policy"], 3)
+        self.assertEqual(runtime_policies["plans_with_any_policy"], 2)
+        self.assertEqual(runtime_policies["all_plans_with_any_policy_by_decision"]["fallback"], 1)
+        self.assertEqual(runtime_policies["all_plans_with_any_policy_by_decision"]["model_used"], 2)
+        self.assertEqual(runtime_policies["policy_counts_all_plans"]["haircare_leavein_rerank"], 2)
+        self.assertEqual(runtime_policies["policy_counts"]["haircare_progression_bias"], 1)
+        self.assertEqual(runtime_policies["policy_counts"]["haircare_scalp_rerank"], 1)
+        self.assertEqual(runtime_policies["policy_counts"]["haircare_leavein_rerank"], 1)
+        self.assertEqual(runtime_policies["source_counts_all_plans"]["backfill_projection"], 2)
+        self.assertEqual(runtime_policies["source_counts"]["runtime"], 1)
+        self.assertEqual(runtime_policies["source_counts"]["backfill_projection"], 1)
+        self.assertEqual(runtime_policies["by_category"]["haircare"]["haircare_scalp_rerank"], 1)
+
+        scalp_row = self._runtime_policy_row(
+            payload,
+            category="haircare",
+            runtime_policy="haircare_scalp_rerank",
+        )
+        self.assertEqual(scalp_row["plans"], 1)
+        self.assertEqual(scalp_row["step_exposed"], 2)
+        self.assertEqual(scalp_row["step_completed"], 1)
+        self.assertAlmostEqual(float(scalp_row["step_completion_rate"]), 0.5, places=6)
+
+        leavein_row = self._runtime_policy_row(
+            payload,
+            category="haircare",
+            runtime_policy="haircare_leavein_rerank",
+        )
+        self.assertEqual(leavein_row["plans"], 1)
+        self.assertEqual(leavein_row["step_exposed"], 4)
+        self.assertEqual(leavein_row["step_completed"], 3)
+        self.assertAlmostEqual(float(leavein_row["step_completion_rate"]), 0.75, places=6)
+
+    def test_report_markdown_includes_runtime_policy_sections(self):
+        user = self._user("diag_policy_md")
+        plan, steps = self._plan(
+            user=user,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "leave_in")],
+            ml_extra={
+                "runtime_policies": ["haircare_leavein_rerank"],
+                "runtime_policy_meta_source": "backfill_projection",
+                "planned_target_product_type": "leave_in",
+            },
+        )
+        self._emit_step_events(user=user, plan=plan, step=steps[0], exposed=3, completed=2)
+
+        markdown = self._run_report_md(control="disabled", categories="haircare", min_sample=1)
+
+        self.assertIn("### runtime policies", markdown)
+        self.assertIn("### runtime policy coverage", markdown)
+        self.assertIn("### runtime policy meta sources", markdown)
+        self.assertIn("### runtime policy coverage by decision", markdown)
+        self.assertIn("### runtime policies by category", markdown)
+        self.assertIn("### model-used outcome by runtime policy", markdown)
+        self.assertIn("haircare | haircare_leavein_rerank", markdown)
+
+    def test_policy_simulation_includes_haircare_leavein_projected_enablement(self):
+        u_projected = self._user("diag_policy_proj_model")
+        u_control = self._user("diag_policy_proj_control")
+
+        plan_projected, steps_projected = self._plan(
+            user=u_projected,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "leave_in")],
+            ml_extra={
+                "runtime_policies": ["haircare_leavein_rerank"],
+                "runtime_policy_meta_source": "backfill_projection",
+                "planned_target_product_type": "leave_in",
+            },
+        )
+        plan_control, steps_control = self._plan(
+            user=u_control,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "conditioner")],
+        )
+
+        self._emit_step_events(user=u_projected, plan=plan_projected, step=steps_projected[0], exposed=10, completed=8)
+        self._emit_step_events(user=u_control, plan=plan_control, step=steps_control[0], exposed=10, completed=2)
+
+        payload = self._run_report_json(control="disabled", categories="haircare", min_sample=1)
+
+        policy_a = self._policy_row(payload, "Policy A - current")
+        policy_e = self._policy_row(payload, "Policy E - haircare leave_in projected")
+
+        self.assertGreater(float(policy_e["model_used_share"] or 0.0), float(policy_a["model_used_share"] or 0.0))
+        self.assertGreater(
+            float(policy_e["step_completion_lift"] or 0.0),
+            float(policy_a["step_completion_lift"] or 0.0),
+        )
+
+    def test_report_includes_projected_partial_slot_mix_and_policy(self):
+        u_candidate = self._user("diag_proj_partial_candidate")
+        u_override = self._user("diag_proj_partial_override")
+        u_control = self._user("diag_proj_partial_control")
+
+        plan_candidate, steps_candidate = self._plan(
+            user=u_candidate,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "conditioner")],
+            ml_extra={
+                "planned_target_product_type": "conditioner",
+                "planned_target_step_index": 2,
+            },
+        )
+        plan_override, steps_override = self._plan(
+            user=u_override,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "leave_in")],
+            ml_extra={
+                "planned_target_product_type": "leave_in",
+                "planned_target_step_index": 5,
+            },
+        )
+        plan_control, steps_control = self._plan(
+            user=u_control,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "hair_oil")],
+            ml_extra={
+                "planned_target_product_type": "hair_oil",
+                "planned_target_step_index": 4,
+            },
+        )
+
+        self._emit_step_events(user=u_candidate, plan=plan_candidate, step=steps_candidate[0], exposed=10, completed=6)
+        self._emit_step_events(user=u_override, plan=plan_override, step=steps_override[0], exposed=10, completed=8)
+        self._emit_step_events(user=u_control, plan=plan_control, step=steps_control[0], exposed=10, completed=2)
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=[],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["conditioner", "hair_mask", "leave_in", "scalp_serum"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_ACTIVE_MODEL_PRODUCT_TYPES=["leave_in", "scalp_serum"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="diag_partial_mix_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="/models/semantic_v4.pkl",
+        ):
+            payload = self._run_report_json(control="disabled", categories="haircare", min_sample=1)
+
+        projected = payload["runtime_observability"]["projected_partial_slots"]
+        self.assertEqual(projected["slot_counts"]["partial_candidate"], 1)
+        self.assertEqual(projected["slot_counts"]["partial_active_override"], 1)
+        self.assertEqual(projected["by_category"]["haircare"]["partial_candidate"], 1)
+        self.assertEqual(projected["by_category"]["haircare"]["partial_active_override"], 1)
+
+        projected_rows = projected["by_slot_and_planned_target"]
+        self.assertTrue(
+            any(
+                row.get("category") == "haircare"
+                and row.get("model_slot") == "partial_candidate"
+                and row.get("planned_target_product_type") == "conditioner"
+                and int(row.get("plans") or 0) == 1
+                for row in projected_rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row.get("category") == "haircare"
+                and row.get("model_slot") == "partial_active_override"
+                and row.get("planned_target_product_type") == "leave_in"
+                and int(row.get("plans") or 0) == 1
+                for row in projected_rows
+            )
+        )
+        projected_outcome_rows = projected["projected_outcomes_by_slot_and_planned_target"]
+        self.assertTrue(
+            any(
+                row.get("category") == "haircare"
+                and row.get("model_slot") == "partial_candidate"
+                and row.get("planned_target_product_type") == "conditioner"
+                and abs(float(row.get("step_completion_rate") or 0.0) - 0.6) < 1e-6
+                for row in projected_outcome_rows
+            )
+        )
+        self.assertTrue(
+            any(
+                row.get("category") == "haircare"
+                and row.get("model_slot") == "partial_active_override"
+                and row.get("planned_target_product_type") == "leave_in"
+                and abs(float(row.get("step_completion_rate") or 0.0) - 0.8) < 1e-6
+                for row in projected_outcome_rows
+            )
+        )
+
+        policy_a = self._policy_row(payload, "Policy A - current")
+        policy_f = self._policy_row(payload, "Policy F - configured partial candidate only")
+        policy_g = self._policy_row(payload, "Policy G - configured partial active override only")
+        policy_h = self._policy_row(payload, "Policy H - configured partial mix canary")
+        self.assertEqual(int(policy_f["model_plans"] or 0), 1)
+        self.assertEqual(int(policy_g["model_plans"] or 0), 1)
+        self.assertGreater(int(policy_h["model_plans"] or 0), int(policy_a["model_plans"] or 0))
+        self.assertGreater(float(policy_h["model_used_share"] or 0.0), float(policy_a["model_used_share"] or 0.0))
+        self.assertGreater(float(policy_h["step_completion_lift"] or 0.0), 0.0)
+
+    def test_projected_partial_slots_respect_purchase_context_only_and_category_percent(self):
+        u_cold = self._user("diag_proj_partial_purchase_only_cold")
+        u_purchase = self._user("diag_proj_partial_purchase_only_live")
+
+        plan_cold, steps_cold = self._plan(
+            user=u_cold,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "hair_mask")],
+            ml_extra={
+                "planned_target_product_type": "hair_mask",
+                "planned_target_step_index": 3,
+            },
+        )
+        plan_cold.meta["context"] = {"refresh_caller": "refresh_roadmap"}
+        plan_cold.save(update_fields=["meta", "updated_at"])
+
+        plan_purchase, steps_purchase = self._plan(
+            user=u_purchase,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "hair_mask")],
+            ml_extra={
+                "planned_target_product_type": "hair_mask",
+                "planned_target_step_index": 3,
+            },
+        )
+        plan_purchase.meta["context"] = {"refresh_caller": "update_roadmap_from_purchase"}
+        plan_purchase.save(update_fields=["meta", "updated_at"])
+
+        self._emit_step_events(user=u_cold, plan=plan_cold, step=steps_cold[0], exposed=5, completed=1)
+        self._emit_step_events(user=u_purchase, plan=plan_purchase, step=steps_purchase[0], exposed=5, completed=4)
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["hair_mask"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=0,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="diag_partial_purchase_only_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="/models/semantic_v4.pkl",
+        ):
+            payload = self._run_report_json(control="disabled", categories="haircare", min_sample=1)
+
+        projected = payload["runtime_observability"]["projected_partial_slots"]
+        self.assertEqual(projected["slot_counts"]["partial_candidate"], 1)
+        self.assertEqual(projected["by_category"]["haircare"]["partial_candidate"], 1)
+        self.assertTrue(
+            any(
+                row.get("category") == "haircare"
+                and row.get("model_slot") == "partial_candidate"
+                and row.get("planned_target_product_type") == "hair_mask"
+                and int(row.get("plans") or 0) == 1
+                for row in projected["by_slot_and_planned_target"]
+            )
+        )
+
+    def test_report_markdown_includes_projected_partial_slot_sections(self):
+        user = self._user("diag_proj_partial_md")
+        plan, steps = self._plan(
+            user=user,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "leave_in")],
+            ml_extra={
+                "planned_target_product_type": "leave_in",
+                "planned_target_step_index": 5,
+            },
+        )
+        self._emit_step_events(user=user, plan=plan, step=steps[0], exposed=3, completed=2)
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=[],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["conditioner", "hair_mask", "leave_in", "scalp_serum"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_ACTIVE_MODEL_PRODUCT_TYPES=["leave_in", "scalp_serum"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="diag_partial_mix_md_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="/models/semantic_v4.pkl",
+        ):
+            markdown = self._run_report_md(control="disabled", categories="haircare", min_sample=1)
+
+        self.assertIn("### projected partial slots", markdown)
+        self.assertIn("### projected partial slots by category", markdown)
+        self.assertIn("### projected partial slots by planned target", markdown)
+        self.assertIn("### projected outcome by partial slot", markdown)
+        self.assertIn("### projected outcome by partial slot and planned target", markdown)
+        self.assertIn("haircare | partial_active_override | leave_in", markdown)

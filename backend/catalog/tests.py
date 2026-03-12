@@ -228,6 +228,18 @@ class ProductSearchApiTests(APITestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertIsInstance(resp.data, list)
 
+    def test_products_read_endpoints_are_public(self):
+        self.client.force_authenticate(user=None)
+
+        list_resp = self.client.get("/api/products/")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertIsInstance(list_resp.data, list)
+
+        product_id = Product.objects.order_by("id").values_list("id", flat=True).first()
+        detail_resp = self.client.get(f"/api/products/{product_id}/")
+        self.assertEqual(detail_resp.status_code, 200)
+        self.assertEqual(int(detail_resp.data["id"]), int(product_id))
+
     def test_new_query_param_returns_only_recent_products(self):
         fresh = Product.objects.create(
             name="Fresh Serum",
@@ -426,3 +438,32 @@ class BrandApiTests(APITestCase):
         self.assertIn("skincare", resp.data["categories"])
         self.assertIn("serum", resp.data["top_product_types"])
         self.assertTrue(resp.data["description"].startswith("Glow Lab"))
+
+    def test_brand_endpoints_are_public(self):
+        self.client.force_authenticate(user=None)
+
+        list_resp = self.client.get("/api/brands/")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertTrue(any(item["slug"] == "glow-lab" for item in list_resp.data))
+
+        detail_resp = self.client.get("/api/brands/glow-lab/")
+        self.assertEqual(detail_resp.status_code, 200)
+        self.assertEqual(detail_resp.data["name"], "Glow Lab")
+
+
+class HomeHeroApiTests(APITestCase):
+    def test_home_hero_returns_public_slide_content(self):
+        resp = self.client.get("/api/home/hero")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data["ok"])
+
+        slides = resp.data["slides"]
+        self.assertEqual(
+            [item["id"] for item in slides],
+            ["main-video", "jpg-video", "clarins", "dalba", "darling"],
+        )
+
+        main_slide = slides[0]
+        self.assertEqual(main_slide["button_to"], "/promotions")
+        self.assertEqual(main_slide["button_text"], "Узнать подробнее")
+        self.assertTrue(main_slide["title"])

@@ -40,8 +40,12 @@ CampaignPatchRequestSerializer = inline_serializer(
         "weekly_limit": serializers.DecimalField(required=False, max_digits=12, decimal_places=2),
         "weekly_spent": serializers.DecimalField(required=False, max_digits=12, decimal_places=2),
         "week_start_date": serializers.DateField(required=False, allow_null=True),
+        "end_date": serializers.DateField(required=False, allow_null=True),
         "allowed_categories": serializers.ListField(child=serializers.CharField(), required=False),
         "allowed_steps": serializers.ListField(child=serializers.CharField(), required=False),
+        "tiers": serializers.ListField(child=serializers.CharField(), required=False),
+        "promo_text": serializers.CharField(required=False, allow_blank=True),
+        "banner_url": serializers.URLField(required=False, allow_blank=True),
         "reset_weekly_spent": serializers.BooleanField(required=False),
     },
 )

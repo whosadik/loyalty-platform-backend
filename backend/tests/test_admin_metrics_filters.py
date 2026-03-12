@@ -154,6 +154,11 @@ class AdminMetricsFiltersTests(APITestCase):
         all_metrics = self.client.get("/api/admin/metrics")
         self.assertEqual(all_metrics.status_code, 200)
         self.assertEqual(all_metrics.data["offers"]["assignments_total"], 2)
+        self.assertGreaterEqual(len(all_metrics.data["series"]), 1)
+        self.assertEqual(
+            {row["channel"] for row in all_metrics.data["channels"]},
+            {"offline"},
+        )
 
         discount_metrics = self.client.get("/api/admin/metrics", {"offer_type": "discount"})
         self.assertEqual(discount_metrics.status_code, 200)
@@ -166,6 +171,12 @@ class AdminMetricsFiltersTests(APITestCase):
         channel_metrics = self.client.get("/api/admin/metrics", {"channel": "offline"})
         self.assertEqual(channel_metrics.status_code, 200)
         self.assertEqual(channel_metrics.data["offers"]["assignments_total"], 1)
+        self.assertEqual(len(channel_metrics.data["channels"]), 1)
+        self.assertEqual(channel_metrics.data["channels"][0]["channel"], "offline")
+        self.assertEqual(channel_metrics.data["channels"][0]["transactions"], 1)
+        self.assertEqual(channel_metrics.data["channels"][0]["offer_redemptions"], 1)
+        self.assertEqual(len(channel_metrics.data["series"]), 1)
+        self.assertEqual(channel_metrics.data["series"][0]["transactions"], 1)
 
         date_from = (self.recent_dt - timedelta(days=1)).date().isoformat()
         date_to = timezone.now().date().isoformat()
@@ -176,3 +187,17 @@ class AdminMetricsFiltersTests(APITestCase):
         self.assertEqual(date_metrics.status_code, 200)
         self.assertEqual(date_metrics.data["offers"]["assignments_total"], 1)
 
+    def test_admin_metrics_export_csv_applies_filters(self):
+        self.client.force_authenticate(self.admin)
+
+        response = self.client.get("/api/admin/metrics/export", {"offer_type": "discount"})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/csv", response["Content-Type"])
+        self.assertIn("attachment; filename=", response["Content-Disposition"])
+
+        content = response.content.decode("utf-8-sig")
+        self.assertIn("section;metric;value", content)
+        self.assertIn("summary;assignments_total;1", content)
+        self.assertIn("summary;redemptions_total;1", content)
+        self.assertIn("channels;offline_transactions;1", content)
+        self.assertIn("series;", content)

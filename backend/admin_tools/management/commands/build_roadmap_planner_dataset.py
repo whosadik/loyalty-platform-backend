@@ -607,6 +607,7 @@ class Command(BaseCommand):
                             candidate_catalog_summaries.get((category, str(candidate))),
                             profile_map.get(int(ep["user_id"])),
                             anchor_sig,
+                            candidate_type=str(candidate),
                         ),
                     }
                 )

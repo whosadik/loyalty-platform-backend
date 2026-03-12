@@ -5,7 +5,7 @@ from rest_framework.test import APITestCase
 
 from catalog.models import Product
 from loyalty.models import LoyaltyAccount, Tier
-from transactions.models import CartItem
+from transactions.models import CartItem, Transaction
 from users_app.models import CustomerProfile
 
 
@@ -225,6 +225,77 @@ class TransactionsCheckoutContractTests(APITestCase):
         )
         self.assertEqual(checkout.status_code, 201)
         self.assertFalse(CartItem.objects.filter(user=self.user, product=self.product).exists())
+
+    def test_checkout_returns_validation_error_for_product_without_price(self):
+        no_price_product = Product.objects.create(
+            name="Price Missing Product",
+            brand="Uilesim",
+            price=None,
+            currency="KZT",
+            category="makeup",
+            product_type="blush",
+            image_url="https://example.com/no-price.jpg",
+            image_urls=["https://example.com/no-price.jpg"],
+            in_stock=True,
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="medium",
+        )
+
+        response = self.client.post(
+            "/api/checkout",
+            {
+                "channel": "online",
+                "items": [{"product": no_price_product.id, "quantity": 1}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "validation_error")
+        self.assertEqual(
+            (response.data.get("details") or {}).get("message"),
+            f"Product {no_price_product.id} has no valid price",
+        )
+        self.assertEqual(Transaction.objects.filter(user=self.user).count(), 0)
+
+    def test_checkout_preview_returns_validation_error_for_product_without_price(self):
+        no_price_product = Product.objects.create(
+            name="Preview Price Missing Product",
+            brand="Uilesim",
+            price=None,
+            currency="KZT",
+            category="makeup",
+            product_type="blush",
+            image_url="https://example.com/no-price-preview.jpg",
+            image_urls=["https://example.com/no-price-preview.jpg"],
+            in_stock=True,
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="medium",
+        )
+
+        response = self.client.post(
+            "/api/checkout/preview",
+            {
+                "channel": "online",
+                "items": [{"product": no_price_product.id, "quantity": 1}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data["code"], "validation_error")
+        self.assertEqual(
+            (response.data.get("details") or {}).get("message"),
+            f"Product {no_price_product.id} has no valid price",
+        )
 
     def test_last_checkout_returns_null_when_user_has_no_transactions(self):
         response = self.client.get("/api/checkout/last")

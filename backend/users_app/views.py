@@ -5,7 +5,12 @@ from drf_spectacular.utils import OpenApiResponse, extend_schema
 
 from backend.api_serializers import ApiErrorSerializer
 from .models import CustomerProfile
-from .serializers import CustomerProfileSerializer, MeProfileUpdateResponseSerializer
+from .profile_taxonomy import get_profile_taxonomy_payload
+from .serializers import (
+    CustomerProfileSerializer,
+    MeProfileTaxonomyResponseSerializer,
+    MeProfileUpdateResponseSerializer,
+)
 from .services import (
     favorite_category_snapshot,
     is_profile_complete,
@@ -71,5 +76,21 @@ class MeFavoriteCategoryView(APIView):
                     "picked_by": snap["picked_by"],
                     "signals": snap["signals"],
                 },
+            }
+        )
+
+
+class MeProfileTaxonomyView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Me"],
+        responses={200: MeProfileTaxonomyResponseSerializer},
+    )
+    def get(self, request):
+        return Response(
+            {
+                "ok": True,
+                "taxonomy": get_profile_taxonomy_payload(),
             }
         )

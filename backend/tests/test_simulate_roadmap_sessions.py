@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -96,6 +97,32 @@ class SimulatorPersistedExposureCountTests(TestCase):
         )
 
         self.assertEqual(count, 1)
+
+
+class SimulatorProductPoolCacheTests(TestCase):
+    def test_product_pool_cache_excludes_products_without_price(self):
+        priced = Product.objects.create(
+            name="Sim Pool Priced",
+            brand="B",
+            price=Decimal("10.00"),
+            category="makeup",
+            product_type="blush",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Sim Pool No Price",
+            brand="B",
+            price=None,
+            category="makeup",
+            product_type="blush",
+            in_stock=True,
+        )
+
+        cache = sim_cmd.ProductPoolCache(rng=random.Random(42))
+
+        self.assertEqual(cache._load_category("makeup"), [int(priced.id)])
+        self.assertEqual(cache._load_cat_type("makeup", "blush"), [int(priced.id)])
+        self.assertEqual(cache.pick_random_product(category="makeup", product_type="blush", rng=random.Random(42)), int(priced.id))
 
 
 class SimulatorNextStepPayloadTests(TestCase):

@@ -1,3 +1,4 @@
+import csv
 import os
 from datetime import datetime, timedelta, timezone
 from collections import Counter
@@ -7,6 +8,8 @@ from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
 from django.db.models import Count, Sum
+from django.db.models.functions import TruncDate
+from django.http import HttpResponse
 from django.utils import timezone as dj_timezone
 from django.utils.dateparse import parse_date
 from rest_framework.views import APIView
@@ -392,6 +395,238 @@ def _recs_metrics_from_queryset(events_qs):
         "by_experiment": {},
     }
 
+
+def _ratio_to_percent(value):
+    try:
+        if value is None:
+            return None
+        return round(float(value) * 100, 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _admin_metrics_export_filename():
+    now = dj_timezone.localtime(dj_timezone.now())
+    return now.strftime("admin_metrics_%Y-%m-%d_%H-%M-%S.csv")
+
+
+def _admin_metrics_csv_rows(payload):
+    offers = payload.get("offers") or {}
+    budget = payload.get("budget") or {}
+    loyalty = payload.get("loyalty") or {}
+    retention = payload.get("retention") or {}
+    routines = payload.get("routines") or {}
+    segments = payload.get("segments") or {}
+    campaigns = payload.get("campaigns") or {}
+    recs = payload.get("recs") or {}
+    events_kpis = offers.get("events_kpis") or {}
+    promo_efficiency = offers.get("promo_efficiency_30d") or {}
+
+    yield ["section", "metric", "value"]
+    yield ["summary", "assignments_total", offers.get("assignments_total")]
+    yield ["summary", "redemptions_total", offers.get("redemptions_total")]
+    yield ["summary", "redemption_rate_pct", _ratio_to_percent(offers.get("redemption_rate"))]
+    yield ["summary", "promo_efficiency_30d", promo_efficiency.get("promo_efficiency")]
+    yield ["summary", "budget_left", budget.get("weekly_left")]
+    yield ["summary", "earned_points_total", loyalty.get("earned_points_total")]
+
+    for window in ("30d", "60d", "90d"):
+        suffix = window.replace("d", "")
+        yield ["retention", f"repeat_rate_pct_{window}", _ratio_to_percent(retention.get(f"repeat_purchase_rate_{suffix}d"))]
+        yield ["retention", f"active_users_{window}", retention.get(f"active_users_{suffix}d")]
+        yield ["retention", f"repeat_users_{window}", retention.get(f"repeat_users_{suffix}d")]
+
+    for window in ("7d", "30d"):
+        suffix = window.replace("d", "")
+        yield ["offer_events", f"exposed_{window}", events_kpis.get(f"exposed_{suffix}d")]
+        yield ["offer_events", f"clicked_{window}", events_kpis.get(f"clicked_{suffix}d")]
+        yield ["offer_events", f"redeemed_{window}", events_kpis.get(f"redeemed_{suffix}d")]
+        yield ["offer_events", f"ctr_pct_{window}", _ratio_to_percent(events_kpis.get(f"ctr_clicks_exposed_{suffix}d"))]
+        yield [
+            "offer_events",
+            f"redemption_rate_pct_{window}",
+            _ratio_to_percent(events_kpis.get(f"redemption_rate_exposed_{suffix}d")),
+        ]
+
+    for tier, count in (loyalty.get("tier_distribution") or {}).items():
+        yield ["tiers", tier, count]
+
+    for row in segments.get("distribution_30d") or []:
+        yield ["segments", row.get("segment"), row.get("count")]
+
+    for row in routines.get("top_missing_steps_30d") or []:
+        yield ["routines_top_missing_30d", row.get("step"), row.get("count")]
+
+    for row in campaigns.get("last_30d") or []:
+        campaign_name = row.get("campaign") or "unknown"
+        yield ["campaigns_30d", f"{campaign_name}_assignments", row.get("assignments_30d")]
+        yield ["campaigns_30d", f"{campaign_name}_redemptions", row.get("redemptions_30d")]
+        yield ["campaigns_30d", f"{campaign_name}_redemption_rate_pct", _ratio_to_percent(row.get("redemption_rate"))]
+
+    for algo, row in (recs.get("by_algo") or {}).items():
+        row = row or {}
+        yield ["recs_by_algo_30d", f"{algo}_impressions", row.get("impression")]
+        yield ["recs_by_algo_30d", f"{algo}_clicks", row.get("click")]
+        yield ["recs_by_algo_30d", f"{algo}_purchases", row.get("purchase_attributed")]
+        yield ["recs_by_algo_30d", f"{algo}_ctr_pct", _ratio_to_percent(row.get("ctr"))]
+        yield ["recs_by_algo_30d", f"{algo}_conversion_pct", _ratio_to_percent(row.get("conversion"))]
+
+    for row in payload.get("series") or []:
+        day = row.get("day") or "unknown"
+        yield ["series", f"{day}_transactions", row.get("transactions")]
+        yield ["series", f"{day}_revenue", row.get("revenue")]
+        yield ["series", f"{day}_assignments", row.get("assignments")]
+        yield ["series", f"{day}_redemptions", row.get("redemptions")]
+        yield ["series", f"{day}_offer_exposed", row.get("offer_exposed")]
+        yield ["series", f"{day}_offer_clicked", row.get("offer_clicked")]
+        yield ["series", f"{day}_offer_redeemed", row.get("offer_redeemed")]
+        yield ["series", f"{day}_rec_impressions", row.get("rec_impressions")]
+        yield ["series", f"{day}_rec_clicks", row.get("rec_clicks")]
+        yield ["series", f"{day}_rec_purchases", row.get("rec_purchases")]
+
+    for row in payload.get("channels") or []:
+        channel_name = row.get("channel") or "unknown"
+        yield ["channels", f"{channel_name}_transactions", row.get("transactions")]
+        yield ["channels", f"{channel_name}_revenue", row.get("revenue")]
+        yield ["channels", f"{channel_name}_offer_redemptions", row.get("offer_redemptions")]
+
+
+def _daily_series_from_querysets(transactions_qs, assignments_qs, events_qs, recs_qs, *, now, dt_from=None, dt_to=None):
+    series_from = dt_from or (now - timedelta(days=30))
+    series_to = dt_to or now
+
+    points: dict[str, dict[str, object]] = {}
+
+    def ensure_row(day_value):
+        day_key = day_value.isoformat()
+        row = points.setdefault(
+            day_key,
+            {
+                "day": day_key,
+                "transactions": 0,
+                "revenue": 0.0,
+                "assignments": 0,
+                "redemptions": 0,
+                "offer_exposed": 0,
+                "offer_clicked": 0,
+                "offer_redeemed": 0,
+                "rec_impressions": 0,
+                "rec_clicks": 0,
+                "rec_purchases": 0,
+            },
+        )
+        return row
+
+    tx_rows = (
+        _apply_range(transactions_qs, "created_at", series_from, series_to)
+        .annotate(day=TruncDate("created_at"))
+        .values("day")
+        .annotate(transactions=Count("id"), revenue=Sum("total_amount"))
+        .order_by("day")
+    )
+    for row in tx_rows:
+        day = row.get("day")
+        if not day:
+            continue
+        target = ensure_row(day)
+        target["transactions"] = int(row.get("transactions") or 0)
+        target["revenue"] = float(row.get("revenue") or 0)
+
+    assignment_rows = (
+        _apply_range(assignments_qs, "assigned_at", series_from, series_to)
+        .annotate(day=TruncDate("assigned_at"))
+        .values("day")
+        .annotate(assignments=Count("id"))
+        .order_by("day")
+    )
+    for row in assignment_rows:
+        day = row.get("day")
+        if not day:
+            continue
+        target = ensure_row(day)
+        day_qs = _apply_range(assignments_qs, "assigned_at", series_from, series_to).filter(
+            assigned_at__date=day,
+        )
+        target["assignments"] = int(row.get("assignments") or 0)
+        target["redemptions"] = day_qs.filter(is_redeemed=True).count()
+
+    event_rows = (
+        _apply_range(events_qs, "created_at", series_from, series_to)
+        .filter(event_type__in=[OfferEvent.Type.EXPOSED, OfferEvent.Type.CLICKED, OfferEvent.Type.REDEEMED])
+        .annotate(day=TruncDate("created_at"))
+        .values("day", "event_type")
+        .annotate(total=Count("id"))
+        .order_by("day", "event_type")
+    )
+    for row in event_rows:
+        day = row.get("day")
+        if not day:
+            continue
+        target = ensure_row(day)
+        total = int(row.get("total") or 0)
+        event_type = row.get("event_type")
+        if event_type == OfferEvent.Type.EXPOSED:
+            target["offer_exposed"] = total
+        elif event_type == OfferEvent.Type.CLICKED:
+            target["offer_clicked"] = total
+        elif event_type == OfferEvent.Type.REDEEMED:
+            target["offer_redeemed"] = total
+
+    rec_rows = (
+        _apply_range(recs_qs, "created_at", series_from, series_to)
+        .filter(action__in=["impression", "click", "purchase_attributed"])
+        .annotate(day=TruncDate("created_at"))
+        .values("day", "action")
+        .annotate(total=Count("id"))
+        .order_by("day", "action")
+    )
+    for row in rec_rows:
+        day = row.get("day")
+        if not day:
+            continue
+        target = ensure_row(day)
+        total = int(row.get("total") or 0)
+        action = row.get("action")
+        if action == "impression":
+            target["rec_impressions"] = total
+        elif action == "click":
+            target["rec_clicks"] = total
+        elif action == "purchase_attributed":
+            target["rec_purchases"] = total
+
+    return [points[key] for key in sorted(points.keys())]
+
+
+def _channel_breakdown_from_querysets(transactions_qs, assignments_qs, *, now, dt_from=None, dt_to=None):
+    channel_from = dt_from or (now - timedelta(days=30))
+    channel_to = dt_to or now
+    tx_window_qs = _apply_range(transactions_qs, "created_at", channel_from, channel_to)
+
+    tx_rows = (
+        tx_window_qs.values("channel")
+        .annotate(transactions=Count("id"), revenue=Sum("total_amount"))
+        .order_by("channel")
+    )
+    rows = []
+    for row in tx_rows:
+        channel_name = str(row.get("channel") or "unknown")
+        tx_ids = tx_window_qs.filter(channel=row.get("channel")).values("id")
+        offer_redemptions = assignments_qs.filter(
+            is_redeemed=True,
+            redeemed_transaction_id__in=tx_ids,
+        ).count()
+        rows.append(
+            {
+                "channel": channel_name,
+                "transactions": int(row.get("transactions") or 0),
+                "revenue": float(row.get("revenue") or 0),
+                "offer_redemptions": int(offer_redemptions),
+            }
+        )
+
+    rows.sort(key=lambda row: (-row["revenue"], row["channel"]))
+    return rows
+
 class AdminMetricsView(APIView):
     permission_classes = [HasStaffPermission.with_perm("view_metrics")]
 
@@ -592,6 +827,29 @@ class AdminMetricsView(APIView):
         au60, ru60, rr60 = repeat_rate(60)
         au90, ru90, rr90 = repeat_rate(90)
 
+        series_transactions_qs = transactions_qs if has_filtered_request else Transaction.objects.all()
+        series_assignments_qs = assignments_qs if has_filtered_request else OfferAssignment.objects.all()
+        series_events_qs = events_qs if has_filtered_request else OfferEvent.objects.all()
+        series_recs_qs = (
+            recs_qs if has_filtered_request else RecommendationEvent.objects.select_related("product").all()
+        )
+        series_payload = _daily_series_from_querysets(
+            series_transactions_qs,
+            series_assignments_qs,
+            series_events_qs,
+            series_recs_qs,
+            now=now,
+            dt_from=dt_from,
+            dt_to=dt_to,
+        )
+        channels_payload = _channel_breakdown_from_querysets(
+            series_transactions_qs,
+            series_assignments_qs,
+            now=now,
+            dt_from=dt_from,
+            dt_to=dt_to,
+        )
+
         payload = {
             "offers": {
                 "assignments_total": assignments_total,
@@ -633,7 +891,25 @@ class AdminMetricsView(APIView):
             },
             "recs": recs_payload if has_filtered_request else recs_metrics_30d(),
             "campaigns": campaigns_payload if has_filtered_request else campaigns_metrics_30d(),
+            "series": series_payload,
+            "channels": channels_payload,
         }
         if ttl > 0:
             cache.set(cache_key, payload, timeout=ttl)
         return Response(payload)
+
+
+class AdminMetricsExportCsvView(APIView):
+    permission_classes = [HasStaffPermission.with_perm("view_metrics")]
+
+    def get(self, request):
+        payload = AdminMetricsView().get(request).data
+        response = HttpResponse(content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = f'attachment; filename="{_admin_metrics_export_filename()}"'
+        response.write("\ufeff")
+
+        writer = csv.writer(response, delimiter=";")
+        for row in _admin_metrics_csv_rows(payload):
+            writer.writerow(row)
+
+        return response

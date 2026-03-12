@@ -855,7 +855,7 @@ class Command(BaseCommand):
         out: list[str] = []
         counts: dict[str, int] = {}
         for cat in CATEGORIES:
-            cnt = int(Product.objects.filter(category=cat, in_stock=True).count())
+            cnt = int(Product.objects.filter(category=cat, in_stock=True, price__isnull=False).count())
             counts[cat] = cnt
             if cnt < MIN_IN_STOCK_PER_CATEGORY:
                 raise CommandError(
@@ -2346,7 +2346,7 @@ class ProductPoolCache:
         if self._slot_products is not None:
             return self._slot_products
         slots: dict[str, list[int]] = {slot: [] for slot in SLOTS}
-        rows = Product.objects.filter(category="fragrance", in_stock=True).values(
+        rows = Product.objects.filter(category="fragrance", in_stock=True, price__isnull=False).values(
             "id",
             "category",
             "product_type",
@@ -2401,7 +2401,7 @@ class ProductPoolCache:
         key = str(category)
         if key not in self._by_cat:
             self._by_cat[key] = list(
-                Product.objects.filter(category=key, in_stock=True).values_list("id", flat=True)
+                Product.objects.filter(category=key, in_stock=True, price__isnull=False).values_list("id", flat=True)
             )
         return self._by_cat[key]
 
@@ -2413,6 +2413,7 @@ class ProductPoolCache:
                     category=key[0],
                     product_type=key[1],
                     in_stock=True,
+                    price__isnull=False,
                 ).values_list("id", flat=True)
             )
         return self._by_cat_type[key]
@@ -2424,6 +2425,7 @@ class ProductPoolCache:
                 Product.objects.filter(
                     product_type=key,
                     in_stock=True,
+                    price__isnull=False,
                 ).values_list("id", flat=True)
             )
         return self._by_type[key]
@@ -2433,7 +2435,7 @@ class ProductPoolCache:
         if key not in self._types_by_cat:
             self._types_by_cat[key] = [
                 str(x)
-                for x in Product.objects.filter(category=key, in_stock=True)
+                for x in Product.objects.filter(category=key, in_stock=True, price__isnull=False)
                 .values_list("product_type", flat=True)
                 .distinct()
             ]
