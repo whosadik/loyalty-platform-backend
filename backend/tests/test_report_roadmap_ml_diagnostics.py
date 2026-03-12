@@ -151,6 +151,37 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
                 return row
         self.fail(f"policy row not found: {policy}")
 
+    def _served_slot_row(self, payload: dict, *, category: str, model_slot: str) -> dict:
+        rows = payload["runtime_observability"].get("served_model_slots", {}).get("model_used_outcomes_by_slot", [])
+        for row in rows:
+            if row.get("category") == category and row.get("model_slot") == model_slot:
+                return row
+        self.fail(f"served slot row not found: {category}/{model_slot}")
+
+    def _served_slot_target_row(
+        self,
+        payload: dict,
+        *,
+        category: str,
+        model_slot: str,
+        planned_target_product_type: str,
+    ) -> dict:
+        rows = (
+            payload["runtime_observability"]
+            .get("served_model_slots", {})
+            .get("model_used_outcomes_by_slot_and_planned_target", [])
+        )
+        for row in rows:
+            if (
+                row.get("category") == category
+                and row.get("model_slot") == model_slot
+                and row.get("planned_target_product_type") == planned_target_product_type
+            ):
+                return row
+        self.fail(
+            f"served slot target row not found: {category}/{model_slot}/{planned_target_product_type}"
+        )
+
     def _shadow_outcome_by_top1_row(self, payload: dict, *, category: str, shadow_top1: str) -> dict:
         rows = payload["runtime_observability"]["shadow"].get("outcome_by_shadow_top1", [])
         for row in rows:
@@ -175,6 +206,31 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
             ):
                 return row
         self.fail(f"shadow outcome by pair row not found: {category}/{active_top1}->{shadow_top1}")
+
+    def _candidate_outcome_by_top1_row(self, payload: dict, *, category: str, candidate_top1: str) -> dict:
+        rows = payload["runtime_observability"].get("candidate_path_compare", {}).get("outcome_by_candidate_top1", [])
+        for row in rows:
+            if row.get("category") == category and row.get("candidate_top1") == candidate_top1:
+                return row
+        self.fail(f"candidate outcome by top1 row not found: {category}/{candidate_top1}")
+
+    def _candidate_outcome_by_pair_row(
+        self,
+        payload: dict,
+        *,
+        category: str,
+        active_top1: str,
+        candidate_top1: str,
+    ) -> dict:
+        rows = payload["runtime_observability"].get("candidate_path_compare", {}).get("outcome_by_swap_pair", [])
+        for row in rows:
+            if (
+                row.get("category") == category
+                and row.get("active_top1") == active_top1
+                and row.get("candidate_top1") == candidate_top1
+            ):
+                return row
+        self.fail(f"candidate outcome by pair row not found: {category}/{active_top1}->{candidate_top1}")
 
     def test_cohort_split_model_vs_non_model_is_correct(self):
         u_model = self._user("diag_cohort_model")
@@ -574,3 +630,227 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         self.assertIn("### shadow outcome by predicted top1", markdown)
         self.assertIn("### shadow outcome by swap pair", markdown)
         self.assertIn("haircare | shampoo | conditioner", markdown)
+
+    def test_report_includes_read_only_candidate_path_compare(self):
+        u_active = self._user("diag_candidate_active")
+        u_candidate = self._user("diag_candidate_only")
+
+        plan_active, steps_active = self._plan(
+            user=u_active,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "conditioner")],
+            ml_extra={
+                "predictions": [{"candidate_type": "shampoo", "score": 0.91}],
+                "planned_target_product_type": "conditioner",
+                "planned_target_step_index": 2,
+            },
+        )
+        plan_candidate, steps_candidate = self._plan(
+            user=u_candidate,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "conditioner")],
+            ml_extra={
+                "predictions": [{"candidate_type": "shampoo", "score": 0.88}],
+                "planned_target_product_type": "conditioner",
+                "planned_target_step_index": 2,
+            },
+        )
+
+        self._emit_step_events(user=u_active, plan=plan_active, step=steps_active[0], completed=1)
+        self._emit_step_events(user=u_candidate, plan=plan_candidate, step=steps_candidate[1], completed=1)
+
+        nextstep_active = {
+            "model_path": "/models/nextstep-active/model.pkl",
+            "model_version": "nextstep_active_v1",
+            "selected_feature_set": "full",
+            "exists": True,
+        }
+        nextstep_candidate = {
+            "model_path": "/models/nextstep-candidate/model.pkl",
+            "model_version": "nextstep_primary14_v1",
+            "selected_feature_set": "full",
+            "exists": True,
+        }
+
+        def _predict_candidate(model_path, *, user, **kwargs):
+            self.assertEqual(model_path, "/models/nextstep-candidate/model.pkl")
+            if int(user) == int(u_active.id):
+                return [{"candidate_type": "conditioner", "score": 0.83}]
+            if int(user) == int(u_candidate.id):
+                return [{"candidate_type": "conditioner", "score": 0.81}]
+            return []
+
+        with patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.nextstep_model_artifact_summary",
+            side_effect=[nextstep_active, nextstep_candidate],
+        ), patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.predict_next_product_types_for_model_path",
+            side_effect=_predict_candidate,
+        ):
+            payload = self._run_report_json(
+                control="disabled",
+                categories="haircare",
+                min_sample=1,
+                nextstep_candidate_model_path="/models/nextstep-candidate/model.pkl",
+            )
+
+        compare = payload["runtime_observability"]["candidate_path_compare"]
+        self.assertEqual(compare["model_version"], "nextstep_primary14_v1")
+        self.assertEqual(compare["plans_scanned"], 2)
+        self.assertEqual(compare["predicted_plans"], 2)
+        self.assertEqual(compare["top1_comparison"]["eligible_plans"], 2)
+        self.assertEqual(compare["top1_comparison"]["same_top1_plans"], 0)
+        self.assertEqual(compare["top1_comparison"]["different_top1_plans"], 2)
+        self.assertAlmostEqual(float(compare["top1_comparison"]["agreement_rate"]), 0.0, places=6)
+        self.assertEqual(compare["by_category"]["haircare"]["different_top1_plans"], 2)
+        self.assertEqual(compare["top_swaps"][0]["active_top1"], "shampoo")
+        self.assertEqual(compare["top_swaps"][0]["candidate_top1"], "conditioner")
+
+        outcome = compare["outcome_comparison"]
+        self.assertEqual(outcome["eligible_plans"], 2)
+        self.assertEqual(outcome["active_hits"], 1)
+        self.assertEqual(outcome["candidate_hits"], 1)
+        self.assertEqual(outcome["active_only_hits"], 1)
+        self.assertEqual(outcome["candidate_only_hits"], 1)
+        self.assertEqual(outcome["both_hits"], 0)
+        self.assertEqual(outcome["neither_hits"], 0)
+        self.assertAlmostEqual(float(outcome["active_hit_rate"]), 0.5, places=6)
+        self.assertAlmostEqual(float(outcome["candidate_hit_rate"]), 0.5, places=6)
+        self.assertAlmostEqual(float(outcome["candidate_delta_vs_active"]), 0.0, places=6)
+
+        by_top1 = self._candidate_outcome_by_top1_row(payload, category="haircare", candidate_top1="conditioner")
+        self.assertEqual(by_top1["eligible_plans"], 2)
+        self.assertEqual(by_top1["candidate_hits"], 1)
+        self.assertEqual(by_top1["top_actual_outcomes"][0]["product_type"], "conditioner")
+        self.assertEqual(by_top1["top_actual_outcomes"][1]["product_type"], "shampoo")
+        pair = self._candidate_outcome_by_pair_row(
+            payload,
+            category="haircare",
+            active_top1="shampoo",
+            candidate_top1="conditioner",
+        )
+        self.assertEqual(pair["eligible_plans"], 2)
+        self.assertEqual(pair["active_only_hits"], 1)
+        self.assertEqual(pair["candidate_only_hits"], 1)
+
+    def test_report_markdown_includes_candidate_path_compare_sections(self):
+        user = self._user("diag_candidate_md")
+        plan, steps = self._plan(
+            user=user,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "conditioner")],
+            ml_extra={
+                "predictions": [{"candidate_type": "shampoo", "score": 0.74}],
+                "planned_target_product_type": "conditioner",
+                "planned_target_step_index": 2,
+            },
+        )
+        self._emit_step_events(user=user, plan=plan, step=steps[1], completed=1)
+
+        with patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.nextstep_model_artifact_summary",
+            side_effect=[
+                {"model_path": "/models/nextstep-active/model.pkl", "model_version": "active_v1", "exists": True},
+                {"model_path": "/models/nextstep-candidate/model.pkl", "model_version": "primary14_v1", "exists": True},
+            ],
+        ), patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.predict_next_product_types_for_model_path",
+            return_value=[{"candidate_type": "conditioner", "score": 0.9}],
+        ):
+            markdown = self._run_report_md(
+                control="disabled",
+                categories="haircare",
+                min_sample=1,
+                nextstep_candidate_model_path="/models/nextstep-candidate/model.pkl",
+            )
+
+        self.assertIn("### candidate path compare", markdown)
+        self.assertIn("### candidate path vs outcome", markdown)
+        self.assertIn("### candidate path outcome by swap pair", markdown)
+        self.assertIn("haircare | shampoo | conditioner", markdown)
+
+    def test_report_includes_served_model_slot_and_planned_target_outcomes(self):
+        u_partial = self._user("diag_slot_partial")
+        u_active = self._user("diag_slot_active")
+
+        plan_partial, steps_partial = self._plan(
+            user=u_partial,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "conditioner")],
+            ml_extra={
+                "model_slot": "partial_candidate",
+                "model_version": "semantic_v4_canary",
+                "planned_target_product_type": "conditioner",
+            },
+        )
+        plan_active, steps_active = self._plan(
+            user=u_active,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "hair_mask")],
+            ml_extra={
+                "model_slot": "active",
+                "model_version": "active_v4",
+                "planned_target_product_type": "hair_mask",
+            },
+        )
+
+        self._emit_step_events(user=u_partial, plan=plan_partial, step=steps_partial[0], exposed=4, completed=3)
+        self._emit_step_events(user=u_active, plan=plan_active, step=steps_active[0], exposed=5, completed=1)
+
+        payload = self._run_report_json(control="disabled", categories="haircare", min_sample=1)
+        served = payload["runtime_observability"]["served_model_slots"]
+
+        self.assertEqual(served["slot_counts"]["active"], 1)
+        self.assertEqual(served["slot_counts"]["partial_candidate"], 1)
+        self.assertEqual(served["model_version_counts"]["active_v4"], 1)
+        self.assertEqual(served["model_version_counts"]["semantic_v4_canary"], 1)
+        self.assertEqual(served["by_category"]["haircare"]["active"], 1)
+        self.assertEqual(served["by_category"]["haircare"]["partial_candidate"], 1)
+
+        partial_row = self._served_slot_row(payload, category="haircare", model_slot="partial_candidate")
+        self.assertEqual(partial_row["plans"], 1)
+        self.assertEqual(partial_row["step_exposed"], 4)
+        self.assertEqual(partial_row["step_completed"], 3)
+        self.assertAlmostEqual(float(partial_row["step_completion_rate"]), 0.75, places=6)
+
+        active_row = self._served_slot_row(payload, category="haircare", model_slot="active")
+        self.assertEqual(active_row["plans"], 1)
+        self.assertEqual(active_row["step_exposed"], 5)
+        self.assertEqual(active_row["step_completed"], 1)
+        self.assertAlmostEqual(float(active_row["step_completion_rate"]), 0.2, places=6)
+
+        partial_target = self._served_slot_target_row(
+            payload,
+            category="haircare",
+            model_slot="partial_candidate",
+            planned_target_product_type="conditioner",
+        )
+        self.assertEqual(partial_target["plans"], 1)
+        self.assertAlmostEqual(float(partial_target["step_completion_rate"]), 0.75, places=6)
+
+    def test_report_markdown_includes_served_model_slot_sections(self):
+        user = self._user("diag_slot_md")
+        plan, steps = self._plan(
+            user=user,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "conditioner")],
+            ml_extra={
+                "model_slot": "partial_candidate",
+                "model_version": "semantic_v4_canary",
+                "planned_target_product_type": "conditioner",
+            },
+        )
+        self._emit_step_events(user=user, plan=plan, step=steps[0], exposed=2, completed=1)
+
+        markdown = self._run_report_md(control="disabled", categories="haircare", min_sample=1)
+
+        self.assertIn("### served model slots", markdown)
+        self.assertIn("### model-used outcome by served slot", markdown)
+        self.assertIn("### model-used outcome by served slot and planned target", markdown)
+        self.assertIn("haircare | partial_candidate | conditioner", markdown)

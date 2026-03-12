@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,6 +145,27 @@ def _baseline_feature_columns(feature_columns: list[str]) -> list[str]:
         "candidate_popularity_in_train",
     ]
     return [col for col in preferred if col in set(feature_columns)]
+
+
+def _normalize_binary_target(values: "pd.Series", *, target_column: str) -> "pd.Series":
+    target = pd.to_numeric(values, errors="coerce")
+    if target.isna().any():
+        raise CommandError(f"Target column '{target_column}' contains missing or non-numeric values.")
+    unique = {float(x) for x in target.astype(float).unique().tolist()}
+    if not unique.issubset({0.0, 1.0}):
+        raise CommandError(
+            f"Target column '{target_column}' must be binary 0/1. Found values: {sorted(unique)}"
+        )
+    return target.astype(int)
+
+
+def _target_report_stem(target_column: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "_", str(target_column or "y").strip().lower()).strip("_")
+    if not token:
+        token = "y"
+    if token == "y":
+        return "roadmap_nextstep_v4_eval"
+    return f"roadmap_nextstep_v4_eval__{token}"
 
 
 def _make_one_hot_encoder():
@@ -606,11 +628,13 @@ def _compare_with_baselines(
 
 def _build_eval_markdown(report: dict[str, Any]) -> str:
     lines: list[str] = []
+    baseline_comparison = report.get("baseline_comparison") or {}
     lines.append("# Roadmap NextStep v4 Evaluation")
     lines.append("")
     lines.append("## Summary")
     lines.append(f"- trained_at_utc: `{report['trained_at_utc']}`")
     lines.append(f"- estimator: `{report['estimator']}`")
+    lines.append(f"- target_column: `{report.get('target_column', 'y')}`")
     lines.append(f"- selected_feature_set: `{report['selected_feature_set']}`")
     lines.append(f"- temperature: `{float(report.get('temperature', 1.0)):.4f}`")
     lines.append("")
@@ -625,13 +649,17 @@ def _build_eval_markdown(report: dict[str, Any]) -> str:
         )
     lines.append("")
     lines.append("## Baseline Comparison (test)")
-    lines.append("| baseline | dRecall@1 | dRecall@3 | dRecall@5 | dNDCG@5 |")
-    lines.append("| --- | --- | --- | --- | --- |")
-    for baseline_name, row in (report.get("baseline_comparison") or {}).get("test", {}).items():
-        lines.append(
-            f"| {baseline_name} | {row['recall_at_1']:.4f} | {row['recall_at_3']:.4f} | "
-            f"{row['recall_at_5']:.4f} | {row['ndcg_at_5']:.4f} |"
-        )
+    if baseline_comparison.get("applicable", True) is False:
+        reason = str(baseline_comparison.get("reason") or "comparison skipped")
+        lines.append(f"_Not applicable: {reason}_")
+    else:
+        lines.append("| baseline | dRecall@1 | dRecall@3 | dRecall@5 | dNDCG@5 |")
+        lines.append("| --- | --- | --- | --- | --- |")
+        for baseline_name, row in baseline_comparison.get("test", {}).items():
+            lines.append(
+                f"| {baseline_name} | {row['recall_at_1']:.4f} | {row['recall_at_3']:.4f} | "
+                f"{row['recall_at_5']:.4f} | {row['ndcg_at_5']:.4f} |"
+            )
     lines.append("")
     lines.append("## Feature Ablation")
     lines.append("| feature_set | val_ndcg@5 | test_ndcg@5 | test_recall@1 |")
@@ -659,6 +687,12 @@ class Command(BaseCommand):
         parser.add_argument("--trials", type=int, default=3)
         parser.add_argument("--estimator", type=str, default="auto", help="auto|lightgbm|catboost|logistic")
         parser.add_argument(
+            "--target-column",
+            type=str,
+            default="y",
+            help="Binary target column to train against, e.g. y or candidate_primary_target_in_14d.",
+        )
+        parser.add_argument(
             "--allow-fallback",
             action="store_true",
             default=False,
@@ -683,10 +717,13 @@ class Command(BaseCommand):
         seed = int(options["seed"])
         max_trials = int(options["trials"])
         allow_fallback = bool(options["allow_fallback"])
+        target_column = str(options.get("target_column") or "y").strip()
         estimator_name = _resolve_estimator_name(
             str(options.get("estimator") or "auto"),
             allow_fallback=allow_fallback,
         )
+        if not target_column:
+            raise CommandError("--target-column must not be empty")
         max_negatives_per_episode = int(options["negative_samples_per_episode"])
         if max_trials <= 0:
             raise CommandError("--trials must be > 0")
@@ -704,7 +741,7 @@ class Command(BaseCommand):
         split_payload = json.loads(splits_path.read_text(encoding="utf-8"))
         dataset_meta = json.loads(metadata_path.read_text(encoding="utf-8"))
 
-        required_cols = {"user_id", "episode_id", "group_id", "y", "category", "candidate_type"}
+        required_cols = {"user_id", "episode_id", "group_id", "category", "candidate_type", target_column}
         missing = sorted(required_cols.difference(set(dataset_df.columns)))
         if missing:
             raise CommandError(f"Dataset missing required columns: {missing}")
@@ -713,12 +750,19 @@ class Command(BaseCommand):
         work["user_id"] = work["user_id"].astype(int)
         work["episode_id"] = work["episode_id"].astype(int)
         work["group_id"] = work["group_id"].astype(int)
-        work["y"] = work["y"].astype(int)
+        work["y"] = _normalize_binary_target(work[target_column], target_column=target_column)
         work["category"] = work["category"].fillna("").astype(str).str.strip().str.lower()
         work["candidate_type"] = work["candidate_type"].fillna("").astype(str).str.strip().str.lower()
         work = work[work["candidate_type"] != ""].copy()
         if work.empty:
             raise CommandError("Dataset is empty after normalization.")
+        positives_per_episode = work.groupby("episode_id")["y"].sum().astype(int)
+        max_positive_candidates = int(positives_per_episode.max()) if len(positives_per_episode) else 0
+        if max_positive_candidates > 1:
+            raise CommandError(
+                f"Target column '{target_column}' has episodes with more than one positive candidate. "
+                "This trainer currently expects a single positive target per episode."
+            )
 
         train_users = _prepare_split_set(split_payload, "train_user_ids")
         val_users = _prepare_split_set(split_payload, "val_user_ids")
@@ -728,8 +772,12 @@ class Command(BaseCommand):
 
         feature_columns = [str(x) for x in (dataset_meta.get("feature_columns") or []) if str(x)]
         if not feature_columns:
-            ignore_cols = {"user_id", "episode_id", "group_id", "split", "t0_utc", "label", "y"}
+            ignore_cols = {"user_id", "episode_id", "group_id", "split", "t0_utc", "label", "y", target_column}
             feature_columns = [col for col in work.columns if col not in ignore_cols]
+        if target_column in feature_columns:
+            raise CommandError(
+                f"Target column '{target_column}' must not be present in feature_columns to avoid leakage."
+            )
         for col in feature_columns:
             if col not in work.columns:
                 raise CommandError(f"Feature column missing in dataset: {col}")
@@ -941,22 +989,45 @@ class Command(BaseCommand):
         )
         selected = feature_results[selected_feature_set]
         dataset_baselines = dataset_meta.get("baselines") or {}
-        baseline_comparison = _compare_with_baselines(
-            metrics_val=selected["metrics_val"],
-            metrics_test=selected["metrics_test"],
-            dataset_baselines=dataset_baselines,
-        )
+        label_protocol_version = str(dataset_meta.get("label_protocol_version") or "legacy_v4")
+        outcome_windows_days = [int(x) for x in (dataset_meta.get("outcome_windows_days") or [])]
+        if target_column == "y":
+            baseline_comparison = _compare_with_baselines(
+                metrics_val=selected["metrics_val"],
+                metrics_test=selected["metrics_test"],
+                dataset_baselines=dataset_baselines,
+            )
+            runtime_guard = {
+                "applicable": True,
+                "metric": "ndcg_at_5",
+                "required_delta": 0.01,
+                "model_value": float(selected["metrics_test"]["ndcg_at_5"]),
+                "popularity_value": float(
+                    (((dataset_baselines.get("splits") or {}).get("test") or {}).get("popularity") or {}).get(
+                        "ndcg_at_5",
+                        0.0,
+                    )
+                ),
+            }
+            runtime_guard["passed"] = float(runtime_guard["model_value"]) >= float(runtime_guard["popularity_value"]) + 0.01
+        else:
+            reason = (
+                f"Dataset baselines and runtime guard are calibrated for legacy target 'y'; "
+                f"skipped for experimental target '{target_column}'."
+            )
+            baseline_comparison = {
+                "applicable": False,
+                "reason": reason,
+                "target_column": target_column,
+            }
+            runtime_guard = {
+                "applicable": False,
+                "status": "experimental_target",
+                "reason": reason,
+                "target_column": target_column,
+            }
 
         trained_at = datetime.now(tz=timezone.utc).isoformat().replace("+00:00", "Z")
-        runtime_guard = {
-            "metric": "ndcg_at_5",
-            "required_delta": 0.01,
-            "model_value": float(selected["metrics_test"]["ndcg_at_5"]),
-            "popularity_value": float(
-                (((dataset_baselines.get("splits") or {}).get("test") or {}).get("popularity") or {}).get("ndcg_at_5", 0.0)
-            ),
-        }
-        runtime_guard["passed"] = float(runtime_guard["model_value"]) >= float(runtime_guard["popularity_value"]) + 0.01
         artifact = {
             "task": "roadmap_nextstep_v4_ranking",
             "model": selected["bundle"]["model"],
@@ -975,6 +1046,9 @@ class Command(BaseCommand):
             "owned_feature_map": dataset_meta.get("owned_feature_map") or {},
             "selected_feature_set": selected_feature_set,
             "sample_weight_used": bool("sample_weight" in work.columns),
+            "target_column": target_column,
+            "label_protocol_version": label_protocol_version,
+            "outcome_windows_days": outcome_windows_days,
         }
 
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -987,6 +1061,9 @@ class Command(BaseCommand):
             "trained_at_utc": trained_at,
             "model_version": model_version,
             "estimator": estimator_name,
+            "target_column": target_column,
+            "label_protocol_version": label_protocol_version,
+            "outcome_windows_days": outcome_windows_days,
             "selected_feature_set": selected_feature_set,
             "model_type": selected["bundle"]["model_type"],
             "dataset_path": dataset_path,
@@ -1047,6 +1124,9 @@ class Command(BaseCommand):
             "trained_at_utc": trained_at,
             "model_version": model_version,
             "estimator": estimator_name,
+            "target_column": target_column,
+            "label_protocol_version": label_protocol_version,
+            "outcome_windows_days": outcome_windows_days,
             "selected_feature_set": selected_feature_set,
             "selected_params": selected["params"],
             "temperature": float(round(selected["temperature"], 6)),
@@ -1078,8 +1158,9 @@ class Command(BaseCommand):
 
         reports_dir = (_repo_root() / "reports").resolve()
         reports_dir.mkdir(parents=True, exist_ok=True)
-        report_json_path = reports_dir / "roadmap_nextstep_v4_eval.json"
-        report_md_path = reports_dir / "roadmap_nextstep_v4_eval.md"
+        report_stem = _target_report_stem(target_column)
+        report_json_path = reports_dir / f"{report_stem}.json"
+        report_md_path = reports_dir / f"{report_stem}.md"
         report_json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         report_md_path.write_text(_build_eval_markdown(report), encoding="utf-8")
 

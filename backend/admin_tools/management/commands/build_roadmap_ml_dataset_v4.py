@@ -98,6 +98,26 @@ def _float_or_zero(value: Any) -> float:
         return 0.0
 
 
+def _parse_positive_int_csv(raw: Any, *, default: list[int]) -> list[int]:
+    text = str(raw or "").strip()
+    if not text:
+        return list(default)
+    out: list[int] = []
+    seen: set[int] = set()
+    for token in text.split(","):
+        token = str(token or "").strip()
+        if not token:
+            continue
+        value = int(token)
+        if value <= 0 or value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    if not out:
+        raise CommandError("--outcome-windows resolved to empty set")
+    return sorted(out)
+
+
 def _chain_distance(category: str, from_type: str, to_type: str) -> int:
     chain = [str(x).strip().lower() for x in (RULE_CHAIN_BY_CATEGORY.get(str(category)) or []) if str(x).strip()]
     pos = {token: idx for idx, token in enumerate(chain)}
@@ -379,6 +399,12 @@ class Command(BaseCommand):
         parser.add_argument("--include-ga", action="store_true", default=False)
         parser.add_argument("--label-window-days", type=int, default=14)
         parser.add_argument(
+            "--outcome-windows",
+            type=str,
+            default="7,14,30,60",
+            help="Comma-separated funnel outcome windows in days.",
+        )
+        parser.add_argument(
             "--popularity-top-n",
             type=int,
             default=25,
@@ -400,6 +426,10 @@ class Command(BaseCommand):
         out_dir = _resolve_out_dir(str(options["out_dir"]))
         include_ga = bool(options["include_ga"])
         label_window_days = int(options["label_window_days"])
+        outcome_windows_days = _parse_positive_int_csv(
+            options.get("outcome_windows"),
+            default=[7, 14, 30, 60],
+        )
         popularity_top_n = int(options["popularity_top_n"])
         owned_top_k = int(options["owned_top_k"])
         seed = int(options["seed"])
@@ -419,7 +449,8 @@ class Command(BaseCommand):
 
         self.stdout.write(
             "[build_roadmap_ml_dataset_v4] "
-            f"window={since.isoformat()}..{now_utc.isoformat()} label_window_days={label_window_days}"
+            f"window={since.isoformat()}..{now_utc.isoformat()} "
+            f"label_window_days={label_window_days} outcome_windows={outcome_windows_days}"
         )
 
         exposed_qs = RoadmapEvent.objects.filter(
@@ -502,6 +533,28 @@ class Command(BaseCommand):
             for profile in CustomerProfile.objects.filter(user_id__in=users)
         }
 
+        clicked_qs = RoadmapEvent.objects.filter(
+            user_id__in=users,
+            event_type=RoadmapEvent.Type.STEP_CLICKED,
+            created_at__gte=since,
+            created_at__lte=now_utc,
+            step_id__isnull=False,
+        )
+        if not include_ga:
+            clicked_qs = clicked_qs.exclude(user__username__startswith="ga_")
+
+        clicked_by_step_id: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for row in clicked_qs.values("id", "step_id", "created_at").iterator(chunk_size=5000):
+            step_id = int(row["step_id"]) if row.get("step_id") else 0
+            if step_id <= 0:
+                continue
+            clicked_by_step_id[step_id].append(
+                {
+                    "id": int(row["id"]),
+                    "created_at": row["created_at"].astimezone(dt_timezone.utc),
+                }
+            )
+
         completed_qs = RoadmapEvent.objects.filter(
             user_id__in=users,
             event_type=RoadmapEvent.Type.STEP_COMPLETED,
@@ -583,6 +636,8 @@ class Command(BaseCommand):
 
         for values in user_items.values():
             values.sort(key=lambda x: (x["ts"], int(x["tx_id"]), int(x["item_id"])))
+        for values in clicked_by_step_id.values():
+            values.sort(key=lambda x: (x["created_at"], int(x["id"])))
         for values in completed_by_key.values():
             values.sort(key=lambda x: (x["created_at"], int(x["id"])))
 
@@ -643,6 +698,10 @@ class Command(BaseCommand):
         completed_positions_by_key = {
             key: [_event_position(row["created_at"], int(row["id"])) for row in rows]
             for key, rows in completed_by_key.items()
+        }
+        clicked_positions_by_step_id = {
+            step_id: [_event_position(row["created_at"], int(row["id"])) for row in rows]
+            for step_id, rows in clicked_by_step_id.items()
         }
 
         episode_records: list[dict[str, Any]] = []
@@ -718,6 +777,105 @@ class Command(BaseCommand):
                             label = ptype
                             label_source = "future_transaction"
                             break
+
+            planned_target_product_type = str(seed_row.get("planned_target_product_type") or "__none__")
+            planned_target_step_index = int(seed_row.get("planned_target_step_index") or 0)
+            clicked_rows_all = clicked_by_step_id.get(int(step_id or 0), []) if step_id else []
+            clicked_positions = clicked_positions_by_step_id.get(int(step_id or 0), []) if step_id else []
+
+            clicked_in_window: dict[int, int] = {}
+            completion_label_by_window: dict[int, str] = {}
+            completion_matched_by_by_window: dict[int, str] = {}
+            buy_first_label_by_window: dict[int, str] = {}
+            buy_any_labels_by_window: dict[int, set[str]] = {}
+            primary_target_label_by_window: dict[int, str] = {}
+            primary_target_source_by_window: dict[int, str] = {}
+            window_fully_observed_by_window: dict[int, int] = {}
+
+            future_purchase_rows_by_window: dict[int, list[dict[str, Any]]] = {int(w): [] for w in outcome_windows_days}
+            if future_items:
+                for row in future_items:
+                    ts = row["ts"]
+                    if str(row["category"]) != category:
+                        continue
+                    candidate_key = ""
+                    if category == "fragrance":
+                        slot_value = str(row.get("slot") or "")
+                        if slot_value in SLOTS:
+                            candidate_key = slot_value
+                    else:
+                        candidate_key = str(row.get("product_type") or "").strip().lower()
+                    if not candidate_key:
+                        continue
+                    for outcome_window in outcome_windows_days:
+                        outcome_end = t0 + timedelta(days=int(outcome_window))
+                        if ts > outcome_end:
+                            continue
+                        future_purchase_rows_by_window[int(outcome_window)].append(
+                            {
+                                "ts": ts,
+                                "candidate_key": candidate_key,
+                            }
+                        )
+
+            for outcome_window in outcome_windows_days:
+                outcome_end = t0 + timedelta(days=int(outcome_window))
+                window_fully_observed_by_window[int(outcome_window)] = int(now_utc >= outcome_end)
+
+                if clicked_rows_all and clicked_positions:
+                    click_start_idx = bisect_right(clicked_positions, _event_position(t0, 0))
+                    click_end_idx = bisect_left(clicked_positions, (outcome_end, MAX_TS_ID))
+                    click_window_rows = clicked_rows_all[click_start_idx:click_end_idx]
+                else:
+                    click_window_rows = []
+                clicked_in_window[int(outcome_window)] = int(bool(click_window_rows))
+
+                if completion_rows_all and completion_positions:
+                    completion_start_idx = bisect_right(completion_positions, _event_position(t0, 0))
+                    completion_end_idx = bisect_left(completion_positions, (outcome_end, MAX_TS_ID))
+                    completion_window_rows = completion_rows_all[completion_start_idx:completion_end_idx]
+                else:
+                    completion_window_rows = []
+
+                selected_completion_for_window = None
+                if step_id:
+                    selected_completion_for_window = next(
+                        (row for row in completion_window_rows if int(row.get("step_id") or 0) == int(step_id)),
+                        None,
+                    )
+                if selected_completion_for_window is None and completion_window_rows:
+                    selected_completion_for_window = completion_window_rows[0]
+
+                completion_label = "__none__"
+                completion_matched_by = "__none__"
+                if selected_completion_for_window is not None:
+                    completion_candidate = str(selected_completion_for_window.get("product_type") or "").strip().lower()
+                    if completion_candidate:
+                        completion_label = completion_candidate
+                        completion_matched_by = (
+                            str(selected_completion_for_window.get("matched_by") or "__none__").strip().lower()
+                            or "__none__"
+                        )
+                completion_label_by_window[int(outcome_window)] = completion_label
+                completion_matched_by_by_window[int(outcome_window)] = completion_matched_by
+
+                purchase_rows = future_purchase_rows_by_window.get(int(outcome_window), [])
+                if purchase_rows:
+                    buy_first_label_by_window[int(outcome_window)] = str(purchase_rows[0]["candidate_key"])
+                    buy_any_labels_by_window[int(outcome_window)] = {
+                        str(row["candidate_key"]) for row in purchase_rows if str(row.get("candidate_key") or "").strip()
+                    }
+                else:
+                    buy_first_label_by_window[int(outcome_window)] = "__none__"
+                    buy_any_labels_by_window[int(outcome_window)] = set()
+
+                primary_label = completion_label
+                primary_source = "step_completed_event"
+                if primary_label == "__none__":
+                    primary_label = str(buy_first_label_by_window[int(outcome_window)] or "__none__")
+                    primary_source = "future_transaction" if primary_label != "__none__" else "none"
+                primary_target_label_by_window[int(outcome_window)] = primary_label
+                primary_target_source_by_window[int(outcome_window)] = primary_source
 
             last_product_types: list[str] = []
             last_categories: list[str] = []
@@ -823,11 +981,61 @@ class Command(BaseCommand):
                     "label_event_step_id": int(label_event_step_id),
                     "split": split_name,
                     "candidate_types": list(candidate_types_by_category.get(category) or []),
-                    "planned_target_product_type": str(
-                        seed_row.get("planned_target_product_type") or "__none__"
-                    ),
-                    "planned_target_step_index": int(seed_row.get("planned_target_step_index") or 0),
+                    "planned_target_product_type": planned_target_product_type,
+                    "planned_target_step_index": planned_target_step_index,
                     **feature_base,
+                    **{
+                        f"window_{int(outcome_window)}d_fully_observed": int(
+                            window_fully_observed_by_window.get(int(outcome_window), 0)
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"clicked_in_{int(outcome_window)}d": int(clicked_in_window.get(int(outcome_window), 0))
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"completed_in_{int(outcome_window)}d": int(
+                            completion_label_by_window.get(int(outcome_window), "__none__") != "__none__"
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"completed_product_type_{int(outcome_window)}d": str(
+                            completion_label_by_window.get(int(outcome_window), "__none__")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"completed_matched_by_{int(outcome_window)}d": str(
+                            completion_matched_by_by_window.get(int(outcome_window), "__none__")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"bought_any_in_{int(outcome_window)}d": int(
+                            bool(buy_any_labels_by_window.get(int(outcome_window), set()))
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"bought_first_product_type_{int(outcome_window)}d": str(
+                            buy_first_label_by_window.get(int(outcome_window), "__none__")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"primary_target_label_{int(outcome_window)}d": str(
+                            primary_target_label_by_window.get(int(outcome_window), "__none__")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"primary_target_source_{int(outcome_window)}d": str(
+                            primary_target_source_by_window.get(int(outcome_window), "none")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
                 }
             )
             candidate_days_since_last_seen_map: dict[str, int] = {}
@@ -840,6 +1048,14 @@ class Command(BaseCommand):
                 "candidate_owned_counter": dict(candidate_owned_counter),
                 "candidate_seen_90d_counter": dict(candidate_seen_90d_counter),
                 "candidate_days_since_last_seen_map": candidate_days_since_last_seen_map,
+                "buy_any_labels_by_window": {
+                    str(int(outcome_window)): sorted(
+                        str(token)
+                        for token in buy_any_labels_by_window.get(int(outcome_window), set())
+                        if str(token).strip()
+                    )
+                    for outcome_window in outcome_windows_days
+                },
                 "anchor_item": dict(anchor_item) if isinstance(anchor_item, dict) else None,
             }
 
@@ -890,6 +1106,10 @@ class Command(BaseCommand):
                 for k, v in (aux.get("candidate_days_since_last_seen_map") or {}).items()
                 if str(k).strip()
             }
+            buy_any_labels_by_window = {
+                int(k): {str(token).strip().lower() for token in (v or []) if str(token).strip()}
+                for k, v in (aux.get("buy_any_labels_by_window") or {}).items()
+            }
             anchor_sig = product_signature(aux.get("anchor_item"))
             anchor_chain_token = (
                 recent_candidate_tokens[0]
@@ -936,6 +1156,40 @@ class Command(BaseCommand):
                         candidate_days_since_last_seen_map.get(candidate, -1)
                     ),
                     "sample_weight": float(sample_weight),
+                    **{
+                        f"candidate_clicked_planned_target_in_{int(outcome_window)}d": int(
+                            bool(int(ep.get(f"clicked_in_{int(outcome_window)}d") or 0))
+                            and str(candidate) == planned_target_product_type
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"candidate_completed_in_{int(outcome_window)}d": int(
+                            str(candidate)
+                            == str(ep.get(f"completed_product_type_{int(outcome_window)}d") or "__none__")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"candidate_bought_first_in_{int(outcome_window)}d": int(
+                            str(candidate)
+                            == str(ep.get(f"bought_first_product_type_{int(outcome_window)}d") or "__none__")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"candidate_bought_any_in_{int(outcome_window)}d": int(
+                            str(candidate) in set(buy_any_labels_by_window.get(int(outcome_window), set()))
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"candidate_primary_target_in_{int(outcome_window)}d": int(
+                            str(candidate)
+                            == str(ep.get(f"primary_target_label_{int(outcome_window)}d") or "__none__")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
                 }
                 row.update(
                     build_candidate_content_features(
@@ -998,6 +1252,41 @@ class Command(BaseCommand):
                 ).items()
             )
         )
+        outcome_window_summary: dict[str, dict[str, Any]] = {}
+        for outcome_window in outcome_windows_days:
+            window_key = str(int(outcome_window))
+            primary_source_distribution = Counter(
+                str(ep.get(f"primary_target_source_{int(outcome_window)}d") or "none")
+                for ep in episode_records
+            )
+            completed_matched_by_distribution = Counter(
+                str(ep.get(f"completed_matched_by_{int(outcome_window)}d") or "__none__")
+                for ep in episode_records
+                if int(ep.get(f"completed_in_{int(outcome_window)}d") or 0) == 1
+            )
+            outcome_window_summary[window_key] = {
+                "episodes_total": int(len(episode_records)),
+                "fully_observed_episodes": int(
+                    sum(1 for ep in episode_records if int(ep.get(f"window_{int(outcome_window)}d_fully_observed") or 0) == 1)
+                ),
+                "clicked_episodes": int(
+                    sum(1 for ep in episode_records if int(ep.get(f"clicked_in_{int(outcome_window)}d") or 0) == 1)
+                ),
+                "completed_episodes": int(
+                    sum(1 for ep in episode_records if int(ep.get(f"completed_in_{int(outcome_window)}d") or 0) == 1)
+                ),
+                "bought_any_episodes": int(
+                    sum(1 for ep in episode_records if int(ep.get(f"bought_any_in_{int(outcome_window)}d") or 0) == 1)
+                ),
+                "primary_target_source_distribution": {
+                    str(k): int(v)
+                    for k, v in sorted(primary_source_distribution.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+                "completed_matched_by_distribution": {
+                    str(k): int(v)
+                    for k, v in sorted(completed_matched_by_distribution.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+            }
 
         baselines = _build_baselines(
             episodes=episode_records,
@@ -1060,11 +1349,13 @@ class Command(BaseCommand):
 
         metadata = {
             "version": "v4_candidate_ranking",
+            "label_protocol_version": "v5_exposure_funnel",
             "generated_at_utc": now_utc.isoformat().replace("+00:00", "Z"),
             "window_days": int(days),
             "window_since_utc": since.isoformat().replace("+00:00", "Z"),
             "window_until_utc": now_utc.isoformat().replace("+00:00", "Z"),
             "label_window_days": int(label_window_days),
+            "outcome_windows_days": list(outcome_windows_days),
             "include_ga": bool(include_ga),
             "dataset_format": dataset_format,
             "dataset_file": dataset_file,
@@ -1078,6 +1369,7 @@ class Command(BaseCommand):
             "label_outside_candidate_set": int(label_outside_candidates),
             "label_source_distribution": label_source_distribution,
             "label_matched_by_distribution": label_matched_by_distribution,
+            "outcome_window_summary": outcome_window_summary,
             "raw_exposed_events": int(raw_exposed_total),
             "class_distribution": class_distribution,
             "candidate_types_by_category": candidate_types_by_category,
@@ -1112,6 +1404,10 @@ class Command(BaseCommand):
                 "features_only_use_transactions_lte_t0": True,
                 "checks_total": int(leakage_checks_total),
                 "status": "passed",
+            },
+            "censoring_policy": {
+                "right_censoring_marked_by_window_columns": True,
+                "fully_observed_column_template": "window_{days}d_fully_observed",
             },
         }
         metadata_path = out_dir / "metadata.json"

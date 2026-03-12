@@ -1,13 +1,31 @@
 from django.contrib import admin
 from django.urls import path, include
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
-from backend.auth_views import AuthCsrfView, AuthLoginView, AuthLogoutView, AuthMeView, AuthRegisterView
+from backend.auth_views import (
+    AuthCsrfView,
+    AuthLoginView,
+    AuthLogoutView,
+    AuthMeView,
+    AuthPasswordResetConfirmView,
+    AuthPasswordResetRequestView,
+    AuthPasswordResetValidateView,
+    AuthRegisterView,
+    AuthResendVerificationView,
+    AuthVerificationStatusView,
+    AuthVerifyEmailView,
+)
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api-auth/", include("rest_framework.urls", namespace="rest_framework")),
     path("api/auth/csrf", AuthCsrfView.as_view(), name="auth-csrf"),
     path("api/auth/login", AuthLoginView.as_view(), name="auth-login"),
+    path("api/auth/password-reset/request", AuthPasswordResetRequestView.as_view(), name="auth-password-reset-request"),
+    path("api/auth/password-reset/validate", AuthPasswordResetValidateView.as_view(), name="auth-password-reset-validate"),
+    path("api/auth/password-reset/confirm", AuthPasswordResetConfirmView.as_view(), name="auth-password-reset-confirm"),
     path("api/auth/register", AuthRegisterView.as_view(), name="auth-register"),
+    path("api/auth/verify-email", AuthVerifyEmailView.as_view(), name="auth-verify-email"),
+    path("api/auth/verify-email/resend", AuthResendVerificationView.as_view(), name="auth-resend-verification"),
+    path("api/auth/verification-status", AuthVerificationStatusView.as_view(), name="auth-verification-status"),
     path("api/auth/logout", AuthLogoutView.as_view(), name="auth-logout"),
     path("api/auth/me", AuthMeView.as_view(), name="auth-me"),
 

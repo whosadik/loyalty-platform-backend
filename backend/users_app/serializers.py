@@ -6,6 +6,10 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
     class Meta:
         model = CustomerProfile
         fields = [
+            "first_name",
+            "last_name",
+            "phone",
+            "city",
             "skin_type",
             "goals",
             "avoid_flags",
@@ -15,12 +19,16 @@ class CustomerProfileSerializer(serializers.ModelSerializer):
             "fragrance_profile",
             "profile_completed_at",
             "profile_completion_rewarded_at",
+            "email_verified_at",
+            "email_verification_sent_at",
             "created_at",
             "updated_at",
         ]
         read_only_fields = [
             "profile_completed_at",
             "profile_completion_rewarded_at",
+            "email_verified_at",
+            "email_verification_sent_at",
             "created_at",
             "updated_at",
         ]

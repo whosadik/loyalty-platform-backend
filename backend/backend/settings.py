@@ -102,6 +102,10 @@ REST_FRAMEWORK["DEFAULT_THROTTLE_RATES"] = {
     "recs": "30/min",
     "next_offer": "20/min",
     "checkout_preview": "30/min",
+    "auth_login": os.getenv("AUTH_LOGIN_RATE", "10/min"),
+    "auth_register": os.getenv("AUTH_REGISTER_RATE", "5/hour"),
+    "auth_password_reset_request": os.getenv("AUTH_PASSWORD_RESET_REQUEST_RATE", "5/hour"),
+    "auth_verify_email_resend": os.getenv("AUTH_VERIFY_EMAIL_RESEND_RATE", "10/hour"),
 }
 
 SPECTACULAR_SETTINGS = {
@@ -122,6 +126,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'backend.email_verification_middleware.VerifiedEmailRequiredMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
@@ -218,6 +223,17 @@ AUDIT_RETENTION_DAYS = int(os.getenv("AUDIT_RETENTION_DAYS", "90"))
 
 OFFERS_RETENTION_DAYS = int(os.getenv("OFFERS_RETENTION_DAYS", "180"))
 PROFILE_COMPLETION_BONUS_POINTS = int(os.getenv("PROFILE_COMPLETION_BONUS_POINTS", "50"))
+FRONTEND_BASE_URL = os.getenv("FRONTEND_BASE_URL", "http://localhost:5173")
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
+EMAIL_HOST = os.getenv("EMAIL_HOST", "")
+EMAIL_PORT = int(os.getenv("EMAIL_PORT", "587"))
+EMAIL_HOST_USER = os.getenv("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.getenv("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
+DEFAULT_FROM_EMAIL = os.getenv("DEFAULT_FROM_EMAIL", "noreply@uilesim.local")
+EMAIL_VERIFICATION_MAX_AGE_SECONDS = int(os.getenv("EMAIL_VERIFICATION_MAX_AGE_SECONDS", str(60 * 60 * 24 * 3)))
+EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS = int(os.getenv("EMAIL_VERIFICATION_RESEND_COOLDOWN_SECONDS", "60"))
+PASSWORD_RESET_TIMEOUT = int(os.getenv("PASSWORD_RESET_TIMEOUT", str(60 * 60 * 24 * 3)))
 WINBACK_INACTIVITY_DAYS = int(os.getenv("WINBACK_INACTIVITY_DAYS", "30"))
 WINBACK_REASSIGN_DAYS = int(os.getenv("WINBACK_REASSIGN_DAYS", "30"))
 FAVORITE_CATEGORY_WINDOW_DAYS = int(os.getenv("FAVORITE_CATEGORY_WINDOW_DAYS", "90"))
@@ -295,6 +311,14 @@ ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES = env_csv(
 ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT = int(
     os.getenv("ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT", "0")
 )
+ROADMAP_NEXTSTEP_V4_PARTIAL_MODEL_PATH = os.getenv(
+    "ROADMAP_NEXTSTEP_V4_PARTIAL_MODEL_PATH",
+    "",
+).strip()
+ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH = os.getenv(
+    "ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH",
+    "",
+).strip()
 ROADMAP_NEXTSTEP_V4_PARTIAL_SALT = os.getenv(
     "ROADMAP_NEXTSTEP_V4_PARTIAL_SALT",
     "roadmap_nextstep_v4_partial_v1",

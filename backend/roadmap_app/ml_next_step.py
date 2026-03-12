@@ -934,12 +934,15 @@ def _apply_runtime_progression_bias(
     return adjusted_scores, biases
 
 
-def _predict_with_v4_artifact(
+def _predict_with_v4_artifact_from_sources(
     *,
     artifact: dict[str, Any],
-    user_id: int,
     category: str,
-    context_product_ids: list[int] | None,
+    now_utc,
+    items: list[dict[str, Any]] | None,
+    profile: Any | None,
+    context_products: list[dict[str, Any]] | None,
+    catalog_products: list[dict[str, Any]] | None,
     planned_target_product_type: str | None,
     planned_target_step_index: int | None,
     candidate_types: list[str] | None,
@@ -975,89 +978,77 @@ def _predict_with_v4_artifact(
     if not candidates:
         return []
 
-    now_utc = timezone.now().astimezone(dt_timezone.utc)
+    now_utc = now_utc.astimezone(dt_timezone.utc)
     since_90d = now_utc - timedelta(days=90)
 
-    tx_rows = list(
-        TransactionItem.objects.filter(
-            transaction__user_id=int(user_id),
-            transaction__created_at__lte=now_utc,
-        )
-        .values(
-            "id",
-            "transaction__id",
-            "transaction__created_at",
-            "transaction__total_amount",
-            "product__category",
-            "product__product_type",
-            "quantity",
-            "product__concerns",
-            "product__actives",
-            "product__flags",
-            "product__supported_skin_types",
-            "product__attrs",
-            "product__ingredients_inci",
-            "product__raw_meta",
-        )
-        .order_by("transaction__created_at", "transaction__id", "id")
-    )
-
-    profile_row = CustomerProfile.objects.filter(user_id=int(user_id)).first()
-    profile_sig = profile_signature(profile_row)
-    context_rows = list(
-        Product.objects.filter(id__in=[int(x) for x in (context_product_ids or []) if str(x).strip()])
-        .values(
-            "id",
-            "category",
-            "product_type",
-            "concerns",
-            "actives",
-            "flags",
-            "supported_skin_types",
-            "attrs",
-            "ingredients_inci",
-            "raw_meta",
-        )
-    )
-    context_by_id = {int(row["id"]): row for row in context_rows}
-    ordered_context_products: list[dict[str, Any]] = []
-    for raw_id in context_product_ids or []:
-        try:
-            row = context_by_id.get(int(raw_id))
-        except Exception:
-            row = None
-        if row:
-            ordered_context_products.append(dict(row))
-
-    items: list[dict[str, Any]] = []
-    for row in tx_rows:
-        item_category = str(row.get("product__category") or "").strip().lower()
-        item_type = str(row.get("product__product_type") or "").strip().lower()
-        slot_value = ""
-        if item_category == "fragrance":
+    normalized_items: list[dict[str, Any]] = []
+    for row in items or []:
+        item_category = str(row.get("category") or "").strip().lower()
+        item_type = str(row.get("product_type") or "").strip().lower()
+        if not item_category or not item_type:
+            continue
+        slot_value = str(row.get("slot") or "").strip().lower()
+        if item_category == "fragrance" and not slot_value:
             slot_value = slot_of_fragrance(
-                _safe_dict(row.get("product__attrs")),
-                raw_meta=_safe_dict(row.get("product__raw_meta")),
+                _safe_dict(row.get("attrs")),
+                raw_meta=_safe_dict(row.get("raw_meta")),
             )
-        items.append(
+        ts = row.get("ts")
+        if ts is None:
+            continue
+        normalized_items.append(
             {
-                "ts": row["transaction__created_at"].astimezone(dt_timezone.utc),
-                "tx_id": int(row["transaction__id"]),
-                "tx_total": _to_float(row.get("transaction__total_amount")),
+                "ts": ts.astimezone(dt_timezone.utc),
+                "tx_id": int(row.get("tx_id") or 0),
+                "tx_total": _to_float(row.get("tx_total")),
                 "category": item_category,
                 "product_type": item_type,
-                "concerns": row.get("product__concerns") if isinstance(row.get("product__concerns"), list) else [],
-                "actives": row.get("product__actives") if isinstance(row.get("product__actives"), list) else [],
-                "flags": row.get("product__flags") if isinstance(row.get("product__flags"), list) else [],
+                "concerns": row.get("concerns") if isinstance(row.get("concerns"), list) else [],
+                "actives": row.get("actives") if isinstance(row.get("actives"), list) else [],
+                "flags": row.get("flags") if isinstance(row.get("flags"), list) else [],
                 "supported_skin_types": (
-                    row.get("product__supported_skin_types")
-                    if isinstance(row.get("product__supported_skin_types"), list)
+                    row.get("supported_skin_types")
+                    if isinstance(row.get("supported_skin_types"), list)
                     else []
                 ),
-                "attrs": _safe_dict(row.get("product__attrs")),
-                "ingredients_inci": str(row.get("product__ingredients_inci") or ""),
-                "raw_meta": _safe_dict(row.get("product__raw_meta")),
+                "attrs": _safe_dict(row.get("attrs")),
+                "ingredients_inci": str(row.get("ingredients_inci") or ""),
+                "raw_meta": _safe_dict(row.get("raw_meta")),
                 "quantity": max(1, int(row.get("quantity") or 0)),
+                "slot": slot_value,
+            }
+        )
+    normalized_items.sort(key=lambda row: (row["ts"], int(row.get("tx_id") or 0)))
+
+    profile_sig = profile_signature(profile)
+
+    normalized_context_products: list[dict[str, Any]] = []
+    for row in context_products or []:
+        item_category = str(row.get("category") or "").strip().lower()
+        item_type = str(row.get("product_type") or "").strip().lower()
+        if item_category != category or not item_type:
+            continue
+        slot_value = str(row.get("slot") or "").strip().lower()
+        if item_category == "fragrance" and not slot_value:
+            slot_value = slot_of_fragrance(
+                _safe_dict(row.get("attrs")),
+                raw_meta=_safe_dict(row.get("raw_meta")),
+            )
+        normalized_context_products.append(
+            {
+                "category": item_category,
+                "product_type": item_type,
+                "concerns": row.get("concerns") if isinstance(row.get("concerns"), list) else [],
+                "actives": row.get("actives") if isinstance(row.get("actives"), list) else [],
+                "flags": row.get("flags") if isinstance(row.get("flags"), list) else [],
+                "supported_skin_types": (
+                    row.get("supported_skin_types")
+                    if isinstance(row.get("supported_skin_types"), list)
+                    else []
+                ),
+                "attrs": _safe_dict(row.get("attrs")),
+                "ingredients_inci": str(row.get("ingredients_inci") or ""),
+                "raw_meta": _safe_dict(row.get("raw_meta")),
                 "slot": slot_value,
             }
         )
@@ -1075,7 +1066,7 @@ def _predict_with_v4_artifact(
     tx_ids_90d: set[int] = set()
     tx_amount_90d: dict[int, float] = {}
 
-    for row in reversed(items):
+    for row in reversed(normalized_items):
         item_category = str(row["category"])
         item_type = str(row["product_type"])
         qty = int(row["quantity"])
@@ -1119,37 +1110,7 @@ def _predict_with_v4_artifact(
     if last_ts_in_category is not None:
         days_since_last_purchase = int((now_utc.date() - last_ts_in_category.date()).days)
 
-    context_products_for_category: list[dict[str, Any]] = []
-    for row in ordered_context_products:
-        item_category = str(row.get("category") or "").strip().lower()
-        item_type = str(row.get("product_type") or "").strip().lower()
-        if item_category != category:
-            continue
-        slot_value = ""
-        if item_category == "fragrance":
-            slot_value = slot_of_fragrance(
-                _safe_dict(row.get("attrs")),
-                raw_meta=_safe_dict(row.get("raw_meta")),
-            )
-        context_products_for_category.append(
-            {
-                "category": item_category,
-                "product_type": item_type,
-                "concerns": row.get("concerns") if isinstance(row.get("concerns"), list) else [],
-                "actives": row.get("actives") if isinstance(row.get("actives"), list) else [],
-                "flags": row.get("flags") if isinstance(row.get("flags"), list) else [],
-                "supported_skin_types": (
-                    row.get("supported_skin_types")
-                    if isinstance(row.get("supported_skin_types"), list)
-                    else []
-                ),
-                "attrs": _safe_dict(row.get("attrs")),
-                "ingredients_inci": str(row.get("ingredients_inci") or ""),
-                "raw_meta": _safe_dict(row.get("raw_meta")),
-                "slot": slot_value,
-            }
-        )
-    has_context_anchor = bool(context_products_for_category)
+    has_context_anchor = bool(normalized_context_products)
     planned_target_type_norm = str(planned_target_product_type or "").strip().lower()
     planned_target_index_int = int(planned_target_step_index or 0)
 
@@ -1198,34 +1159,30 @@ def _predict_with_v4_artifact(
     pos_by_candidate = {token: idx for idx, token in enumerate(rules_chain)}
     pop_map_raw = (artifact.get("candidate_popularity_in_train_by_category") or {}).get(category) or {}
     pop_map: dict[str, float] = {str(k).strip().lower(): _to_float(v) for k, v in pop_map_raw.items()}
+    candidate_set = set(candidates)
     candidate_catalog_summaries = build_candidate_catalog_summaries(
-        list(
-            Product.objects.filter(category=category, product_type__in=candidates).values(
-                "category",
-                "product_type",
-                "concerns",
-                "actives",
-                "flags",
-                "supported_skin_types",
-                "attrs",
-                "ingredients_inci",
-                "raw_meta",
-            )
-        )
+        [
+            row
+            for row in (catalog_products or [])
+            if str(row.get("category") or "").strip().lower() == category
+            and str(row.get("product_type") or "").strip().lower() in candidate_set
+        ]
     )
-    anchor_source_item = context_products_for_category[0] if context_products_for_category else anchor_item
+    anchor_source_item = normalized_context_products[0] if normalized_context_products else anchor_item
     anchor_sig = product_signature(anchor_source_item)
 
     context_candidate_tokens = [
         str(row.get("slot") or "") if category == "fragrance" else str(row.get("product_type") or "")
-        for row in context_products_for_category
+        for row in normalized_context_products
         if str((row.get("slot") or "") if category == "fragrance" else (row.get("product_type") or "")).strip()
     ]
     history_candidate_tokens = [
         token
-        for token in ([str(row.get("slot") or "") for row in reversed(items) if str(row["category"]) == "fragrance"]
-        if category == "fragrance"
-        else [str(row["product_type"]) for row in reversed(items) if str(row["category"]) == category])
+        for token in (
+            [str(row.get("slot") or "") for row in reversed(normalized_items) if str(row["category"]) == "fragrance"]
+            if category == "fragrance"
+            else [str(row["product_type"]) for row in reversed(normalized_items) if str(row["category"]) == category]
+        )
         if token
     ]
     recent_candidate_tokens = _ordered_unique_tokens(context_candidate_tokens + history_candidate_tokens)[:5]
@@ -1236,6 +1193,7 @@ def _predict_with_v4_artifact(
     )
     last1_chain_token = recent_candidate_tokens[0] if recent_candidate_tokens else ""
     last2_chain_token = recent_candidate_tokens[1] if len(recent_candidate_tokens) > 1 else ""
+    recent_candidate_set = set(recent_candidate_tokens[:3])
 
     rows: list[dict[str, Any]] = []
     for candidate in candidates:
@@ -1247,7 +1205,7 @@ def _predict_with_v4_artifact(
         row["candidate_position_in_chain"] = int(pos_by_candidate.get(candidate, -1))
         row["candidate_popularity_in_train"] = float(pop_map.get(candidate, 0.0))
         row["candidate_matches_last1"] = int(bool(recent_candidate_tokens and recent_candidate_tokens[0] == candidate))
-        row["candidate_matches_last3_any"] = int(candidate in set(recent_candidate_tokens[:3]))
+        row["candidate_matches_last3_any"] = int(candidate in recent_candidate_set)
         row["candidate_seen_count_last5"] = int(seen_count_last5)
         row["candidate_owned_count_in_category"] = int(candidate_owned_counter.get(candidate, 0))
         row["candidate_seen_90d_count_in_category"] = int(candidate_seen_90d_counter.get(candidate, 0))
@@ -1332,11 +1290,11 @@ def _predict_with_v4_artifact(
             score_list = [float(x) for x in score_arr.tolist()]
     else:
         score_list = []
-        for row in list(raw_scores):
-            if isinstance(row, (list, tuple)):
-                score_list.append(float(row[-1]))
+        for raw_score in list(raw_scores):
+            if isinstance(raw_score, (list, tuple)):
+                score_list.append(float(raw_score[-1]))
             else:
-                score_list.append(float(row))
+                score_list.append(float(raw_score))
 
     score_list, runtime_biases = _apply_runtime_progression_bias(
         category=category,
@@ -1363,6 +1321,130 @@ def _predict_with_v4_artifact(
 
     rows_out.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
     return rows_out
+
+
+def _predict_with_v4_artifact(
+    *,
+    artifact: dict[str, Any],
+    user_id: int,
+    category: str,
+    context_product_ids: list[int] | None,
+    planned_target_product_type: str | None,
+    planned_target_step_index: int | None,
+    candidate_types: list[str] | None,
+) -> list[dict[str, Any]]:
+    category = str(category or "").strip().lower()
+    if not category:
+        return []
+
+    now_utc = timezone.now().astimezone(dt_timezone.utc)
+    tx_rows = list(
+        TransactionItem.objects.filter(
+            transaction__user_id=int(user_id),
+            transaction__created_at__lte=now_utc,
+        )
+        .values(
+            "id",
+            "transaction__id",
+            "transaction__created_at",
+            "transaction__total_amount",
+            "product__category",
+            "product__product_type",
+            "quantity",
+            "product__concerns",
+            "product__actives",
+            "product__flags",
+            "product__supported_skin_types",
+            "product__attrs",
+            "product__ingredients_inci",
+            "product__raw_meta",
+        )
+        .order_by("transaction__created_at", "transaction__id", "id")
+    )
+
+    profile_row = CustomerProfile.objects.filter(user_id=int(user_id)).first()
+    context_rows = list(
+        Product.objects.filter(id__in=[int(x) for x in (context_product_ids or []) if str(x).strip()])
+        .values(
+            "id",
+            "category",
+            "product_type",
+            "concerns",
+            "actives",
+            "flags",
+            "supported_skin_types",
+            "attrs",
+            "ingredients_inci",
+            "raw_meta",
+        )
+    )
+    context_by_id = {int(row["id"]): row for row in context_rows}
+    ordered_context_products: list[dict[str, Any]] = []
+    for raw_id in context_product_ids or []:
+        try:
+            row = context_by_id.get(int(raw_id))
+        except Exception:
+            row = None
+        if row:
+            ordered_context_products.append(dict(row))
+
+    items: list[dict[str, Any]] = []
+    for row in tx_rows:
+        item_category = str(row.get("product__category") or "").strip().lower()
+        item_type = str(row.get("product__product_type") or "").strip().lower()
+        slot_value = ""
+        if item_category == "fragrance":
+            slot_value = slot_of_fragrance(
+                _safe_dict(row.get("product__attrs")),
+                raw_meta=_safe_dict(row.get("product__raw_meta")),
+            )
+        items.append(
+            {
+                "ts": row["transaction__created_at"].astimezone(dt_timezone.utc),
+                "tx_id": int(row["transaction__id"]),
+                "tx_total": _to_float(row.get("transaction__total_amount")),
+                "category": item_category,
+                "product_type": item_type,
+                "concerns": row.get("product__concerns") if isinstance(row.get("product__concerns"), list) else [],
+                "actives": row.get("product__actives") if isinstance(row.get("product__actives"), list) else [],
+                "flags": row.get("product__flags") if isinstance(row.get("product__flags"), list) else [],
+                "supported_skin_types": (
+                    row.get("product__supported_skin_types")
+                    if isinstance(row.get("product__supported_skin_types"), list)
+                    else []
+                ),
+                "attrs": _safe_dict(row.get("product__attrs")),
+                "ingredients_inci": str(row.get("product__ingredients_inci") or ""),
+                "raw_meta": _safe_dict(row.get("product__raw_meta")),
+                "quantity": max(1, int(row.get("quantity") or 0)),
+                "slot": slot_value,
+            }
+        )
+    catalog_rows = list(
+        Product.objects.filter(category=category).values(
+            "category",
+            "product_type",
+            "concerns",
+            "actives",
+            "flags",
+            "supported_skin_types",
+            "attrs",
+            "ingredients_inci",
+            "raw_meta",
+        )
+    )
+    return _predict_with_v4_artifact_from_sources(
+        artifact=artifact,
+        category=category,
+        now_utc=now_utc,
+        items=items,
+        profile=profile_row,
+        context_products=ordered_context_products,
+        catalog_products=catalog_rows,
+        planned_target_product_type=planned_target_product_type,
+        planned_target_step_index=planned_target_step_index,
+        candidate_types=candidate_types,
+    )
 
 
 def predict_next_product_types(

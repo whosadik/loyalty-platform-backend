@@ -139,6 +139,15 @@ class RoadmapNextStepV4DatasetTests(TestCase):
             unit_price=Decimal("12.00"),
         )
 
+    def _create_clicked(self, at_dt):
+        event = RoadmapEvent.objects.create(
+            user=self.user,
+            step=self.step,
+            event_type=RoadmapEvent.Type.STEP_CLICKED,
+            context={},
+        )
+        RoadmapEvent.objects.filter(id=event.id).update(created_at=at_dt)
+
     def _create_completed(self, at_dt, *, matched_by: str, product_type: str | None = None, match_meta: dict | None = None):
         event = RoadmapEvent.objects.create(
             user=self.user,
@@ -386,6 +395,62 @@ class RoadmapNextStepV4DatasetTests(TestCase):
                 1,
             )
             self.assertIn("sample_weight_policy", metadata)
+
+    def test_v4_dataset_includes_multi_window_funnel_targets(self):
+        t0 = timezone.now() - timedelta(days=20)
+        self._create_exposed(t0)
+        self._create_tx(self.p_cleanser, t0 - timedelta(days=1), "v4-funnel-prior")
+        self._create_clicked(t0 + timedelta(days=1))
+        self._create_completed(
+            t0 + timedelta(days=3),
+            matched_by="recommended_product_id",
+            product_type="serum",
+        )
+        self._create_tx(self.p_serum, t0 + timedelta(days=5), "v4-funnel-buy-serum")
+        self._create_tx(self.p_cleanser, t0 + timedelta(days=10), "v4-funnel-buy-cleanser")
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+                outcome_windows="7,14,30",
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            serum_row = frame[frame["candidate_type"].astype(str) == "serum"].iloc[0]
+            cleanser_row = frame[frame["candidate_type"].astype(str) == "cleanser"].iloc[0]
+
+            self.assertIn("clicked_in_7d", frame.columns)
+            self.assertIn("candidate_primary_target_in_14d", frame.columns)
+            self.assertIn("candidate_bought_any_in_14d", frame.columns)
+            self.assertEqual(int(serum_row["window_7d_fully_observed"]), 1)
+            self.assertEqual(int(serum_row["window_30d_fully_observed"]), 0)
+            self.assertEqual(int(serum_row["clicked_in_7d"]), 1)
+            self.assertEqual(str(serum_row["completed_product_type_7d"]), "serum")
+            self.assertEqual(str(serum_row["primary_target_source_7d"]), "step_completed_event")
+            self.assertEqual(int(serum_row["candidate_clicked_planned_target_in_7d"]), 1)
+            self.assertEqual(int(serum_row["candidate_completed_in_7d"]), 1)
+            self.assertEqual(int(serum_row["candidate_bought_first_in_7d"]), 1)
+            self.assertEqual(int(serum_row["candidate_primary_target_in_7d"]), 1)
+            self.assertEqual(int(cleanser_row["candidate_bought_any_in_14d"]), 1)
+            self.assertEqual(int(cleanser_row["candidate_primary_target_in_14d"]), 0)
+
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(str(metadata.get("label_protocol_version")), "v5_exposure_funnel")
+            self.assertEqual(list(metadata.get("outcome_windows_days") or []), [7, 14, 30])
+            summary_7d = (metadata.get("outcome_window_summary") or {}).get("7") or {}
+            summary_30d = (metadata.get("outcome_window_summary") or {}).get("30") or {}
+            self.assertEqual(int(summary_7d.get("clicked_episodes", 0)), 1)
+            self.assertEqual(int(summary_7d.get("completed_episodes", 0)), 1)
+            self.assertEqual(
+                int((summary_7d.get("primary_target_source_distribution") or {}).get("step_completed_event", 0)),
+                1,
+            )
+            self.assertEqual(int(summary_30d.get("fully_observed_episodes", 0)), 0)
 
 
 class RoadmapNextStepV4AdapterTests(TestCase):
@@ -1352,6 +1417,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
             ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["shampoo"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="",
             ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
             ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_yes_test",
             ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
@@ -1375,6 +1441,67 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
         self.assertEqual(int(ml_meta.get("partial_match_step_index")), 1)
         self.assertIsNone(ml_meta.get("fallback_reason"))
         predict_mock.assert_called_once()
+
+    def test_partial_rollout_can_serve_candidate_model_path(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_partial_hair_canary_u1", password="pass12345")
+        self._create_haircare_products("canary")
+
+        def _artifact_summary(path: str | None):
+            raw = str(path or "")
+            if raw == "C:/tmp/roadmap_nextstep_semantic_v4.pkl":
+                return {
+                    "model_version": "semantic_v4_canary",
+                    "selected_feature_set": "full",
+                }
+            return {
+                "model_version": "active_v4",
+                "selected_feature_set": "baseline_only",
+            }
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V3_ENABLED=False,
+            ROADMAP_PLANNER_V1_MODE="off",
+            ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+            ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["shampoo"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["1"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_canary_test",
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="C:/tmp/roadmap_nextstep_semantic_v4.pkl",
+            ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH="C:/tmp/roadmap_nextstep_semantic_v4.pkl",
+            ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD=0.1,
+        ), patch(
+            "roadmap_app.services.v4_min_lift_guard_status",
+            return_value={"passed": True, "reason": "ok"},
+        ), patch(
+            "roadmap_app.services.v4_category_staged_rollout_status",
+            side_effect=lambda cat: self._hold_status(cat),
+        ), patch(
+            "roadmap_app.services.predict_next_product_types",
+        ) as active_mock, patch(
+            "roadmap_app.services.predict_next_product_types_for_model_path",
+            return_value=[{"candidate_type": "shampoo", "score": 0.95}],
+        ) as candidate_mock, patch(
+            "roadmap_app.services.nextstep_model_artifact_summary",
+            side_effect=_artifact_summary,
+        ):
+            plan = refresh_roadmap(user, category="haircare", post_ctx=None)
+
+        ml_meta = (plan.meta or {}).get("ml") if isinstance(plan.meta, dict) else {}
+        shadow_meta = ml_meta.get("shadow") or {}
+        self.assertEqual(str(ml_meta.get("decision")), "model_used")
+        self.assertEqual(str(ml_meta.get("rollout_mode")), "partial")
+        self.assertEqual(str(ml_meta.get("model_slot")), "partial_candidate")
+        self.assertEqual(str(ml_meta.get("model_path")), "C:/tmp/roadmap_nextstep_semantic_v4.pkl")
+        self.assertEqual(str(ml_meta.get("model_version")), "semantic_v4_canary")
+        self.assertEqual(str(ml_meta.get("selected_feature_set")), "full")
+        self.assertFalse(bool(shadow_meta.get("enabled")))
+        self.assertEqual(str(shadow_meta.get("reason")), "shadow_same_as_active")
+        active_mock.assert_not_called()
+        candidate_mock.assert_called_once()
 
     def test_non_makeup_category_is_unaffected_by_partial_makeup_rollout(self):
         User = get_user_model()
@@ -1501,6 +1628,8 @@ class RoadmapNextStepV4TrainingTests(TestCase):
                             "candidate_type": candidate,
                             "label": label,
                             "y": int(candidate == label),
+                            "candidate_primary_target_in_14d": int(candidate == label),
+                            "window_14d_fully_observed": 1,
                             "last1_product_type": "serum" if label == "serum" else "cleanser",
                             "last2_product_type": "__none__",
                             "last3_product_type": "__none__",
@@ -1611,6 +1740,8 @@ class RoadmapNextStepV4TrainingTests(TestCase):
             },
             "owned_feature_columns": [],
             "owned_feature_map": {},
+            "label_protocol_version": "v5_exposure_funnel",
+            "outcome_windows_days": [7, 14, 30],
             "baselines": {
                 "splits": {
                     "val": {
@@ -1681,3 +1812,49 @@ class RoadmapNextStepV4TrainingTests(TestCase):
             self.assertIn("full", report["feature_ablation"])
             self.assertIn("baseline_only", report["feature_ablation"])
             self.assertEqual(str(report.get("estimator")), "lightgbm")
+
+    def test_training_supports_alternate_target_column(self):
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        with TemporaryDirectory() as data_tmp, TemporaryDirectory() as model_tmp:
+            data_dir = Path(data_tmp)
+            model_dir = Path(model_tmp)
+            self._write_train_fixture(data_dir)
+
+            fake_lightgbm = types.ModuleType("lightgbm")
+            fake_lightgbm.LGBMRanker = FakeLGBMRanker
+            with patch(
+                "admin_tools.management.commands.train_roadmap_nextstep_model_v4._module_available",
+                side_effect=lambda name: name == "lightgbm",
+            ), patch.dict(sys.modules, {"lightgbm": fake_lightgbm}):
+                call_command(
+                    "train_roadmap_nextstep_model_v4",
+                    data_dir=str(data_dir),
+                    model_dir=str(model_dir),
+                    estimator="lightgbm",
+                    trials=1,
+                    negative_samples_per_episode=2,
+                    target_column="candidate_primary_target_in_14d",
+                )
+
+            metadata = json.loads((model_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(str(metadata.get("target_column")), "candidate_primary_target_in_14d")
+            self.assertEqual(str(metadata.get("label_protocol_version")), "v5_exposure_funnel")
+            self.assertEqual(list(metadata.get("outcome_windows_days") or []), [7, 14, 30])
+            baseline_comparison = metadata.get("baseline_comparison") or {}
+            runtime_guard = metadata.get("runtime_guard") or {}
+            self.assertFalse(bool(baseline_comparison.get("applicable", True)))
+            self.assertIn("legacy target 'y'", str(baseline_comparison.get("reason") or ""))
+            self.assertFalse(bool(runtime_guard.get("applicable", True)))
+            self.assertEqual(str(runtime_guard.get("status")), "experimental_target")
+
+            report = json.loads((model_dir / "eval_report.json").read_text(encoding="utf-8"))
+            self.assertEqual(str(report.get("target_column")), "candidate_primary_target_in_14d")
+            self.assertEqual(str(report.get("label_protocol_version")), "v5_exposure_funnel")
+            target_report_path = (
+                Path(__file__).resolve().parents[2]
+                / "reports"
+                / "roadmap_nextstep_v4_eval__candidate_primary_target_in_14d.json"
+            )
+            self.assertTrue(target_report_path.exists())

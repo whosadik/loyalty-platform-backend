@@ -13,7 +13,11 @@ from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from offers.models import OfferAssignment, OfferEvent
-from roadmap_app.ml_next_step import nextstep_model_artifact_summary, v4_category_staged_rollout_status
+from roadmap_app.ml_next_step import (
+    nextstep_model_artifact_summary,
+    predict_next_product_types_for_model_path,
+    v4_category_staged_rollout_status,
+)
 from roadmap_app.ml_planner import planner_model_artifact_summary
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
 from transactions.models import Transaction
@@ -33,6 +37,16 @@ def _safe_dict(value: Any) -> dict[str, Any]:
 
 def _safe_list(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def _normalize_product_ids(value: Any) -> list[int]:
+    out: list[int] = []
+    for item in _safe_list(value):
+        try:
+            out.append(int(item))
+        except Exception:
+            continue
+    return out
 
 
 def _to_int(value: Any) -> int | None:
@@ -295,30 +309,30 @@ def _top_prediction_token(rows: Any) -> str | None:
     return None
 
 
-def _shadow_outcome_summary(counter: Counter[str]) -> dict[str, Any]:
+def _challenger_outcome_summary(counter: Counter[str], *, challenger_label: str) -> dict[str, Any]:
     eligible = int(counter.get("eligible_plans", 0))
     active_hits = int(counter.get("active_hits", 0))
-    shadow_hits = int(counter.get("shadow_hits", 0))
+    challenger_hits = int(counter.get(f"{challenger_label}_hits", 0))
     both_hits = int(counter.get("both_hits", 0))
     active_only_hits = int(counter.get("active_only_hits", 0))
-    shadow_only_hits = int(counter.get("shadow_only_hits", 0))
+    challenger_only_hits = int(counter.get(f"{challenger_label}_only_hits", 0))
     neither_hits = int(counter.get("neither_hits", 0))
     active_rate = _rate(active_hits, eligible)
-    shadow_rate = _rate(shadow_hits, eligible)
+    challenger_rate = _rate(challenger_hits, eligible)
     delta = None
-    if active_rate is not None and shadow_rate is not None:
-        delta = shadow_rate - active_rate
+    if active_rate is not None and challenger_rate is not None:
+        delta = challenger_rate - active_rate
     return {
         "eligible_plans": eligible,
         "active_hits": active_hits,
-        "shadow_hits": shadow_hits,
+        f"{challenger_label}_hits": challenger_hits,
         "both_hits": both_hits,
         "active_only_hits": active_only_hits,
-        "shadow_only_hits": shadow_only_hits,
+        f"{challenger_label}_only_hits": challenger_only_hits,
         "neither_hits": neither_hits,
         "active_hit_rate": _round_or_none(active_rate),
-        "shadow_hit_rate": _round_or_none(shadow_rate),
-        "shadow_delta_vs_active": _round_or_none(delta),
+        f"{challenger_label}_hit_rate": _round_or_none(challenger_rate),
+        f"{challenger_label}_delta_vs_active": _round_or_none(delta),
     }
 
 
@@ -339,12 +353,13 @@ def _top_counter_rows(counter: Counter[str], *, limit: int = 3) -> list[dict[str
     return rows
 
 
-def _shadow_outcome_detail(
+def _challenger_outcome_detail(
     counter: Counter[str],
     *,
+    challenger_label: str,
     actual_outcomes: Counter[str] | None = None,
 ) -> dict[str, Any]:
-    summary = _shadow_outcome_summary(counter)
+    summary = _challenger_outcome_summary(counter, challenger_label=challenger_label)
     top_actual_outcomes = _top_counter_rows(actual_outcomes or Counter())
     summary["top_actual_outcomes"] = top_actual_outcomes
     summary["top_actual_outcomes_text"] = ", ".join(
@@ -357,6 +372,22 @@ def _shadow_outcome_detail(
         summary["dominant_actual_outcome"] = ""
         summary["dominant_actual_outcome_plans"] = 0
     return summary
+
+
+def _shadow_outcome_summary(counter: Counter[str]) -> dict[str, Any]:
+    return _challenger_outcome_summary(counter, challenger_label="shadow")
+
+
+def _shadow_outcome_detail(
+    counter: Counter[str],
+    *,
+    actual_outcomes: Counter[str] | None = None,
+) -> dict[str, Any]:
+    return _challenger_outcome_detail(
+        counter,
+        challenger_label="shadow",
+        actual_outcomes=actual_outcomes,
+    )
 
 
 def _build_markdown(payload: dict[str, Any]) -> str:
@@ -574,6 +605,90 @@ def _build_markdown(payload: dict[str, Any]) -> str:
             [[k, v] for k, v in sorted(_safe_dict(runtime.get("disabled_reasons")).items(), key=lambda kv: (-kv[1], kv[0]))],
         )
     )
+    served_slots = _safe_dict(runtime.get("served_model_slots"))
+    lines.append("### served model slots")
+    lines.append(
+        _md_table(
+            ["model_slot", "model_used_plans"],
+            [[k, v] for k, v in sorted(_safe_dict(served_slots.get("slot_counts")).items(), key=lambda kv: (-kv[1], kv[0]))],
+        )
+    )
+    lines.append("### served model versions")
+    lines.append(
+        _md_table(
+            ["model_version", "model_used_plans"],
+            [
+                [k, v]
+                for k, v in sorted(_safe_dict(served_slots.get("model_version_counts")).items(), key=lambda kv: (-kv[1], kv[0]))
+            ],
+        )
+    )
+    lines.append("### served model slots by category")
+    lines.append(
+        _md_table(
+            ["category", "slot_counts"],
+            [
+                [
+                    cat,
+                    ", ".join(f"{slot}:{count}" for slot, count in sorted(_safe_dict(row).items(), key=lambda kv: (-kv[1], kv[0])))
+                    or "-",
+                ]
+                for cat, row in sorted(_safe_dict(served_slots.get("by_category")).items())
+            ],
+        )
+    )
+    lines.append("### model-used outcome by served slot")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "model_slot",
+                "plans",
+                "step_exposed",
+                "step_completed",
+                "step_completion_rate_pct",
+                "offer_redeem_rate_pct",
+            ],
+            [
+                [
+                    row.get("category"),
+                    row.get("model_slot"),
+                    row.get("plans", 0),
+                    row.get("step_exposed", 0),
+                    row.get("step_completed", 0),
+                    f"{_safe_number(row.get('step_completion_rate')) * 100.0:.2f}",
+                    f"{_safe_number(row.get('offer_redeem_rate')) * 100.0:.2f}",
+                ]
+                for row in _safe_list(served_slots.get("model_used_outcomes_by_slot"))[:15]
+            ],
+        )
+    )
+    lines.append("### model-used outcome by served slot and planned target")
+    lines.append(
+        _md_table(
+            [
+                "category",
+                "model_slot",
+                "planned_target_product_type",
+                "plans",
+                "step_exposed",
+                "step_completed",
+                "step_completion_rate_pct",
+            ],
+            [
+                [
+                    row.get("category"),
+                    row.get("model_slot"),
+                    row.get("planned_target_product_type"),
+                    row.get("plans", 0),
+                    row.get("step_exposed", 0),
+                    row.get("step_completed", 0),
+                    f"{_safe_number(row.get('step_completion_rate')) * 100.0:.2f}",
+                ]
+                for row in _safe_list(served_slots.get("model_used_outcomes_by_slot_and_planned_target"))[:15]
+            ],
+        )
+    )
     shadow = _safe_dict(runtime.get("shadow"))
     shadow_top1 = _safe_dict(shadow.get("top1_comparison"))
     lines.append("### shadow comparison")
@@ -756,6 +871,186 @@ def _build_markdown(payload: dict[str, Any]) -> str:
             ],
         )
     )
+    candidate_compare = _safe_dict(runtime.get("candidate_path_compare"))
+    if candidate_compare:
+        candidate_top1 = _safe_dict(candidate_compare.get("top1_comparison"))
+        lines.append("### candidate path compare")
+        lines.append(
+            _md_table(
+                ["metric", "value"],
+                [
+                    ["model_version", candidate_compare.get("model_version") or "-"],
+                    ["selected_feature_set", candidate_compare.get("selected_feature_set") or "-"],
+                    ["plans_scanned", candidate_compare.get("plans_scanned", 0)],
+                    ["predicted_plans", candidate_compare.get("predicted_plans", 0)],
+                    ["eligible_top1_comparisons", candidate_top1.get("eligible_plans", 0)],
+                    ["same_top1_plans", candidate_top1.get("same_top1_plans", 0)],
+                    ["different_top1_plans", candidate_top1.get("different_top1_plans", 0)],
+                    ["agreement_rate_pct", f"{_safe_number(candidate_top1.get('agreement_rate')) * 100.0:.2f}"],
+                ],
+            )
+        )
+        lines.append("### candidate path skipped reasons")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [
+                    [k, v]
+                    for k, v in sorted(_safe_dict(candidate_compare.get("skipped_counts")).items(), key=lambda kv: (-kv[1], kv[0]))
+                ],
+            )
+        )
+        lines.append("### candidate path by category")
+        lines.append(
+            _md_table(
+                [
+                    "category",
+                    "eligible_top1_comparisons",
+                    "same_top1_plans",
+                    "different_top1_plans",
+                    "agreement_rate_pct",
+                ],
+                [
+                    [
+                        cat,
+                        row.get("eligible_plans", 0),
+                        row.get("same_top1_plans", 0),
+                        row.get("different_top1_plans", 0),
+                        f"{_safe_number(row.get('agreement_rate')) * 100.0:.2f}",
+                    ]
+                    for cat, row in sorted(_safe_dict(candidate_compare.get("by_category")).items())
+                ],
+            )
+        )
+        lines.append("### top candidate-path swaps")
+        lines.append(
+            _md_table(
+                ["category", "active_top1", "candidate_top1", "plans"],
+                [
+                    [
+                        row.get("category"),
+                        row.get("active_top1"),
+                        row.get("candidate_top1"),
+                        row.get("plans"),
+                    ]
+                    for row in _safe_list(candidate_compare.get("top_swaps"))[:15]
+                ],
+            )
+        )
+        candidate_outcome = _safe_dict(candidate_compare.get("outcome_comparison"))
+        lines.append("### candidate path vs outcome")
+        lines.append(
+            _md_table(
+                ["metric", "value"],
+                [
+                    ["eligible_plans", candidate_outcome.get("eligible_plans", 0)],
+                    ["active_hits", candidate_outcome.get("active_hits", 0)],
+                    ["candidate_hits", candidate_outcome.get("candidate_hits", 0)],
+                    ["both_hits", candidate_outcome.get("both_hits", 0)],
+                    ["active_only_hits", candidate_outcome.get("active_only_hits", 0)],
+                    ["candidate_only_hits", candidate_outcome.get("candidate_only_hits", 0)],
+                    ["neither_hits", candidate_outcome.get("neither_hits", 0)],
+                    ["active_hit_rate_pct", f"{_safe_number(candidate_outcome.get('active_hit_rate')) * 100.0:.2f}"],
+                    ["candidate_hit_rate_pct", f"{_safe_number(candidate_outcome.get('candidate_hit_rate')) * 100.0:.2f}"],
+                    [
+                        "candidate_delta_vs_active_pp",
+                        f"{_safe_number(candidate_outcome.get('candidate_delta_vs_active')) * 100.0:.2f}",
+                    ],
+                ],
+            )
+        )
+        lines.append("### candidate path vs outcome by category")
+        lines.append(
+            _md_table(
+                [
+                    "category",
+                    "eligible_plans",
+                    "active_hits",
+                    "candidate_hits",
+                    "active_only_hits",
+                    "candidate_only_hits",
+                    "active_hit_rate_pct",
+                    "candidate_hit_rate_pct",
+                    "candidate_delta_vs_active_pp",
+                ],
+                [
+                    [
+                        cat,
+                        row.get("eligible_plans", 0),
+                        row.get("active_hits", 0),
+                        row.get("candidate_hits", 0),
+                        row.get("active_only_hits", 0),
+                        row.get("candidate_only_hits", 0),
+                        f"{_safe_number(row.get('active_hit_rate')) * 100.0:.2f}",
+                        f"{_safe_number(row.get('candidate_hit_rate')) * 100.0:.2f}",
+                        f"{_safe_number(row.get('candidate_delta_vs_active')) * 100.0:.2f}",
+                    ]
+                    for cat, row in sorted(_safe_dict(candidate_outcome.get("by_category")).items())
+                ],
+            )
+        )
+        lines.append("### candidate path outcome by predicted top1")
+        lines.append(
+            _md_table(
+                [
+                    "category",
+                    "candidate_top1",
+                    "eligible_plans",
+                    "dominant_actual_outcome",
+                    "top_actual_outcomes",
+                    "active_hit_rate_pct",
+                    "candidate_hit_rate_pct",
+                    "candidate_delta_vs_active_pp",
+                ],
+                [
+                    [
+                        row.get("category"),
+                        row.get("candidate_top1"),
+                        row.get("eligible_plans", 0),
+                        row.get("dominant_actual_outcome") or "-",
+                        row.get("top_actual_outcomes_text") or "-",
+                        f"{_safe_number(row.get('active_hit_rate')) * 100.0:.2f}",
+                        f"{_safe_number(row.get('candidate_hit_rate')) * 100.0:.2f}",
+                        f"{_safe_number(row.get('candidate_delta_vs_active')) * 100.0:.2f}",
+                    ]
+                    for row in _safe_list(candidate_compare.get("outcome_by_candidate_top1"))[:15]
+                ],
+            )
+        )
+        lines.append("### candidate path outcome by swap pair")
+        lines.append(
+            _md_table(
+                [
+                    "category",
+                    "active_top1",
+                    "candidate_top1",
+                    "eligible_plans",
+                    "dominant_actual_outcome",
+                    "top_actual_outcomes",
+                    "active_only_hits",
+                    "candidate_only_hits",
+                    "active_hit_rate_pct",
+                    "candidate_hit_rate_pct",
+                    "candidate_delta_vs_active_pp",
+                ],
+                [
+                    [
+                        row.get("category"),
+                        row.get("active_top1"),
+                        row.get("candidate_top1"),
+                        row.get("eligible_plans", 0),
+                        row.get("dominant_actual_outcome") or "-",
+                        row.get("top_actual_outcomes_text") or "-",
+                        row.get("active_only_hits", 0),
+                        row.get("candidate_only_hits", 0),
+                        f"{_safe_number(row.get('active_hit_rate')) * 100.0:.2f}",
+                        f"{_safe_number(row.get('candidate_hit_rate')) * 100.0:.2f}",
+                        f"{_safe_number(row.get('candidate_delta_vs_active')) * 100.0:.2f}",
+                    ]
+                    for row in _safe_list(candidate_compare.get("outcome_by_swap_pair"))[:15]
+                ],
+            )
+        )
     lines.append("")
 
     lines.append("## 8) Model artifacts")
@@ -856,11 +1151,19 @@ class Command(BaseCommand):
         plan_user: dict[int, int] = {}
         plan_updated: dict[int, Any] = {}
         plan_decision: dict[int, str] = {}
+        plan_model_slot: dict[int, str] = {}
+        plan_planned_target_product_type: dict[int, str] = {}
+        plan_planned_target_step_index: dict[int, int] = {}
+        plan_context_product_ids: dict[int, list[int]] = {}
+        plan_model_version: dict[int, str] = {}
         cohort_by_plan: dict[int, str] = {}
         decision_counts: Counter[str] = Counter()
         fallback_reason_counts: Counter[str] = Counter()
         disabled_reason_counts: Counter[str] = Counter()
         mode_counts: Counter[str] = Counter()
+        served_model_slot_counts: Counter[str] = Counter()
+        served_model_version_counts: Counter[str] = Counter()
+        served_model_slot_by_category: dict[str, Counter[str]] = defaultdict(Counter)
         shadow_reason_counts: Counter[str] = Counter()
         shadow_model_version_counts: Counter[str] = Counter()
         shadow_meta_plan_ids: set[int] = set()
@@ -888,6 +1191,19 @@ class Command(BaseCommand):
             plan_user[pid] = user_id
             plan_updated[pid] = row["updated_at"]
             plan_decision[pid] = decision
+            plan_model_slot[pid] = str(ml.get("model_slot") or "active").strip().lower() or "active"
+            active_top1_by_plan[pid] = str(_top_prediction_token(ml.get("predictions")) or "")
+            plan_planned_target_product_type[pid] = (
+                str(ml.get("planned_target_product_type") or "").strip().lower() or "__none__"
+            )
+            plan_planned_target_step_index[pid] = int(_to_int(ml.get("planned_target_step_index")) or 0)
+            plan_context_product_ids[pid] = _normalize_product_ids(
+                _safe_dict(meta.get("context")).get("post_ctx_product_ids")
+            )
+            plan_model_version[pid] = (
+                str(ml.get("model_version") or "__missing_model_version__").strip()
+                or "__missing_model_version__"
+            )
 
             decision_counts[decision] += 1
             if decision == "fallback":
@@ -895,9 +1211,12 @@ class Command(BaseCommand):
             elif decision == "disabled":
                 disabled_reason_counts[str(ml.get("disabled_reason") or "__missing_reason__")] += 1
             mode_counts[str(ml.get("mode") or "none")] += 1
+            if decision == "model_used":
+                served_model_slot_counts[plan_model_slot[pid]] += 1
+                served_model_version_counts[plan_model_version[pid]] += 1
+                served_model_slot_by_category[cat][plan_model_slot[pid]] += 1
 
             if shadow:
-                active_top1_by_plan[pid] = str(_top_prediction_token(ml.get("predictions")) or "")
                 shadow_top1_by_plan[pid] = str(_top_prediction_token(shadow.get("predictions")) or "")
                 shadow_enabled_by_plan[pid] = bool(shadow.get("enabled"))
                 shadow_meta_plan_ids.add(pid)
@@ -952,22 +1271,43 @@ class Command(BaseCommand):
         }
 
         plan_step_product_types: dict[int, set[str]] = defaultdict(set)
+        plan_step_candidate_types: dict[int, list[str]] = defaultdict(list)
         plan_step_index_buckets: dict[int, set[str]] = defaultdict(set)
         step_meta: dict[int, dict[str, Any]] = {}
+        seen_step_types_by_plan: dict[int, set[str]] = defaultdict(set)
         if analysis_plan_ids:
-            step_rows = RoadmapStep.objects.filter(plan_id__in=analysis_plan_ids).values(
+            step_rows = (
+                RoadmapStep.objects.filter(plan_id__in=analysis_plan_ids)
+                .order_by("plan_id", "step_index", "id")
+                .values(
                 "id",
                 "plan_id",
                 "step_index",
                 "product_type",
+                "status",
+                )
             )
             for row in step_rows:
                 sid = int(row["id"])
                 pid = int(row["plan_id"])
-                product_type = str(row["product_type"] or "").strip() or "__unknown__"
-                idx_bucket = _step_index_bucket(_to_int(row.get("step_index")))
+                product_type = str(row["product_type"] or "").strip().lower() or "__unknown__"
+                step_index = int(_to_int(row.get("step_index")) or 0)
+                status = str(row.get("status") or "").strip()
+                idx_bucket = _step_index_bucket(step_index)
                 plan_step_product_types[pid].add(product_type)
                 plan_step_index_buckets[pid].add(idx_bucket)
+                if product_type and product_type not in seen_step_types_by_plan[pid]:
+                    seen_step_types_by_plan[pid].add(product_type)
+                    plan_step_candidate_types[pid].append(product_type)
+                planned_target_product_type = str(plan_planned_target_product_type.get(pid) or "").strip().lower()
+                if status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}:
+                    if planned_target_product_type in {"", "__none__"}:
+                        plan_planned_target_product_type[pid] = product_type
+                        plan_planned_target_step_index[pid] = step_index
+                    elif plan_planned_target_step_index.get(pid, 0) <= 0 and planned_target_product_type == product_type:
+                        plan_planned_target_step_index[pid] = step_index
+                elif plan_planned_target_step_index.get(pid, 0) <= 0 and planned_target_product_type == product_type:
+                    plan_planned_target_step_index[pid] = step_index
                 step_meta[sid] = {
                     "plan_id": pid,
                     "category": plan_category.get(pid, "__unknown__"),
@@ -1698,7 +2038,60 @@ class Command(BaseCommand):
                 policy="Policy C - skincare partial",
                 category_partial_allow={"skincare": set(partial_candidate_plan_ids.get("skincare", set()))},
             ),
+            _simulate_policy(
+                policy="Policy D - haircare partial",
+                category_partial_allow={"haircare": set(partial_candidate_plan_ids.get("haircare", set()))},
+            ),
         ]
+
+        served_model_slot_outcomes: dict[tuple[str, str], dict[str, Any]] = defaultdict(_new_bucket)
+        served_model_slot_target_outcomes: dict[tuple[str, str, str], dict[str, Any]] = defaultdict(_new_bucket)
+        for pid in sorted(model_plan_ids):
+            cat = str(plan_category.get(pid) or "__unknown__")
+            uid = int(plan_user.get(pid))
+            model_slot = str(plan_model_slot.get(pid) or "active")
+            planned_target = str(plan_planned_target_product_type.get(pid) or "__none__")
+
+            slot_bucket = served_model_slot_outcomes[(cat, model_slot)]
+            slot_bucket["plans"].add(pid)
+            slot_bucket["users"].add(uid)
+
+            target_bucket = served_model_slot_target_outcomes[(cat, model_slot, planned_target)]
+            target_bucket["plans"].add(pid)
+            target_bucket["users"].add(uid)
+
+            for metric_key, metric_value in (plan_metrics.get(pid) or {}).items():
+                numeric_value = float(metric_value or 0.0)
+                slot_bucket[str(metric_key)] += numeric_value
+                target_bucket[str(metric_key)] += numeric_value
+
+        served_model_slot_outcome_rows = [
+            {
+                "category": str(category),
+                "model_slot": str(model_slot),
+                **_serialize_bucket(bucket),
+            }
+            for (category, model_slot), bucket in sorted(
+                served_model_slot_outcomes.items(),
+                key=lambda kv: (-int(len(kv[1]["plans"])), kv[0][0], kv[0][1]),
+            )
+        ]
+        served_model_slot_target_outcome_rows = [
+            {
+                "category": str(category),
+                "model_slot": str(model_slot),
+                "planned_target_product_type": str(planned_target),
+                **_serialize_bucket(bucket),
+            }
+            for (category, model_slot, planned_target), bucket in sorted(
+                served_model_slot_target_outcomes.items(),
+                key=lambda kv: (-int(len(kv[1]["plans"])), kv[0][0], kv[0][1], kv[0][2]),
+            )
+        ]
+        served_model_slot_by_category_summary = {
+            str(cat): {str(slot): int(count) for slot, count in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))}
+            for cat, counter in sorted(served_model_slot_by_category.items(), key=lambda kv: kv[0])
+        }
 
         category_summary_rows: list[dict[str, Any]] = []
         for cat in categories:
@@ -1751,6 +2144,219 @@ class Command(BaseCommand):
             if planner_candidate_model_path
             else None
         )
+        candidate_path_compare: dict[str, Any] | None = None
+        if nextstep_candidate_model_path and bool(_safe_dict(nextstep_candidate_artifact).get("exists")):
+            candidate_top1_by_plan: dict[int, str] = {}
+            candidate_skipped_counts: Counter[str] = Counter()
+            candidate_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+            candidate_swap_counts: Counter[tuple[str, str, str]] = Counter()
+            candidate_top1_same_plan_ids: set[int] = set()
+            candidate_top1_diff_plan_ids: set[int] = set()
+
+            for pid in model_plan_ids:
+                active_top1 = str(active_top1_by_plan.get(pid) or "").strip().lower()
+                if not active_top1:
+                    candidate_skipped_counts["missing_active_top1"] += 1
+                    continue
+                candidate_types = list(plan_step_candidate_types.get(pid) or [])
+                if not candidate_types:
+                    candidate_skipped_counts["no_candidate_types"] += 1
+                    continue
+                cat = str(plan_category.get(pid) or "").strip().lower() or "__unknown__"
+                planned_target_product_type = str(plan_planned_target_product_type.get(pid) or "").strip().lower()
+                planned_target_step_index = int(plan_planned_target_step_index.get(pid) or 0)
+                predictions = predict_next_product_types_for_model_path(
+                    nextstep_candidate_model_path,
+                    user=int(plan_user.get(pid) or 0),
+                    context_product_ids=list(plan_context_product_ids.get(pid) or []),
+                    category=cat,
+                    planned_target_product_type=(
+                        None if planned_target_product_type in {"", "__none__"} else planned_target_product_type
+                    ),
+                    planned_target_step_index=(None if planned_target_step_index <= 0 else planned_target_step_index),
+                    candidate_types=candidate_types,
+                )
+                candidate_top1 = str(_top_prediction_token(predictions) or "").strip().lower()
+                if not candidate_top1:
+                    candidate_skipped_counts["no_predictions"] += 1
+                    continue
+                candidate_top1_by_plan[pid] = candidate_top1
+                candidate_by_category[cat]["eligible_plans"] += 1
+                if active_top1 == candidate_top1:
+                    candidate_top1_same_plan_ids.add(pid)
+                    candidate_by_category[cat]["same_top1_plans"] += 1
+                else:
+                    candidate_top1_diff_plan_ids.add(pid)
+                    candidate_by_category[cat]["different_top1_plans"] += 1
+                    candidate_swap_counts[(cat, active_top1, candidate_top1)] += 1
+
+            candidate_by_category_summary = {
+                str(cat): {
+                    "eligible_plans": int(counter.get("eligible_plans", 0)),
+                    "same_top1_plans": int(counter.get("same_top1_plans", 0)),
+                    "different_top1_plans": int(counter.get("different_top1_plans", 0)),
+                    "agreement_rate": _round_or_none(
+                        _rate(counter.get("same_top1_plans", 0), counter.get("eligible_plans", 0))
+                    ),
+                }
+                for cat, counter in sorted(candidate_by_category.items(), key=lambda kv: kv[0])
+            }
+            candidate_top_swaps = [
+                {
+                    "category": str(category),
+                    "active_top1": str(active_top1),
+                    "candidate_top1": str(candidate_top1),
+                    "plans": int(count),
+                }
+                for (category, active_top1, candidate_top1), count in sorted(
+                    candidate_swap_counts.items(),
+                    key=lambda kv: (-kv[1], kv[0][0], kv[0][1], kv[0][2]),
+                )
+            ]
+
+            def _actual_outcome_for_plan(plan_id: int) -> str | None:
+                start_key = latest_plan_refresh_key.get(plan_id)
+                if start_key is None:
+                    start_key = _event_key(plan_updated.get(plan_id), 0)
+                completion_rows = sorted(
+                    completion_events_by_plan.get(plan_id, []),
+                    key=lambda item: _event_key(item[0], item[1]),
+                )
+                for created_at, event_id, product_type, _matched_by in completion_rows:
+                    if _event_key(created_at, event_id) < start_key:
+                        continue
+                    if str(product_type or "").strip():
+                        return str(product_type).strip().lower()
+                return None
+
+            candidate_outcome_counts: Counter[str] = Counter()
+            candidate_outcome_by_category: dict[str, Counter[str]] = defaultdict(Counter)
+            candidate_outcome_by_top1: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+            candidate_outcome_actuals_by_top1: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
+            candidate_outcome_by_swap_pair: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
+            candidate_outcome_actuals_by_swap_pair: dict[tuple[str, str, str], Counter[str]] = defaultdict(Counter)
+            for pid, candidate_top1 in candidate_top1_by_plan.items():
+                active_top1 = str(active_top1_by_plan.get(pid) or "").strip().lower()
+                if not active_top1:
+                    continue
+                actual_outcome = _actual_outcome_for_plan(pid)
+                if not actual_outcome:
+                    continue
+                cat = str(plan_category.get(pid) or "__unknown__")
+                candidate_outcome_counts["eligible_plans"] += 1
+                candidate_outcome_by_category[cat]["eligible_plans"] += 1
+                top1_key = (cat, candidate_top1)
+                candidate_outcome_by_top1[top1_key]["eligible_plans"] += 1
+                candidate_outcome_actuals_by_top1[top1_key][actual_outcome] += 1
+                active_hit = active_top1 == actual_outcome
+                candidate_hit = candidate_top1 == actual_outcome
+                if active_hit:
+                    candidate_outcome_counts["active_hits"] += 1
+                    candidate_outcome_by_category[cat]["active_hits"] += 1
+                    candidate_outcome_by_top1[top1_key]["active_hits"] += 1
+                if candidate_hit:
+                    candidate_outcome_counts["candidate_hits"] += 1
+                    candidate_outcome_by_category[cat]["candidate_hits"] += 1
+                    candidate_outcome_by_top1[top1_key]["candidate_hits"] += 1
+                if active_hit and candidate_hit:
+                    candidate_outcome_counts["both_hits"] += 1
+                    candidate_outcome_by_category[cat]["both_hits"] += 1
+                    candidate_outcome_by_top1[top1_key]["both_hits"] += 1
+                elif active_hit and not candidate_hit:
+                    candidate_outcome_counts["active_only_hits"] += 1
+                    candidate_outcome_by_category[cat]["active_only_hits"] += 1
+                    candidate_outcome_by_top1[top1_key]["active_only_hits"] += 1
+                elif candidate_hit and not active_hit:
+                    candidate_outcome_counts["candidate_only_hits"] += 1
+                    candidate_outcome_by_category[cat]["candidate_only_hits"] += 1
+                    candidate_outcome_by_top1[top1_key]["candidate_only_hits"] += 1
+                else:
+                    candidate_outcome_counts["neither_hits"] += 1
+                    candidate_outcome_by_category[cat]["neither_hits"] += 1
+                    candidate_outcome_by_top1[top1_key]["neither_hits"] += 1
+                if active_top1 != candidate_top1:
+                    pair_key = (cat, active_top1, candidate_top1)
+                    candidate_outcome_by_swap_pair[pair_key]["eligible_plans"] += 1
+                    candidate_outcome_actuals_by_swap_pair[pair_key][actual_outcome] += 1
+                    if active_hit:
+                        candidate_outcome_by_swap_pair[pair_key]["active_hits"] += 1
+                    if candidate_hit:
+                        candidate_outcome_by_swap_pair[pair_key]["candidate_hits"] += 1
+                    if active_hit and candidate_hit:
+                        candidate_outcome_by_swap_pair[pair_key]["both_hits"] += 1
+                    elif active_hit and not candidate_hit:
+                        candidate_outcome_by_swap_pair[pair_key]["active_only_hits"] += 1
+                    elif candidate_hit and not active_hit:
+                        candidate_outcome_by_swap_pair[pair_key]["candidate_only_hits"] += 1
+                    else:
+                        candidate_outcome_by_swap_pair[pair_key]["neither_hits"] += 1
+
+            candidate_outcome_summary = _challenger_outcome_detail(
+                candidate_outcome_counts,
+                challenger_label="candidate",
+            )
+            candidate_outcome_summary["by_category"] = {
+                str(cat): _challenger_outcome_detail(counter, challenger_label="candidate")
+                for cat, counter in sorted(candidate_outcome_by_category.items(), key=lambda kv: kv[0])
+            }
+            candidate_outcome_by_top1_rows = [
+                {
+                    "category": str(category),
+                    "candidate_top1": str(candidate_top1),
+                    **_challenger_outcome_detail(
+                        counter,
+                        challenger_label="candidate",
+                        actual_outcomes=candidate_outcome_actuals_by_top1.get((category, candidate_top1)),
+                    ),
+                }
+                for (category, candidate_top1), counter in sorted(
+                    candidate_outcome_by_top1.items(),
+                    key=lambda kv: (-int(kv[1].get("eligible_plans", 0)), kv[0][0], kv[0][1]),
+                )
+            ]
+            candidate_outcome_by_swap_pair_rows = [
+                {
+                    "category": str(category),
+                    "active_top1": str(active_top1),
+                    "candidate_top1": str(candidate_top1),
+                    **_challenger_outcome_detail(
+                        counter,
+                        challenger_label="candidate",
+                        actual_outcomes=candidate_outcome_actuals_by_swap_pair.get(
+                            (category, active_top1, candidate_top1)
+                        ),
+                    ),
+                }
+                for (category, active_top1, candidate_top1), counter in sorted(
+                    candidate_outcome_by_swap_pair.items(),
+                    key=lambda kv: (-int(kv[1].get("eligible_plans", 0)), kv[0][0], kv[0][1], kv[0][2]),
+                )
+            ]
+
+            candidate_path_compare = {
+                "model_path": str(_safe_dict(nextstep_candidate_artifact).get("model_path") or nextstep_candidate_model_path),
+                "model_version": str(_safe_dict(nextstep_candidate_artifact).get("model_version") or ""),
+                "selected_feature_set": str(_safe_dict(nextstep_candidate_artifact).get("selected_feature_set") or ""),
+                "plans_scanned": int(len(model_plan_ids)),
+                "predicted_plans": int(len(candidate_top1_by_plan)),
+                "skipped_counts": {
+                    str(k): int(v)
+                    for k, v in sorted(candidate_skipped_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+                "top1_comparison": {
+                    "eligible_plans": int(len(candidate_top1_by_plan)),
+                    "same_top1_plans": int(len(candidate_top1_same_plan_ids)),
+                    "different_top1_plans": int(len(candidate_top1_diff_plan_ids)),
+                    "agreement_rate": _round_or_none(
+                        _rate(len(candidate_top1_same_plan_ids), len(candidate_top1_by_plan))
+                    ),
+                },
+                "by_category": candidate_by_category_summary,
+                "top_swaps": candidate_top_swaps[:25],
+                "outcome_comparison": candidate_outcome_summary,
+                "outcome_by_candidate_top1": candidate_outcome_by_top1_rows[:25],
+                "outcome_by_swap_pair": candidate_outcome_by_swap_pair_rows[:25],
+            }
         shadow_by_category_summary = {
             str(cat): {
                 "plans_with_shadow_meta": int(counter.get("plans_with_shadow_meta", 0)),
@@ -1776,6 +2382,21 @@ class Command(BaseCommand):
                 key=lambda kv: (-kv[1], kv[0][0], kv[0][1], kv[0][2]),
             )
         ]
+        def _actual_outcome_for_plan(plan_id: int) -> str | None:
+            start_key = latest_plan_refresh_key.get(plan_id)
+            if start_key is None:
+                start_key = _event_key(plan_updated.get(plan_id), 0)
+            completion_rows = sorted(
+                completion_events_by_plan.get(plan_id, []),
+                key=lambda item: _event_key(item[0], item[1]),
+            )
+            for created_at, event_id, product_type, _matched_by in completion_rows:
+                if _event_key(created_at, event_id) < start_key:
+                    continue
+                if str(product_type or "").strip():
+                    return str(product_type).strip().lower()
+            return None
+
         shadow_outcome_counts: Counter[str] = Counter()
         shadow_outcome_by_category: dict[str, Counter[str]] = defaultdict(Counter)
         shadow_outcome_by_shadow_top1: dict[tuple[str, str], Counter[str]] = defaultdict(Counter)
@@ -1789,20 +2410,7 @@ class Command(BaseCommand):
             shadow_top1 = str(shadow_top1_by_plan.get(pid) or "").strip().lower()
             if not active_top1 or not shadow_top1:
                 continue
-            start_key = latest_plan_refresh_key.get(pid)
-            if start_key is None:
-                start_key = _event_key(plan_updated.get(pid), 0)
-            actual_outcome = None
-            completion_rows = sorted(
-                completion_events_by_plan.get(pid, []),
-                key=lambda item: _event_key(item[0], item[1]),
-            )
-            for created_at, event_id, product_type, _matched_by in completion_rows:
-                if _event_key(created_at, event_id) < start_key:
-                    continue
-                if str(product_type or "").strip():
-                    actual_outcome = str(product_type).strip().lower()
-                    break
+            actual_outcome = _actual_outcome_for_plan(pid)
             if not actual_outcome:
                 continue
             cat = str(plan_category.get(pid) or "__unknown__")
@@ -1929,6 +2537,19 @@ class Command(BaseCommand):
                     str(k): int(v)
                     for k, v in sorted(mode_counts.items(), key=lambda kv: (-kv[1], kv[0]))
                 },
+                "served_model_slots": {
+                    "slot_counts": {
+                        str(k): int(v)
+                        for k, v in sorted(served_model_slot_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "model_version_counts": {
+                        str(k): int(v)
+                        for k, v in sorted(served_model_version_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                    },
+                    "by_category": served_model_slot_by_category_summary,
+                    "model_used_outcomes_by_slot": served_model_slot_outcome_rows[:25],
+                    "model_used_outcomes_by_slot_and_planned_target": served_model_slot_target_outcome_rows[:50],
+                },
                 "shadow": {
                     "plans_with_shadow_meta": int(len(shadow_meta_plan_ids)),
                     "shadow_enabled_plans": int(len(shadow_enabled_plan_ids)),
@@ -1954,6 +2575,7 @@ class Command(BaseCommand):
                     "outcome_by_shadow_top1": shadow_outcome_by_shadow_top1_rows[:25],
                     "outcome_by_swap_pair": shadow_outcome_by_swap_pair_rows[:25],
                 },
+                "candidate_path_compare": candidate_path_compare,
             },
             "artifacts": {
                 "nextstep": {
@@ -1999,6 +2621,7 @@ class Command(BaseCommand):
                 "Artifact inventory shows active runtime model summaries plus optional candidate paths passed via CLI.",
                 "Shadow comparison uses stored active and shadow prediction lists from RoadmapPlan.meta.ml.",
                 "Shadow vs outcome compares top-1 active/shadow predictions to the first STEP_COMPLETED product_type after the latest PLAN_REFRESHED for that plan.",
+                "Candidate-path compare is a read-only simulation against --nextstep-candidate-model-path and does not write shadow metadata.",
             ],
         }
 

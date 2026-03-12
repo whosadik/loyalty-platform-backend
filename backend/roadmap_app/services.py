@@ -250,6 +250,16 @@ def _category_partial_rollout_state(
     return state
 
 
+def _partial_candidate_model_path(category: str | None = None) -> str:
+    category_norm = str(category or "").strip().lower()
+    if category_norm:
+        category_setting = f"ROADMAP_NEXTSTEP_V4_PARTIAL_{category_norm.upper()}_MODEL_PATH"
+        category_value = str(getattr(settings, category_setting, "") or "").strip()
+        if category_value:
+            return category_value
+    return str(getattr(settings, "ROADMAP_NEXTSTEP_V4_PARTIAL_MODEL_PATH", "") or "").strip()
+
+
 def _default_ml_mode_and_path() -> tuple[str, str]:
     use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
@@ -796,6 +806,22 @@ def _build_chain(
             chain=chain,
             purchased_types=purchased_types,
         )
+        active_model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or "")
+        partial_model_path = _partial_candidate_model_path(category)
+        partial_selected = bool(rollout_meta.get("rollout_selected"))
+        partial_active = str(rollout_meta.get("rollout_mode") or "") == "partial"
+        served_model_path = active_model_path
+        served_model_slot = "active"
+        if partial_active and partial_selected and partial_model_path:
+            served_model_path = partial_model_path
+            served_model_slot = "partial_candidate"
+        served_artifact = nextstep_model_artifact_summary(served_model_path)
+        served_model_meta = {
+            "model_path": served_model_path,
+            "model_version": str((served_artifact or {}).get("model_version") or ""),
+            "selected_feature_set": str((served_artifact or {}).get("selected_feature_set") or ""),
+            "model_slot": served_model_slot,
+        }
 
         if final_status == "DISABLE":
             rollout_reason = str(staged.get("reason") or rollout.get("reason") or "category_disabled")
@@ -811,12 +837,11 @@ def _build_chain(
                 "disabled_reason": disabled_reason,
                 "guard": None,
                 "category_guard": category_guard,
+                **served_model_meta,
                 **rollout_meta_disabled,
             }
             return chain, source_by_type, ml_predictions, ml_runtime
 
-        partial_selected = bool(rollout_meta.get("rollout_selected"))
-        partial_active = str(rollout_meta.get("rollout_mode") or "") == "partial"
         if final_status == "ENABLE":
             rollout_meta = {
                 **_default_rollout_meta(),
@@ -839,6 +864,7 @@ def _build_chain(
                 "disabled_reason": None,
                 "guard": None,
                 "category_guard": category_guard,
+                **served_model_meta,
                 **rollout_meta,
             }
             return chain, source_by_type, ml_predictions, ml_runtime
@@ -849,6 +875,7 @@ def _build_chain(
                 "disabled_reason": None,
                 "guard": None,
                 "category_guard": category_guard,
+                **served_model_meta,
                 **rollout_meta,
             }
             return chain, source_by_type, ml_predictions, ml_runtime
@@ -862,19 +889,31 @@ def _build_chain(
             "category_guard": category_guard,
             "planned_target_product_type": planned_target_product_type,
             "planned_target_step_index": planned_target_step_index,
+            **served_model_meta,
             **rollout_meta,
         }
         if not bool(guard.get("passed")):
             ml_runtime["fallback_reason"] = str(guard.get("reason") or "min_lift_guard_blocked")
             return chain, source_by_type, ml_predictions, ml_runtime
-        ml_predictions = predict_next_product_types(
-            user,
-            context_product_ids,
-            category,
-            planned_target_product_type=planned_target_product_type,
-            planned_target_step_index=planned_target_step_index,
-            candidate_types=chain,
-        )
+        if served_model_slot == "partial_candidate":
+            ml_predictions = predict_next_product_types_for_model_path(
+                served_model_path,
+                user=user,
+                context_product_ids=context_product_ids,
+                category=category,
+                planned_target_product_type=planned_target_product_type,
+                planned_target_step_index=planned_target_step_index,
+                candidate_types=chain,
+            )
+        else:
+            ml_predictions = predict_next_product_types(
+                user,
+                context_product_ids,
+                category,
+                planned_target_product_type=planned_target_product_type,
+                planned_target_step_index=planned_target_step_index,
+                candidate_types=chain,
+            )
         if not ml_predictions:
             ml_runtime["fallback_reason"] = "no_predictions"
             return chain, source_by_type, ml_predictions, ml_runtime
@@ -1298,9 +1337,17 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     else:
         model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or "")
         ml_mode = "legacy"
-    nextstep_artifact = nextstep_model_artifact_summary(model_path)
+    served_model_path = str(ml_runtime.get("model_path") or model_path or "")
+    served_model_version = str(ml_runtime.get("model_version") or "")
+    served_feature_set = str(ml_runtime.get("selected_feature_set") or "")
+    served_model_slot = str(ml_runtime.get("model_slot") or "active")
+    nextstep_artifact = nextstep_model_artifact_summary(served_model_path)
+    if not served_model_version:
+        served_model_version = str((nextstep_artifact or {}).get("model_version") or "")
+    if not served_feature_set:
+        served_feature_set = str((nextstep_artifact or {}).get("selected_feature_set") or "")
     shadow_model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH", "") or "").strip()
-    shadow_enabled = bool(use_v4 and shadow_model_path and shadow_model_path != model_path)
+    shadow_enabled = bool(use_v4 and shadow_model_path and shadow_model_path != served_model_path)
     shadow_reason = "disabled"
     shadow_predictions: list[dict[str, Any]] = []
     shadow_artifact = None
@@ -1361,9 +1408,10 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "partial_match_product_type": ml_runtime.get("partial_match_product_type"),
             "partial_match_step_index": ml_runtime.get("partial_match_step_index"),
             "mode": ml_mode,
-            "model_path": model_path,
-            "model_version": str((nextstep_artifact or {}).get("model_version") or ""),
-            "selected_feature_set": str((nextstep_artifact or {}).get("selected_feature_set") or ""),
+            "model_path": served_model_path,
+            "model_version": served_model_version,
+            "selected_feature_set": served_feature_set,
+            "model_slot": served_model_slot,
             "planned_target_product_type": shadow_planned_target_product_type,
             "planned_target_step_index": shadow_planned_target_step_index,
             "shadow": {

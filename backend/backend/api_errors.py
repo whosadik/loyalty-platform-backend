@@ -1,4 +1,6 @@
-from rest_framework.exceptions import APIException, ValidationError
+from math import ceil
+
+from rest_framework.exceptions import APIException, Throttled, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
@@ -33,6 +35,15 @@ def exception_handler(exc, context):
     if isinstance(exc, ValidationError):
         code = "validation_error"
         message = "Validation error"
+    elif isinstance(exc, Throttled):
+        code = "rate_limited"
+        retry_after_seconds = ceil(exc.wait) if exc.wait is not None else None
+        message = (
+            f"Too many requests. Try again in {retry_after_seconds} seconds."
+            if retry_after_seconds is not None
+            else "Too many requests. Try again later."
+        )
+        details = {"retry_after_seconds": retry_after_seconds}
     elif isinstance(exc, APIException):
         if isinstance(data, dict) and "detail" in data and isinstance(data["detail"], str):
             message = data["detail"]

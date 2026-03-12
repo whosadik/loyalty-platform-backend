@@ -11,3 +11,19 @@ class NextOfferRateThrottle(UserRateThrottle):
 
 class CheckoutPreviewRateThrottle(UserRateThrottle):
     scope = "checkout_preview"
+
+
+class AuthLoginRateThrottle(UserRateThrottle):
+    scope = "auth_login"
+
+
+class AuthRegisterRateThrottle(UserRateThrottle):
+    scope = "auth_register"
+
+
+class AuthPasswordResetRequestRateThrottle(UserRateThrottle):
+    scope = "auth_password_reset_request"
+
+
+class AuthVerifyEmailResendRateThrottle(UserRateThrottle):
+    scope = "auth_verify_email_resend"
