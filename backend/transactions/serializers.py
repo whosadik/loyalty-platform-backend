@@ -42,6 +42,7 @@ class TransactionSnapshotMixin(serializers.Serializer):
     tier_upgraded = serializers.SerializerMethodField()
     next_offer = serializers.SerializerMethodField()
     next_roadmap_step = serializers.SerializerMethodField()
+    gift_card = serializers.SerializerMethodField()
 
     def _meta(self, obj: Transaction) -> dict:
         return obj.pricing_meta if isinstance(obj.pricing_meta, dict) else {}
@@ -61,6 +62,8 @@ class TransactionSnapshotMixin(serializers.Serializer):
         return str(self._meta(obj).get("type") or "purchase")
 
     def get_description(self, obj: Transaction) -> str:
+        if self.get_type(obj) == "gift_card_purchase":
+            return "Gift card purchase"
         item_count = sum(int(item.quantity or 0) for item in obj.items.all())
         if item_count <= 1:
             return "Покупка"
@@ -123,6 +126,9 @@ class TransactionSnapshotMixin(serializers.Serializer):
     def get_next_roadmap_step(self, obj: Transaction):
         return self._meta(obj).get("next_roadmap_step")
 
+    def get_gift_card(self, obj: Transaction):
+        return self._meta(obj).get("gift_card")
+
 
 class TransactionItemSerializer(serializers.ModelSerializer):
     product_summary = serializers.SerializerMethodField()
@@ -165,6 +171,7 @@ class TransactionSerializer(TransactionSnapshotMixin, serializers.ModelSerialize
             "tier_upgraded",
             "next_offer",
             "next_roadmap_step",
+            "gift_card",
             "items",
         ]
         read_only_fields = [
@@ -191,6 +198,7 @@ class TransactionSerializer(TransactionSnapshotMixin, serializers.ModelSerialize
             "tier_upgraded",
             "next_offer",
             "next_roadmap_step",
+            "gift_card",
         ]
 
     def create(self, validated_data):

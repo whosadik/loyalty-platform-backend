@@ -182,3 +182,133 @@ class ReplayRoadmapScenarioPackTests(TestCase):
                     for row in swap_rows
                 )
             )
+
+    @override_settings(
+        ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED=False,
+        ROADMAP_NEXTSTEP_V4_HAIRCARE_LEAVEIN_RERANK_ENABLED=False,
+    )
+    def test_replay_can_blend_candidate_with_teacher_model(self):
+        with TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            pack_dir = tmp_path / "scenario_pack"
+            active_model_path = tmp_path / "active.pkl"
+            candidate_model_path = tmp_path / "candidate.pkl"
+            teacher_model_path = tmp_path / "teacher.pkl"
+            active_model_path.write_text("placeholder", encoding="utf-8")
+            candidate_model_path.write_text("placeholder", encoding="utf-8")
+            teacher_model_path.write_text("placeholder", encoding="utf-8")
+
+            call_command(
+                "generate_roadmap_scenario_pack",
+                out_dir=str(pack_dir),
+                scenario_set="haircare_v1",
+                replicas=1,
+                days_ago_start=75,
+                id_base=952000,
+            )
+
+            active_artifact = {
+                "task": "roadmap_nextstep_v4_ranking",
+                "model": PlannedTargetModel(),
+                "preprocessor": None,
+                "model_type": "custom",
+                "feature_columns": [
+                    "category",
+                    "candidate_type",
+                    "planned_target_product_type",
+                    "anchor_product_type",
+                ],
+                "categorical_features": [
+                    "category",
+                    "candidate_type",
+                    "planned_target_product_type",
+                    "anchor_product_type",
+                ],
+                "numeric_features": [],
+                "candidate_types_by_category": {
+                    "haircare": [
+                        "shampoo",
+                        "conditioner",
+                        "hair_mask",
+                        "scalp_serum",
+                        "leave_in",
+                    ]
+                },
+                "rules_chain_by_category": {
+                    "haircare": [
+                        "shampoo",
+                        "conditioner",
+                        "hair_mask",
+                        "hair_oil",
+                        "scalp_serum",
+                        "leave_in",
+                    ]
+                },
+                "candidate_popularity_in_train_by_category": {
+                    "haircare": {
+                        "shampoo": 0.2,
+                        "conditioner": 0.2,
+                        "hair_mask": 0.2,
+                        "scalp_serum": 0.2,
+                        "leave_in": 0.2,
+                    }
+                },
+                "owned_feature_columns": [],
+                "owned_feature_map": {},
+                "temperature": 1.0,
+            }
+            candidate_artifact = dict(active_artifact)
+            candidate_artifact["model"] = ConditionerBiasModel()
+            teacher_artifact = dict(active_artifact)
+            teacher_artifact["model"] = PlannedTargetModel()
+
+            def _artifact_for_path(path):
+                raw = str(path)
+                if raw == str(active_model_path):
+                    return active_artifact
+                if raw == str(candidate_model_path):
+                    return candidate_artifact
+                if raw == str(teacher_model_path):
+                    return teacher_artifact
+                return None
+
+            def _summary_for_path(path):
+                name = Path(str(path)).stem
+                return {
+                    "model_path": str(path),
+                    "exists": True,
+                    "metadata_exists": False,
+                    "eval_report_exists": False,
+                    "model_version": name,
+                    "selected_feature_set": "test",
+                    "metrics_test": {},
+                    "runtime_guard": {},
+                }
+
+            out = StringIO()
+            with patch(
+                "admin_tools.management.commands.replay_roadmap_scenario_pack._load_model_for_path",
+                side_effect=_artifact_for_path,
+            ), patch(
+                "admin_tools.management.commands.replay_roadmap_scenario_pack.nextstep_model_artifact_summary",
+                side_effect=_summary_for_path,
+            ):
+                call_command(
+                    "replay_roadmap_scenario_pack",
+                    path=str(pack_dir),
+                    active_model_path=str(active_model_path),
+                    candidate_model_path=str(candidate_model_path),
+                    candidate_teacher_model_path=str(teacher_model_path),
+                    candidate_teacher_weight=2.0,
+                    format="json",
+                    stdout=out,
+                )
+
+            payload = json.loads(out.getvalue())
+            self.assertEqual(payload["params"]["candidate_teacher_model_path"], str(teacher_model_path))
+            self.assertAlmostEqual(float(payload["params"]["candidate_teacher_weight"]), 2.0, places=6)
+            self.assertEqual(payload["candidate_teacher_model"]["model_version"], "teacher")
+            compare = payload["compare"]
+            self.assertAlmostEqual(float(compare["candidate_expected_hit_rate"]), 1.0, places=6)
+            self.assertAlmostEqual(float(compare["candidate_outcome_hit_rate"]), 1.0, places=6)
+            self.assertEqual(len(payload["swap_rows"]), 0)

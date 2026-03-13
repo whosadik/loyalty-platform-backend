@@ -44,4 +44,5 @@ urlpatterns = [
     path("api/", include("admin_tools.urls")),
     path("api/", include("recs_analytics.urls")),
     path("api/", include("roadmap_app.urls")),
+    path("api/", include("gift_cards.urls")),
 ]

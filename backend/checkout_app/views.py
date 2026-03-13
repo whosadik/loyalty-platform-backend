@@ -41,6 +41,8 @@ from backend.throttles import CheckoutPreviewRateThrottle
 
 from audit.logging import log_event
 from audit.models import AuditEvent
+from gift_cards.models import GiftCard, GiftCardLedgerEntry
+from gift_cards.services import gift_card_snapshot, normalize_gift_card_code, refresh_gift_card_status
 from recs_analytics.services import attribute_purchase
 
 
@@ -98,6 +100,27 @@ def _product_unit_price_or_raise(prod: Product) -> Decimal:
     return unit_price
 
 
+def _load_redeemable_gift_card_or_raise(code: str, *, lock: bool = False, now=None) -> GiftCard:
+    normalized = normalize_gift_card_code(code)
+    if not normalized:
+        _raise_validation("Gift card code is required")
+
+    queryset = GiftCard.objects.select_for_update() if lock else GiftCard.objects.all()
+    try:
+        gift_card = queryset.get(code=normalized)
+    except GiftCard.DoesNotExist:
+        _raise_validation("Gift card not found")
+
+    refresh_gift_card_status(gift_card, now=now)
+    if gift_card.status == GiftCard.Status.EXPIRED:
+        _raise_validation("Gift card expired")
+    if gift_card.status == GiftCard.Status.REFUNDED:
+        _raise_validation("Gift card is no longer active")
+    if gift_card.remaining_amount <= 0:
+        _raise_validation("Gift card balance is empty")
+    return gift_card
+
+
 class CheckoutView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -123,6 +146,8 @@ class CheckoutView(APIView):
         idem = data.get("idempotency_key")
         if idem:
             prev = Transaction.objects.filter(user=request.user, idempotency_key=idem).first()
+            if prev and (prev.pricing_meta or {}).get("type") == "gift_card_purchase":
+                return Response({"ok": False, "message": "Duplicate idempotency_key"}, status=409)
             if prev and prev.pricing_meta:
                 log_event(
                     request=request,
@@ -151,6 +176,8 @@ class CheckoutView(APIView):
                 )
             except IntegrityError:
                 prev = Transaction.objects.get(user=request.user, idempotency_key=idem)
+                if (prev.pricing_meta or {}).get("type") == "gift_card_purchase":
+                    return Response({"ok": False, "message": "Duplicate idempotency_key"}, status=409)
                 if prev.pricing_meta:
                     log_event(
                         request=request,
@@ -204,6 +231,13 @@ class CheckoutView(APIView):
             requested_redeem_points = int(data.get("redeem_points") or 0)
             if requested_redeem_points > account.points_balance:
                 _raise_validation("Insufficient points")
+            gift_card = None
+            if data.get("gift_card_code"):
+                gift_card = _load_redeemable_gift_card_or_raise(
+                    data["gift_card_code"],
+                    lock=True,
+                    now=now,
+                )
 
             points_rate = get_effective_points_rate(
                 account.tier.points_rate if account.tier else DEFAULT_POINTS_RATE
@@ -243,6 +277,7 @@ class CheckoutView(APIView):
                 lines=lines,
                 points_rate=points_rate,
                 redeem_points=requested_redeem_points,
+                gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
             )
 
             if not calc["ok"]:
@@ -252,10 +287,12 @@ class CheckoutView(APIView):
             discount_amount = Decimal(calc["discount_amount"])
             net_total = Decimal(calc["net_total"])
             eligible_total = Decimal(calc["eligible_total"])
+            gift_card_applied_amount = Decimal(calc["gift_card_applied_amount"])
             points_redeemed = int(calc["points_redeemed"])
             base_points = int(calc["base_points"])
             points_earned = int(calc["estimated_points_earned"])
             points_multiplier = Decimal(calc["points_multiplier"])
+            gift_card_payload = None
 
             txn.total_amount = net_total
             txn.save(update_fields=["total_amount"])
@@ -287,6 +324,33 @@ class CheckoutView(APIView):
                 )
                 account.points_balance -= points_redeemed
 
+            if gift_card is not None:
+                balance_before = Decimal(gift_card.remaining_amount)
+                balance_after = max(balance_before - gift_card_applied_amount, Decimal("0"))
+                gift_card.remaining_amount = balance_after
+                gift_card.status = (
+                    GiftCard.Status.EXHAUSTED if balance_after <= 0 else GiftCard.Status.ACTIVE
+                )
+                gift_card.save(update_fields=["remaining_amount", "status", "updated_at"])
+                if gift_card_applied_amount > 0:
+                    GiftCardLedgerEntry.objects.create(
+                        gift_card=gift_card,
+                        entry_type=GiftCardLedgerEntry.EntryType.REDEEM,
+                        amount_delta=-gift_card_applied_amount,
+                        transaction=txn,
+                        meta={
+                            "txn_id": txn.id,
+                            "gross_total": str(gross_total),
+                            "net_total": str(net_total),
+                        },
+                    )
+                gift_card_payload = gift_card_snapshot(
+                    gift_card,
+                    applied_amount=gift_card_applied_amount,
+                    balance_before=balance_before,
+                    balance_after=balance_after,
+                )
+
             LoyaltyLedgerEntry.objects.create(
                 account=account,
                 entry_type=LoyaltyLedgerEntry.Type.EARN,
@@ -305,6 +369,7 @@ class CheckoutView(APIView):
                     "target": applied_target,
                     "eligible_total": str(eligible_total),
                     "points_redeemed": points_redeemed,
+                    "gift_card_applied_amount": str(gift_card_applied_amount),
                 },
             )
 
@@ -424,6 +489,7 @@ class CheckoutView(APIView):
                 "points_redeemed": points_redeemed,
                 "points_earned": points_earned,
                 "new_balance": account.points_balance,
+                "gift_card": gift_card_payload,
                 "tier": account.tier.name if account.tier else None,
                 "new_tier": account.tier.name if account.tier else None,
                 "tier_upgraded": bool(account.tier and account.tier.name != tier_before),
@@ -466,6 +532,7 @@ class CheckoutView(APIView):
                     "offer_applied": bool(applied_assignment_id),
                     "offer_assignment_id": applied_assignment_id,
                     "points_redeemed": points_redeemed,
+                    "gift_card_applied_amount": str(gift_card_applied_amount),
                     "points_earned": points_earned,
                     "items_count": len(created_items),
                     "channel": data.get("channel", "offline"),
@@ -495,8 +562,10 @@ class CheckoutLastView(APIView):
     def get(self, request):
         txn = (
             Transaction.objects.filter(user=request.user)
+            .filter(items__isnull=False)
             .prefetch_related("items__product")
             .order_by("-created_at", "-id")
+            .distinct()
             .first()
         )
         if not txn:
@@ -524,6 +593,7 @@ class CheckoutPreviewView(APIView):
                     "eligible_total": serializers.CharField(),
                     "estimated_points_earned": serializers.IntegerField(),
                     "points_redeemed": serializers.IntegerField(),
+                    "gift_card": serializers.JSONField(allow_null=True, required=False),
                     "balance_before": serializers.IntegerField(),
                     "balance_after_estimated": serializers.IntegerField(),
                     "tier": serializers.CharField(allow_null=True),
@@ -630,6 +700,16 @@ class CheckoutPreviewView(APIView):
         redeem_points = int(data.get("redeem_points") or 0)
         if redeem_points > account.points_balance:
             return Response({"ok": False, "message": "Insufficient points"}, status=400)
+        gift_card = None
+        if data.get("gift_card_code"):
+            try:
+                gift_card = _load_redeemable_gift_card_or_raise(data["gift_card_code"], now=timezone.now())
+            except ValidationError as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                return Response(
+                    {"ok": False, "message": detail.get("message", "Gift card invalid")},
+                    status=400,
+                )
 
         calc = apply_offer_to_totals(
             offer_type=offer_type,
@@ -638,6 +718,7 @@ class CheckoutPreviewView(APIView):
             lines=lines,
             points_rate=points_rate,
             redeem_points=redeem_points,
+            gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
         )
         if not calc["ok"]:
             return Response(calc, status=400)
@@ -646,10 +727,21 @@ class CheckoutPreviewView(APIView):
         discount_amount = Decimal(calc["discount_amount"])
         net_total = Decimal(calc["net_total"])
         eligible_total = Decimal(calc["eligible_total"])
+        gift_card_applied_amount = Decimal(calc["gift_card_applied_amount"])
         points_redeemed = int(calc["points_redeemed"])
         est_points = int(calc["estimated_points_earned"])
 
         new_balance_est = account.points_balance - points_redeemed + est_points
+        gift_card_payload = None
+        if gift_card is not None:
+            balance_before = Decimal(gift_card.remaining_amount)
+            balance_after = max(balance_before - gift_card_applied_amount, Decimal("0"))
+            gift_card_payload = gift_card_snapshot(
+                gift_card,
+                applied_amount=gift_card_applied_amount,
+                balance_before=balance_before,
+                balance_after=balance_after,
+            )
 
         return Response({
             "ok": True,
@@ -663,6 +755,7 @@ class CheckoutPreviewView(APIView):
             "points_rate": str(points_rate),
             "estimated_points_earned": est_points,
             "points_redeemed": points_redeemed,
+            "gift_card": gift_card_payload,
             "balance_before": account.points_balance,
             "balance_after_estimated": new_balance_est,
             "tier": account.tier.name if account.tier else None,

@@ -1,5 +1,6 @@
 from rest_framework import serializers
 
+from gift_cards.serializers import GiftCardSnapshotSerializer
 from roadmap_app.serializers import RoadmapStepSnapshotSerializer
 
 
@@ -15,6 +16,7 @@ class CheckoutRequestSerializer(serializers.Serializer):
 
     apply_assignment_id = serializers.IntegerField(required=False)
     redeem_points = serializers.IntegerField(required=False, min_value=1)
+    gift_card_code = serializers.CharField(required=False, allow_blank=False, max_length=64)
 
 
 class CheckoutOfferSerializer(serializers.Serializer):
@@ -47,6 +49,7 @@ class CheckoutCommitResponseSerializer(serializers.Serializer):
     points_redeemed = serializers.IntegerField()
     points_earned = serializers.IntegerField()
     new_balance = serializers.IntegerField()
+    gift_card = GiftCardSnapshotSerializer(required=False, allow_null=True)
     tier = serializers.CharField(required=False, allow_null=True)
     new_tier = serializers.CharField(required=False, allow_null=True)
     tier_upgraded = serializers.BooleanField(required=False)

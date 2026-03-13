@@ -80,6 +80,7 @@ INSTALLED_APPS = [
     "admin_tools.apps.AdminToolsConfig",
     "recs_analytics",
     "roadmap_app",
+    "gift_cards",
 ]
 
 REST_FRAMEWORK = {
@@ -200,7 +201,7 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = "/static/"
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -372,6 +373,28 @@ ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED = env_bool(
 ROADMAP_NEXTSTEP_V4_HAIRCARE_LEAVEIN_RERANK_ENABLED = env_bool(
     "ROADMAP_NEXTSTEP_V4_HAIRCARE_LEAVEIN_RERANK_ENABLED",
     False,
+)
+ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_RERANK_ENABLED = env_bool(
+    "ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_RERANK_ENABLED",
+    False,
+)
+ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_MODEL_PATH = os.getenv(
+    "ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_MODEL_PATH",
+    str(
+        (
+            BASE_DIR.parent
+            / "models"
+            / "roadmap_next_step_v5_planned_target_completed_14d_freshowned_haircare_cond_mask_60d"
+            / "model.pkl"
+        ).resolve()
+    ),
+).strip()
+ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_WEIGHT = float(
+    os.getenv("ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_WEIGHT", "0.75")
+)
+ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_TARGETS = env_csv(
+    "ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_TARGETS",
+    "conditioner,hair_mask",
 )
 ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD = float(
     os.getenv("ROADMAP_NEXTSTEP_V4_CONFIDENCE_THRESHOLD", "0.10")

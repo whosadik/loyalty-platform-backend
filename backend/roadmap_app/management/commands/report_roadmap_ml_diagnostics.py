@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from offers.models import OfferAssignment, OfferEvent
 from roadmap_app.ml_next_step import (
+    blend_prediction_rows,
     nextstep_model_artifact_summary,
     predict_next_product_types_for_model_path,
     v4_category_staged_rollout_status,
@@ -1444,6 +1445,8 @@ class Command(BaseCommand):
         parser.add_argument("--cohort-mode", type=str, default="fresh", choices=COHORT_MODE_CHOICES)
         parser.add_argument("--control", type=str, default="non_model", choices=CONTROL_CHOICES)
         parser.add_argument("--nextstep-candidate-model-path", type=str, default=None)
+        parser.add_argument("--nextstep-candidate-teacher-model-path", type=str, default=None)
+        parser.add_argument("--nextstep-candidate-teacher-weight", type=float, default=0.25)
         parser.add_argument("--planner-candidate-model-path", type=str, default=None)
 
     def handle(self, *args, **options):
@@ -1461,6 +1464,13 @@ class Command(BaseCommand):
         cohort_mode = str(options["cohort_mode"] or "fresh").strip().lower()
         control = str(options["control"] or "non_model").strip().lower()
         nextstep_candidate_model_path = str(options.get("nextstep_candidate_model_path") or "").strip()
+        nextstep_candidate_teacher_model_path = str(
+            options.get("nextstep_candidate_teacher_model_path") or ""
+        ).strip()
+        nextstep_candidate_teacher_weight = max(
+            0.0,
+            float(options.get("nextstep_candidate_teacher_weight") or 0.0),
+        )
         planner_candidate_model_path = str(options.get("planner_candidate_model_path") or "").strip()
 
         if control == "fallback":
@@ -2656,6 +2666,11 @@ class Command(BaseCommand):
             if nextstep_candidate_model_path
             else None
         )
+        nextstep_candidate_teacher_artifact = (
+            nextstep_model_artifact_summary(nextstep_candidate_teacher_model_path)
+            if nextstep_candidate_teacher_model_path
+            else None
+        )
         planner_active_artifact = planner_model_artifact_summary()
         planner_candidate_artifact = (
             planner_model_artifact_summary(planner_candidate_model_path)
@@ -2694,6 +2709,32 @@ class Command(BaseCommand):
                     planned_target_step_index=(None if planned_target_step_index <= 0 else planned_target_step_index),
                     candidate_types=candidate_types,
                 )
+                if (
+                    nextstep_candidate_teacher_model_path
+                    and bool(_safe_dict(nextstep_candidate_teacher_artifact).get("exists"))
+                    and nextstep_candidate_teacher_weight > 0.0
+                ):
+                    teacher_predictions = predict_next_product_types_for_model_path(
+                        nextstep_candidate_teacher_model_path,
+                        user=int(plan_user.get(pid) or 0),
+                        context_product_ids=list(plan_context_product_ids.get(pid) or []),
+                        category=cat,
+                        planned_target_product_type=(
+                            None
+                            if planned_target_product_type in {"", "__none__"}
+                            else planned_target_product_type
+                        ),
+                        planned_target_step_index=(
+                            None if planned_target_step_index <= 0 else planned_target_step_index
+                        ),
+                        candidate_types=candidate_types,
+                    )
+                    predictions = blend_prediction_rows(
+                        predictions,
+                        teacher_predictions,
+                        overlay_weight=nextstep_candidate_teacher_weight,
+                        overlay_label="teacher",
+                    )
                 candidate_top1 = str(_top_prediction_token(predictions) or "").strip().lower()
                 if not candidate_top1:
                     candidate_skipped_counts["no_predictions"] += 1
@@ -2855,6 +2896,22 @@ class Command(BaseCommand):
                 "model_path": str(_safe_dict(nextstep_candidate_artifact).get("model_path") or nextstep_candidate_model_path),
                 "model_version": str(_safe_dict(nextstep_candidate_artifact).get("model_version") or ""),
                 "selected_feature_set": str(_safe_dict(nextstep_candidate_artifact).get("selected_feature_set") or ""),
+                "teacher_model_path": str(
+                    _safe_dict(nextstep_candidate_teacher_artifact).get("model_path")
+                    or nextstep_candidate_teacher_model_path
+                    or ""
+                ),
+                "teacher_model_version": str(
+                    _safe_dict(nextstep_candidate_teacher_artifact).get("model_version") or ""
+                ),
+                "teacher_weight": (
+                    float(nextstep_candidate_teacher_weight)
+                    if nextstep_candidate_teacher_model_path
+                    else None
+                ),
+                "blend_mode": (
+                    "weighted_probability_sum" if nextstep_candidate_teacher_model_path else None
+                ),
                 "plans_scanned": int(len(model_plan_ids)),
                 "predicted_plans": int(len(candidate_top1_by_plan)),
                 "skipped_counts": {
@@ -3027,6 +3084,10 @@ class Command(BaseCommand):
                 "control": control,
                 "min_sample": min_sample,
                 "nextstep_candidate_model_path": nextstep_candidate_model_path or None,
+                "nextstep_candidate_teacher_model_path": nextstep_candidate_teacher_model_path or None,
+                "nextstep_candidate_teacher_weight": (
+                    nextstep_candidate_teacher_weight if nextstep_candidate_teacher_model_path else None
+                ),
                 "planner_candidate_model_path": planner_candidate_model_path or None,
             },
             "overall": {
@@ -3135,6 +3196,7 @@ class Command(BaseCommand):
                 "nextstep": {
                     "active": nextstep_active_artifact,
                     "candidate": nextstep_candidate_artifact,
+                    "candidate_teacher": nextstep_candidate_teacher_artifact,
                 },
                 "planner": {
                     "active": planner_active_artifact,

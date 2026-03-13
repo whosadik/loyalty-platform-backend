@@ -13,6 +13,7 @@ from django.core.management.base import BaseCommand, CommandError
 from roadmap_app.ml_next_step import (
     _load_model_for_path,
     _predict_with_v4_artifact_from_sources,
+    blend_prediction_rows,
     nextstep_model_artifact_summary,
 )
 
@@ -332,6 +333,8 @@ class Command(BaseCommand):
             type=str,
             default=str(getattr(settings, "ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH", "") or ""),
         )
+        parser.add_argument("--candidate-teacher-model-path", type=str, default="")
+        parser.add_argument("--candidate-teacher-weight", type=float, default=0.25)
         parser.add_argument("--format", type=str, choices=["json", "md"], default="json")
         parser.add_argument("--out", type=str, default="")
 
@@ -342,6 +345,8 @@ class Command(BaseCommand):
 
         active_model_path = str(options.get("active_model_path") or "").strip()
         candidate_model_path = str(options.get("candidate_model_path") or "").strip()
+        candidate_teacher_model_path = str(options.get("candidate_teacher_model_path") or "").strip()
+        candidate_teacher_weight = max(0.0, float(options.get("candidate_teacher_weight") or 0.0))
         if not active_model_path:
             raise CommandError("--active-model-path is required")
         if not candidate_model_path:
@@ -349,10 +354,18 @@ class Command(BaseCommand):
 
         active_artifact = _load_model_for_path(active_model_path)
         candidate_artifact = _load_model_for_path(candidate_model_path)
+        candidate_teacher_artifact = (
+            _load_model_for_path(candidate_teacher_model_path) if candidate_teacher_model_path else None
+        )
         if not isinstance(active_artifact, dict) or str(active_artifact.get("task") or "") != "roadmap_nextstep_v4_ranking":
             raise CommandError("Active model path does not point to a roadmap_nextstep_v4_ranking artifact")
         if not isinstance(candidate_artifact, dict) or str(candidate_artifact.get("task") or "") != "roadmap_nextstep_v4_ranking":
             raise CommandError("Candidate model path does not point to a roadmap_nextstep_v4_ranking artifact")
+        if candidate_teacher_model_path and (
+            not isinstance(candidate_teacher_artifact, dict)
+            or str(candidate_teacher_artifact.get("task") or "") != "roadmap_nextstep_v4_ranking"
+        ):
+            raise CommandError("Candidate teacher model path does not point to a roadmap_nextstep_v4_ranking artifact")
 
         pack = _load_pack(pack_path)
         summary = pack["summary"]
@@ -474,6 +487,25 @@ class Command(BaseCommand):
                 planned_target_step_index=planned_target_step_index,
                 candidate_types=None,
             )
+            if candidate_teacher_artifact and candidate_teacher_weight > 0.0:
+                teacher_predictions = _predict_with_v4_artifact_from_sources(
+                    artifact=candidate_teacher_artifact,
+                    category=category,
+                    now_utc=t0,
+                    items=history_items,
+                    profile=profile,
+                    context_products=context_products,
+                    catalog_products=products,
+                    planned_target_product_type=planned_target_product_type,
+                    planned_target_step_index=planned_target_step_index,
+                    candidate_types=None,
+                )
+                candidate_predictions = blend_prediction_rows(
+                    candidate_predictions,
+                    teacher_predictions,
+                    overlay_weight=candidate_teacher_weight,
+                    overlay_label="teacher",
+                )
 
             active_top1 = str(_top_prediction(active_predictions).get("candidate_type") or "").strip().lower()
             candidate_top1 = str(_top_prediction(candidate_predictions).get("candidate_type") or "").strip().lower()
@@ -679,11 +711,18 @@ class Command(BaseCommand):
 
         active_summary = nextstep_model_artifact_summary(active_model_path)
         candidate_summary = nextstep_model_artifact_summary(candidate_model_path)
+        candidate_teacher_summary = (
+            nextstep_model_artifact_summary(candidate_teacher_model_path)
+            if candidate_teacher_model_path
+            else None
+        )
         payload = {
             "params": {
                 "path": str(pack_path),
                 "active_model_path": active_model_path,
                 "candidate_model_path": candidate_model_path,
+                "candidate_teacher_model_path": candidate_teacher_model_path or None,
+                "candidate_teacher_weight": candidate_teacher_weight if candidate_teacher_model_path else None,
                 "format": str(options.get("format") or "json"),
             },
             "pack_summary": summary,
@@ -694,6 +733,7 @@ class Command(BaseCommand):
             },
             "active_model": active_summary,
             "candidate_model": candidate_summary,
+            "candidate_teacher_model": candidate_teacher_summary,
             "compare": compare,
             "by_scenario_key": by_scenario_rows,
             "by_expected_next_product_type": by_expected_rows,

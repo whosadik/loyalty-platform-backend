@@ -743,6 +743,87 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
         self.assertEqual(pair["active_only_hits"], 1)
         self.assertEqual(pair["candidate_only_hits"], 1)
 
+    def test_report_can_blend_candidate_path_compare_with_teacher_model(self):
+        u_active = self._user("diag_candidate_teacher_active")
+        u_candidate = self._user("diag_candidate_teacher_only")
+
+        plan_active, steps_active = self._plan(
+            user=u_active,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "conditioner")],
+            ml_extra={
+                "predictions": [{"candidate_type": "shampoo", "score": 0.91}],
+                "planned_target_product_type": "conditioner",
+                "planned_target_step_index": 2,
+            },
+        )
+        plan_candidate, steps_candidate = self._plan(
+            user=u_candidate,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "conditioner")],
+            ml_extra={
+                "predictions": [{"candidate_type": "shampoo", "score": 0.88}],
+                "planned_target_product_type": "conditioner",
+                "planned_target_step_index": 2,
+            },
+        )
+
+        self._emit_step_events(user=u_active, plan=plan_active, step=steps_active[0], completed=1)
+        self._emit_step_events(user=u_candidate, plan=plan_candidate, step=steps_candidate[1], completed=1)
+
+        nextstep_active = {
+            "model_path": "/models/nextstep-active/model.pkl",
+            "model_version": "nextstep_active_v1",
+            "selected_feature_set": "full",
+            "exists": True,
+        }
+        nextstep_candidate = {
+            "model_path": "/models/nextstep-candidate/model.pkl",
+            "model_version": "nextstep_semantic_v4",
+            "selected_feature_set": "full",
+            "exists": True,
+        }
+        nextstep_teacher = {
+            "model_path": "/models/nextstep-teacher/model.pkl",
+            "model_version": "nextstep_planned_target_teacher",
+            "selected_feature_set": "full",
+            "exists": True,
+        }
+
+        def _predict_candidate(model_path, *, user, **kwargs):
+            if model_path == "/models/nextstep-candidate/model.pkl":
+                return [{"candidate_type": "conditioner", "score": 0.2}]
+            if model_path == "/models/nextstep-teacher/model.pkl":
+                return [{"candidate_type": "shampoo", "score": 1.0}]
+            return []
+
+        with patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.nextstep_model_artifact_summary",
+            side_effect=[nextstep_active, nextstep_candidate, nextstep_teacher],
+        ), patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.predict_next_product_types_for_model_path",
+            side_effect=_predict_candidate,
+        ):
+            payload = self._run_report_json(
+                control="disabled",
+                categories="haircare",
+                min_sample=1,
+                nextstep_candidate_model_path="/models/nextstep-candidate/model.pkl",
+                nextstep_candidate_teacher_model_path="/models/nextstep-teacher/model.pkl",
+                nextstep_candidate_teacher_weight=2.0,
+            )
+
+        compare = payload["runtime_observability"]["candidate_path_compare"]
+        self.assertEqual(compare["teacher_model_version"], "nextstep_planned_target_teacher")
+        self.assertAlmostEqual(float(compare["teacher_weight"]), 2.0, places=6)
+        self.assertEqual(compare["blend_mode"], "weighted_probability_sum")
+        self.assertEqual(compare["top1_comparison"]["same_top1_plans"], 2)
+        self.assertEqual(compare["top1_comparison"]["different_top1_plans"], 0)
+        self.assertAlmostEqual(float(compare["top1_comparison"]["agreement_rate"]), 1.0, places=6)
+        self.assertEqual(payload["artifacts"]["nextstep"]["candidate_teacher"]["model_version"], "nextstep_planned_target_teacher")
+
     def test_report_markdown_includes_candidate_path_compare_sections(self):
         user = self._user("diag_candidate_md")
         plan, steps = self._plan(

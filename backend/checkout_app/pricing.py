@@ -57,36 +57,36 @@ def calc_eligible(lines: Iterable[Line], target: dict) -> tuple[Decimal, list[in
     return d2(eligible_total), eligible_ids
 
 
-def _split_redeemed_amount(
+def _split_applied_amount(
     *,
-    payable_total_before_points: Decimal,
-    eligible_total_before_points: Decimal,
-    points_redeemed: int,
+    payable_total: Decimal,
+    eligible_total: Decimal,
+    applied_amount: Decimal,
 ) -> tuple[Decimal, Decimal]:
-    total_before_points = d2(max(payable_total_before_points, Decimal("0")))
-    eligible_before_points = d2(
-        min(max(eligible_total_before_points, Decimal("0")), total_before_points)
+    normalized_total = d2(max(payable_total, Decimal("0")))
+    normalized_eligible = d2(
+        min(max(eligible_total, Decimal("0")), normalized_total)
     )
 
-    if total_before_points <= 0 or points_redeemed <= 0:
-        return eligible_before_points, d2(total_before_points - eligible_before_points)
+    if normalized_total <= 0 or applied_amount <= 0:
+        return normalized_eligible, d2(normalized_total - normalized_eligible)
 
-    redeem_amount = Decimal(points_redeemed)
-    rest_before_points = d2(total_before_points - eligible_before_points)
+    normalized_applied = d2(applied_amount)
+    rest_total = d2(normalized_total - normalized_eligible)
 
-    if eligible_before_points <= 0:
-        eligible_redeemed = Decimal("0")
-    elif eligible_before_points >= total_before_points:
-        eligible_redeemed = redeem_amount
+    if normalized_eligible <= 0:
+        eligible_applied = Decimal("0")
+    elif normalized_eligible >= normalized_total:
+        eligible_applied = normalized_applied
     else:
-        eligible_share = eligible_before_points / total_before_points
-        eligible_redeemed = d2(redeem_amount * eligible_share)
+        eligible_share = normalized_eligible / normalized_total
+        eligible_applied = d2(normalized_applied * eligible_share)
 
-    eligible_redeemed = min(eligible_redeemed, eligible_before_points, redeem_amount)
-    rest_redeemed = min(redeem_amount - eligible_redeemed, rest_before_points)
+    eligible_applied = min(eligible_applied, normalized_eligible, normalized_applied)
+    rest_applied = min(normalized_applied - eligible_applied, rest_total)
 
-    eligible_payable = d2(max(eligible_before_points - eligible_redeemed, Decimal("0")))
-    rest_payable = d2(max(rest_before_points - rest_redeemed, Decimal("0")))
+    eligible_payable = d2(max(normalized_eligible - eligible_applied, Decimal("0")))
+    rest_payable = d2(max(rest_total - rest_applied, Decimal("0")))
     return eligible_payable, rest_payable
 
 
@@ -98,6 +98,7 @@ def apply_offer_to_totals(
     lines: list[Line],
     points_rate: Decimal,
     redeem_points: int = 0,
+    gift_card_balance: Decimal = Decimal("0"),
 ) -> dict[str, Any]:
     normalized_points_rate = get_effective_points_rate(points_rate)
     gross_total = calc_gross(lines)
@@ -136,11 +137,19 @@ def apply_offer_to_totals(
             eligible_total_after_offer = eligible_total - discount_amount
     eligible_total_after_offer = d2(max(eligible_total_after_offer, Decimal("0")))
 
-    points_redeemed = clamp_redeem_points(redeem_points, payable_total_before_points)
-    eligible_payable_total, rest_payable_total = _split_redeemed_amount(
-        payable_total_before_points=payable_total_before_points,
-        eligible_total_before_points=eligible_total_after_offer,
-        points_redeemed=points_redeemed,
+    gift_card_applied_amount = d2(min(max(gift_card_balance, Decimal("0")), payable_total_before_points))
+    eligible_after_gift_card, rest_after_gift_card = _split_applied_amount(
+        payable_total=payable_total_before_points,
+        eligible_total=eligible_total_after_offer,
+        applied_amount=gift_card_applied_amount,
+    )
+    payable_total_after_gift_card = d2(eligible_after_gift_card + rest_after_gift_card)
+
+    points_redeemed = clamp_redeem_points(redeem_points, payable_total_after_gift_card)
+    eligible_payable_total, rest_payable_total = _split_applied_amount(
+        payable_total=payable_total_after_gift_card,
+        eligible_total=eligible_after_gift_card,
+        applied_amount=Decimal(points_redeemed),
     )
     payable_total = d2(eligible_payable_total + rest_payable_total)
 
@@ -162,8 +171,9 @@ def apply_offer_to_totals(
         "eligible_total": str(eligible_total),
         "eligible_item_ids": eligible_item_ids,
         "discount_amount": str(d2(discount_amount)),
-        "net_total_before_points": str(d2(payable_total_before_points)),
+        "net_total_before_points": str(d2(payable_total_after_gift_card)),
         "net_total": str(payable_total),
+        "gift_card_applied_amount": str(gift_card_applied_amount),
         "points_redeemed": points_redeemed,
         "points_multiplier": str(multiplier),
         "base_points": base_points,

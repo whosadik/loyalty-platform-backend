@@ -911,6 +911,64 @@ def _normalize_predictions(raw: Any) -> list[dict[str, Any]]:
     return dedup
 
 
+def blend_prediction_rows(
+    base: Any,
+    overlay: Any,
+    *,
+    overlay_weight: float = 0.25,
+    overlay_label: str = "teacher",
+) -> list[dict[str, Any]]:
+    base_rows = _normalize_predictions(base)
+    overlay_rows = _normalize_predictions(overlay)
+    weight = max(0.0, float(overlay_weight))
+    if not base_rows:
+        return overlay_rows
+    if not overlay_rows or weight <= 0.0:
+        return base_rows
+
+    base_by_candidate = {
+        str(row.get("candidate_type") or "").strip().lower(): row for row in base_rows if str(row.get("candidate_type") or "").strip()
+    }
+    overlay_by_candidate = {
+        str(row.get("candidate_type") or "").strip().lower(): row
+        for row in overlay_rows
+        if str(row.get("candidate_type") or "").strip()
+    }
+    ordered_candidates = list(base_by_candidate.keys()) + [
+        candidate for candidate in overlay_by_candidate.keys() if candidate not in base_by_candidate
+    ]
+
+    blended_rows: list[dict[str, Any]] = []
+    blended_total = 0.0
+    for candidate in ordered_candidates:
+        base_row = dict(base_by_candidate.get(candidate) or {})
+        overlay_row = dict(overlay_by_candidate.get(candidate) or {})
+        base_score = max(0.0, _to_float(base_row.get("score", 0.0)))
+        overlay_score = max(0.0, _to_float(overlay_row.get("score", 0.0)))
+        blended_score = base_score + (weight * overlay_score)
+        blended_total += blended_score
+
+        row = dict(base_row or overlay_row)
+        row["candidate_type"] = candidate
+        row["product_type"] = candidate
+        row["score"] = blended_score
+        row["raw_score"] = blended_score
+        row["blend_components"] = {
+            "base_score": base_score,
+            f"{overlay_label}_score": overlay_score,
+            f"{overlay_label}_weight": weight,
+        }
+        row["blend_mode"] = "weighted_probability_sum"
+        blended_rows.append(row)
+
+    if blended_total > 0:
+        for row in blended_rows:
+            row["score"] = float(_to_float(row.get("score")) / blended_total)
+
+    blended_rows.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
+    return blended_rows
+
+
 def _group_softmax(values: list[float], temperature: float) -> list[float]:
     if np is None or not values:
         total = float(sum(max(0.0, x) for x in values) or 1.0)
@@ -1077,6 +1135,99 @@ def _apply_runtime_leavein_planned_target_rerank(
     return adjusted_scores, biases
 
 
+def _apply_runtime_corechain_teacher_rerank(
+    *,
+    category: str,
+    rows_out: list[dict[str, Any]],
+    now_utc,
+    items: list[dict[str, Any]] | None,
+    profile: Any | None,
+    context_products: list[dict[str, Any]] | None,
+    catalog_products: list[dict[str, Any]] | None,
+    planned_target_product_type: str | None,
+    planned_target_step_index: int | None,
+    candidate_types: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_RERANK_ENABLED", False)):
+        return rows_out
+    if str(category or "").strip().lower() != "haircare":
+        return rows_out
+    if not rows_out:
+        return rows_out
+
+    planned_target = str(planned_target_product_type or "").strip().lower()
+    allowed_targets = {
+        str(item or "").strip().lower()
+        for item in getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_TARGETS", []) or []
+        if str(item or "").strip()
+    }
+    if planned_target not in allowed_targets:
+        return rows_out
+
+    teacher_path_raw = str(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_MODEL_PATH", "") or ""
+    ).strip()
+    teacher_weight = max(
+        0.0,
+        _to_float(getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_WEIGHT", 0.75)),
+    )
+    if not teacher_path_raw or teacher_weight <= 0.0:
+        return rows_out
+
+    teacher_artifact = _load_model_for_path(teacher_path_raw)
+    if not isinstance(teacher_artifact, dict):
+        return rows_out
+    if str(teacher_artifact.get("task") or "").strip() != "roadmap_nextstep_v4_ranking":
+        return rows_out
+
+    teacher_rows = _predict_with_v4_artifact_from_sources(
+        artifact=teacher_artifact,
+        category=category,
+        now_utc=now_utc,
+        items=items,
+        profile=profile,
+        context_products=context_products,
+        catalog_products=catalog_products,
+        planned_target_product_type=planned_target_product_type,
+        planned_target_step_index=planned_target_step_index,
+        candidate_types=candidate_types,
+        allow_teacher_rerank=False,
+    )
+    if not teacher_rows:
+        return rows_out
+
+    blended_rows = blend_prediction_rows(
+        rows_out,
+        teacher_rows,
+        overlay_weight=teacher_weight,
+        overlay_label="teacher",
+    )
+    if not blended_rows:
+        return rows_out
+
+    policy_name = "haircare_corechain_teacher_rerank"
+    for row in blended_rows:
+        components = row.get("blend_components") if isinstance(row.get("blend_components"), dict) else {}
+        base_score = _to_float(components.get("base_score"))
+        blended_score = _to_float(row.get("score"))
+        policy_bias = float(round(blended_score - base_score, 6))
+        if abs(policy_bias) <= 1e-9:
+            continue
+        runtime_policy_biases = {
+            str(k): _to_float(v)
+            for k, v in (row.get("runtime_policy_biases") or {}).items()
+            if str(k).strip()
+        }
+        runtime_policies = [str(x).strip() for x in (row.get("runtime_policies") or []) if str(x).strip()]
+        runtime_policy_biases[policy_name] = policy_bias
+        if policy_name not in runtime_policies:
+            runtime_policies.append(policy_name)
+        row["runtime_policy_biases"] = runtime_policy_biases
+        row["runtime_policies"] = runtime_policies
+        row["runtime_bias"] = float(round(_to_float(row.get("runtime_bias")) + policy_bias, 6))
+    return blended_rows
+
+
 def _predict_with_v4_artifact_from_sources(
     *,
     artifact: dict[str, Any],
@@ -1089,6 +1240,7 @@ def _predict_with_v4_artifact_from_sources(
     planned_target_product_type: str | None,
     planned_target_step_index: int | None,
     candidate_types: list[str] | None,
+    allow_teacher_rerank: bool = True,
 ) -> list[dict[str, Any]]:
     if pd is None:
         return []
@@ -1508,6 +1660,19 @@ def _predict_with_v4_artifact_from_sources(
         )
 
     rows_out.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
+    if allow_teacher_rerank:
+        rows_out = _apply_runtime_corechain_teacher_rerank(
+            category=category,
+            rows_out=rows_out,
+            now_utc=now_utc,
+            items=normalized_items,
+            profile=profile,
+            context_products=normalized_context_products,
+            catalog_products=catalog_products,
+            planned_target_product_type=planned_target_product_type,
+            planned_target_step_index=planned_target_step_index,
+            candidate_types=candidates,
+        )
     return rows_out
 
 

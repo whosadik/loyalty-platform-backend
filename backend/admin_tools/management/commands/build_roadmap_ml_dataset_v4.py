@@ -36,6 +36,7 @@ from roadmap_app.content_features import (
 )
 from roadmap_app.fragrance_slots import SLOTS, slot_of_fragrance
 from roadmap_app.models import RoadmapEvent
+from roadmap_app.services import _roadmap_owned_freshness_days
 from transactions.models import TransactionItem
 from users_app.models import CustomerProfile
 
@@ -99,6 +100,25 @@ def _float_or_zero(value: Any) -> float:
         return 0.0
 
 
+def _is_current_owned_purchase(
+    *,
+    category: str,
+    product_type: str,
+    ts,
+    ref_ts,
+) -> bool:
+    freshness_days = _roadmap_owned_freshness_days(category, product_type)
+    if freshness_days is None:
+        return True
+    if ts is None or ref_ts is None:
+        return True
+    try:
+        age_days = int((ref_ts - ts).days)
+    except Exception:
+        return True
+    return bool(age_days <= int(freshness_days))
+
+
 def _parse_positive_int_csv(raw: Any, *, default: list[int]) -> list[int]:
     text = str(raw or "").strip()
     if not text:
@@ -117,6 +137,43 @@ def _parse_positive_int_csv(raw: Any, *, default: list[int]) -> list[int]:
     if not out:
         raise CommandError("--outcome-windows resolved to empty set")
     return sorted(out)
+
+
+def _parse_categories_csv(raw: Any, *, default: list[str]) -> list[str]:
+    text = str(raw or "").strip()
+    raw_values = [token.strip().lower() for token in text.split(",")] if text else list(default)
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in raw_values:
+        if not token:
+            continue
+        if token not in TARGET_CATEGORIES:
+            raise CommandError(
+                f"--categories contains unsupported category '{token}'. "
+                f"Allowed: {sorted(TARGET_CATEGORIES)}"
+            )
+        if token in seen:
+            continue
+        seen.add(token)
+        out.append(token)
+    if not out:
+        raise CommandError("--categories resolved to empty set")
+    return out
+
+
+def _parse_token_csv(raw: Any) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for token in text.split(","):
+        normalized = str(token or "").strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
 
 
 def _chain_distance(category: str, from_type: str, to_type: str) -> int:
@@ -402,6 +459,18 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--days", type=int, default=180)
         parser.add_argument("--out-dir", type=str, default="data/ml/roadmap_nextstep_v4")
+        parser.add_argument(
+            "--categories",
+            type=str,
+            default="",
+            help="Comma-separated subset of categories to include, e.g. haircare or skincare,haircare.",
+        )
+        parser.add_argument(
+            "--planned-target-product-types",
+            type=str,
+            default="",
+            help="Optional comma-separated planned_target_product_type filter, e.g. conditioner,hair_mask.",
+        )
         parser.add_argument("--include-ga", action="store_true", default=False)
         parser.add_argument("--label-window-days", type=int, default=14)
         parser.add_argument(
@@ -430,6 +499,13 @@ class Command(BaseCommand):
 
         days = int(options["days"])
         out_dir = _resolve_out_dir(str(options["out_dir"]))
+        selected_categories = _parse_categories_csv(
+            options.get("categories"),
+            default=sorted(TARGET_CATEGORIES),
+        )
+        selected_category_set = set(selected_categories)
+        planned_target_filter = _parse_token_csv(options.get("planned_target_product_types"))
+        planned_target_filter_set = set(planned_target_filter)
         include_ga = bool(options["include_ga"])
         label_window_days = int(options["label_window_days"])
         outcome_windows_days = _parse_positive_int_csv(
@@ -456,7 +532,8 @@ class Command(BaseCommand):
         self.stdout.write(
             "[build_roadmap_ml_dataset_v4] "
             f"window={since.isoformat()}..{now_utc.isoformat()} "
-            f"label_window_days={label_window_days} outcome_windows={outcome_windows_days}"
+            f"label_window_days={label_window_days} outcome_windows={outcome_windows_days} "
+            f"categories={selected_categories} planned_targets={planned_target_filter or ['__all__']}"
         )
 
         exposed_qs = RoadmapEvent.objects.filter(
@@ -485,7 +562,7 @@ class Command(BaseCommand):
             created_at = row["created_at"].astimezone(dt_timezone.utc)
             context = _safe_dict(row.get("context"))
             category = str(row.get("step__plan__category") or context.get("category") or "").strip().lower()
-            if category not in TARGET_CATEGORIES:
+            if category not in selected_category_set:
                 continue
             day_key = created_at.date().isoformat()
             key = (user_id, category, day_key)
@@ -510,6 +587,14 @@ class Command(BaseCommand):
             first_episode_by_key.values(),
             key=lambda x: (int(x["user_id"]), str(x["category"]), str(x["day_key"]), x["t0"]),
         )
+        if planned_target_filter_set:
+            episodes_seed = [
+                row
+                for row in episodes_seed
+                if str(row.get("planned_target_product_type") or "").strip().lower() in planned_target_filter_set
+            ]
+        if not episodes_seed:
+            raise CommandError("No STEP_EXPOSED episodes after planned_target_product_type filtering.")
         users = sorted({int(ep["user_id"]) for ep in episodes_seed})
 
         tx_qs = TransactionItem.objects.filter(
@@ -582,7 +667,7 @@ class Command(BaseCommand):
         ).iterator(chunk_size=5000):
             context = _safe_dict(row.get("context"))
             category = str(row.get("step__plan__category") or context.get("category") or "").strip().lower()
-            if category not in TARGET_CATEGORIES:
+            if category not in selected_category_set:
                 continue
             completed_by_key[(int(row["user_id"]), category)].append(
                 {
@@ -635,10 +720,16 @@ class Command(BaseCommand):
                     "slot": slot_value,
                 }
             )
-            if ts <= max_t0 and category in TARGET_CATEGORIES and product_type:
+            if ts <= max_t0 and category in selected_category_set and product_type:
                 if category != "fragrance":
                     popularity_counter_by_category[category][product_type] += quantity
-                owned_counter_by_category[category][product_type] += quantity
+                if _is_current_owned_purchase(
+                    category=category,
+                    product_type=product_type,
+                    ts=ts,
+                    ref_ts=max_t0,
+                ):
+                    owned_counter_by_category[category][product_type] += quantity
 
         for values in user_items.values():
             values.sort(key=lambda x: (x["ts"], int(x["tx_id"]), int(x["item_id"])))
@@ -649,7 +740,7 @@ class Command(BaseCommand):
 
         candidate_types_by_category: dict[str, list[str]] = {}
         top_popularity_by_category: dict[str, list[str]] = {}
-        for category in ["skincare", "haircare", "makeup"]:
+        for category in [cat for cat in selected_categories if cat != "fragrance"]:
             top_pop = [
                 product_type
                 for product_type, _ in (popularity_counter_by_category.get(category) or Counter()).most_common(
@@ -660,11 +751,12 @@ class Command(BaseCommand):
             candidate_types_by_category[category] = _unique(
                 list(RULE_CHAIN_BY_CATEGORY.get(category) or []) + top_pop
             )
-        candidate_types_by_category["fragrance"] = list(SLOTS)
-        top_popularity_by_category["fragrance"] = list(SLOTS)
+        if "fragrance" in selected_category_set:
+            candidate_types_by_category["fragrance"] = list(SLOTS)
+            top_popularity_by_category["fragrance"] = list(SLOTS)
 
         catalog_rows = list(
-            Product.objects.filter(category__in=sorted(TARGET_CATEGORIES)).values(
+            Product.objects.filter(category__in=selected_categories).values(
                 "category",
                 "product_type",
                 "concerns",
@@ -681,7 +773,7 @@ class Command(BaseCommand):
         top_owned_types_by_category: dict[str, list[str]] = {}
         owned_feature_columns: list[str] = []
         owned_feature_map: dict[tuple[str, str], str] = {}
-        for category in sorted(TARGET_CATEGORIES):
+        for category in selected_categories:
             top_types = [
                 product_type
                 for product_type, _ in (owned_counter_by_category.get(category) or Counter()).most_common(owned_top_k)
@@ -910,7 +1002,13 @@ class Command(BaseCommand):
                     last_categories.append(item_category)
 
                 if item_category and item_type:
-                    owned_counts_all[(item_category, item_type)] += qty
+                    if _is_current_owned_purchase(
+                        category=item_category,
+                        product_type=item_type,
+                        ts=ts,
+                        ref_ts=t0,
+                    ):
+                        owned_counts_all[(item_category, item_type)] += qty
 
                 if item_category == category:
                     candidate_key = ""
@@ -921,7 +1019,13 @@ class Command(BaseCommand):
                     if candidate_key:
                         if len(recent_candidate_tokens) < 5:
                             recent_candidate_tokens.append(candidate_key)
-                        candidate_owned_counter[candidate_key] += qty
+                        if _is_current_owned_purchase(
+                            category=item_category,
+                            product_type=item_type,
+                            ts=ts,
+                            ref_ts=t0,
+                        ):
+                            candidate_owned_counter[candidate_key] += qty
                         candidate_last_seen_at.setdefault(candidate_key, ts)
                     if last_ts_in_category is None:
                         last_ts_in_category = ts
@@ -935,7 +1039,12 @@ class Command(BaseCommand):
 
                 if item_category == "fragrance":
                     slot_value = str(row.get("slot") or "")
-                    if slot_value in SLOTS:
+                    if slot_value in SLOTS and _is_current_owned_purchase(
+                        category=item_category,
+                        product_type=item_type,
+                        ts=ts,
+                        ref_ts=t0,
+                    ):
                         slot_counter[slot_value] += qty
 
             days_since_last_purchase = -1
@@ -1003,6 +1112,14 @@ class Command(BaseCommand):
                     **{
                         f"completed_in_{int(outcome_window)}d": int(
                             completion_label_by_window.get(int(outcome_window), "__none__") != "__none__"
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"planned_target_completed_in_{int(outcome_window)}d": int(
+                            planned_target_product_type != "__none__"
+                            and str(completion_label_by_window.get(int(outcome_window), "__none__"))
+                            == planned_target_product_type
                         )
                         for outcome_window in outcome_windows_days
                     },
@@ -1181,6 +1298,13 @@ class Command(BaseCommand):
                         f"candidate_completed_in_{int(outcome_window)}d": int(
                             str(candidate)
                             == str(ep.get(f"completed_product_type_{int(outcome_window)}d") or "__none__")
+                        )
+                        for outcome_window in outcome_windows_days
+                    },
+                    **{
+                        f"candidate_planned_target_completed_in_{int(outcome_window)}d": int(
+                            str(candidate) == planned_target_product_type
+                            and int(ep.get(f"planned_target_completed_in_{int(outcome_window)}d") or 0) == 1
                         )
                         for outcome_window in outcome_windows_days
                     },
@@ -1369,6 +1493,8 @@ class Command(BaseCommand):
             "window_days": int(days),
             "window_since_utc": since.isoformat().replace("+00:00", "Z"),
             "window_until_utc": now_utc.isoformat().replace("+00:00", "Z"),
+            "selected_categories": selected_categories,
+            "selected_planned_target_product_types": planned_target_filter,
             "label_window_days": int(label_window_days),
             "outcome_windows_days": list(outcome_windows_days),
             "include_ga": bool(include_ga),
@@ -1410,6 +1536,7 @@ class Command(BaseCommand):
                 "haircare_future_backward_multiplier": 0.85,
                 "haircare_scalp_serum_multiplier": 1.20,
             },
+            "owned_state_protocol_version": "freshness_window_v1",
             "sample_weight_summary": {
                 "min": round(float(df["sample_weight"].min()), 6),
                 "max": round(float(df["sample_weight"].max()), 6),

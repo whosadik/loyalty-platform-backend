@@ -427,15 +427,20 @@ class RoadmapNextStepV4DatasetTests(TestCase):
             self.assertIn("clicked_in_7d", frame.columns)
             self.assertIn("candidate_primary_target_in_14d", frame.columns)
             self.assertIn("candidate_bought_any_in_14d", frame.columns)
+            self.assertIn("planned_target_completed_in_7d", frame.columns)
+            self.assertIn("candidate_planned_target_completed_in_7d", frame.columns)
             self.assertEqual(int(serum_row["window_7d_fully_observed"]), 1)
             self.assertEqual(int(serum_row["window_30d_fully_observed"]), 0)
             self.assertEqual(int(serum_row["clicked_in_7d"]), 1)
+            self.assertEqual(int(serum_row["planned_target_completed_in_7d"]), 1)
             self.assertEqual(str(serum_row["completed_product_type_7d"]), "serum")
             self.assertEqual(str(serum_row["primary_target_source_7d"]), "step_completed_event")
             self.assertEqual(int(serum_row["candidate_clicked_planned_target_in_7d"]), 1)
             self.assertEqual(int(serum_row["candidate_completed_in_7d"]), 1)
+            self.assertEqual(int(serum_row["candidate_planned_target_completed_in_7d"]), 1)
             self.assertEqual(int(serum_row["candidate_bought_first_in_7d"]), 1)
             self.assertEqual(int(serum_row["candidate_primary_target_in_7d"]), 1)
+            self.assertEqual(int(cleanser_row["candidate_planned_target_completed_in_7d"]), 0)
             self.assertEqual(int(cleanser_row["candidate_bought_any_in_14d"]), 1)
             self.assertEqual(int(cleanser_row["candidate_primary_target_in_14d"]), 0)
 
@@ -451,6 +456,299 @@ class RoadmapNextStepV4DatasetTests(TestCase):
                 1,
             )
             self.assertEqual(int(summary_30d.get("fully_observed_episodes", 0)), 0)
+
+    def test_v4_dataset_treats_stale_haircare_history_as_not_owned(self):
+        User = get_user_model()
+        user = User.objects.create_user(username="v4_ds_hair_fresh_u1", password="pass12345")
+        shampoo = Product.objects.create(
+            name="Freshness Shampoo",
+            brand="B",
+            price=Decimal("11.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        conditioner = Product.objects.create(
+            name="Freshness Conditioner",
+            brand="B",
+            price=Decimal("13.00"),
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+
+        plan = RoadmapPlan.objects.create(user=user, category="haircare", is_active=True, meta={})
+        step = RoadmapStep.objects.create(
+            plan=plan,
+            step_index=2,
+            product_type="conditioner",
+            status=RoadmapStep.Status.MISSING,
+        )
+        t0 = timezone.now() - timedelta(days=20)
+        exposed = RoadmapEvent.objects.create(
+            user=user,
+            plan=plan,
+            step=step,
+            event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            context={"category": "haircare", "sources": ["roadmap_api"]},
+        )
+        RoadmapEvent.objects.filter(id=exposed.id).update(created_at=t0)
+
+        tx_stale = Transaction.objects.create(
+            user=user,
+            total_amount=Decimal("11.00"),
+            channel="web",
+            idempotency_key="v4-hair-fresh-prior",
+        )
+        Transaction.objects.filter(id=tx_stale.id).update(created_at=t0 - timedelta(days=90))
+        TransactionItem.objects.create(
+            transaction=tx_stale,
+            product=shampoo,
+            quantity=1,
+            unit_price=Decimal("11.00"),
+        )
+
+        tx_future = Transaction.objects.create(
+            user=user,
+            total_amount=Decimal("13.00"),
+            channel="web",
+            idempotency_key="v4-hair-fresh-future",
+        )
+        Transaction.objects.filter(id=tx_future.id).update(created_at=t0 + timedelta(days=1))
+        TransactionItem.objects.create(
+            transaction=tx_future,
+            product=conditioner,
+            quantity=1,
+            unit_price=Decimal("13.00"),
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            hair_rows = frame[frame["category"].astype(str) == "haircare"].copy()
+            self.assertFalse(hair_rows.empty)
+
+            shampoo_row = hair_rows[hair_rows["candidate_type"].astype(str) == "shampoo"].iloc[0]
+            self.assertEqual(str(shampoo_row["last1_product_type"]), "shampoo")
+            self.assertEqual(int(shampoo_row["candidate_owned_count_in_category"]), 0)
+            self.assertEqual(int(shampoo_row["candidate_seen_90d_count_in_category"]), 1)
+
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(str(metadata.get("owned_state_protocol_version")), "freshness_window_v1")
+            self.assertNotIn(
+                "shampoo",
+                list((metadata.get("top_owned_product_types_by_category") or {}).get("haircare") or []),
+            )
+
+    def test_v4_dataset_respects_category_filter(self):
+        User = get_user_model()
+        hair_user = User.objects.create_user(username="v4_ds_hair_filter_u1", password="pass12345")
+        shampoo = Product.objects.create(
+            name="Filter Shampoo",
+            brand="B",
+            price=Decimal("11.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        conditioner = Product.objects.create(
+            name="Filter Conditioner",
+            brand="B",
+            price=Decimal("13.00"),
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+        hair_plan = RoadmapPlan.objects.create(user=hair_user, category="haircare", is_active=True, meta={})
+        hair_step = RoadmapStep.objects.create(
+            plan=hair_plan,
+            step_index=2,
+            product_type="conditioner",
+            status=RoadmapStep.Status.MISSING,
+        )
+        t0 = timezone.now() - timedelta(days=16)
+        hair_exposed = RoadmapEvent.objects.create(
+            user=hair_user,
+            plan=hair_plan,
+            step=hair_step,
+            event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            context={"category": "haircare", "sources": ["roadmap_api"]},
+        )
+        RoadmapEvent.objects.filter(id=hair_exposed.id).update(created_at=t0)
+        tx_hair_prior = Transaction.objects.create(
+            user=hair_user,
+            total_amount=Decimal("11.00"),
+            channel="web",
+            idempotency_key="v4-hair-filter-prior",
+        )
+        Transaction.objects.filter(id=tx_hair_prior.id).update(created_at=t0 - timedelta(days=1))
+        TransactionItem.objects.create(
+            transaction=tx_hair_prior,
+            product=shampoo,
+            quantity=1,
+            unit_price=Decimal("11.00"),
+        )
+        tx_hair_future = Transaction.objects.create(
+            user=hair_user,
+            total_amount=Decimal("13.00"),
+            channel="web",
+            idempotency_key="v4-hair-filter-future",
+        )
+        Transaction.objects.filter(id=tx_hair_future.id).update(created_at=t0 + timedelta(days=1))
+        TransactionItem.objects.create(
+            transaction=tx_hair_future,
+            product=conditioner,
+            quantity=1,
+            unit_price=Decimal("13.00"),
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                categories="haircare",
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            self.assertFalse(frame.empty)
+            self.assertEqual(set(frame["category"].astype(str).tolist()), {"haircare"})
+
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(list(metadata.get("selected_categories") or []), ["haircare"])
+            self.assertEqual(set((metadata.get("candidate_types_by_category") or {}).keys()), {"haircare"})
+
+    def test_v4_dataset_respects_planned_target_filter(self):
+        User = get_user_model()
+        hair_user = User.objects.create_user(username="v4_ds_hair_target_filter_u1", password="pass12345")
+        shampoo = Product.objects.create(
+            name="Target Filter Shampoo",
+            brand="B",
+            price=Decimal("11.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        conditioner = Product.objects.create(
+            name="Target Filter Conditioner",
+            brand="B",
+            price=Decimal("13.00"),
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+        hair_mask = Product.objects.create(
+            name="Target Filter Mask",
+            brand="B",
+            price=Decimal("17.00"),
+            category="haircare",
+            product_type="hair_mask",
+            in_stock=True,
+        )
+
+        plan_conditioner = RoadmapPlan.objects.create(user=hair_user, category="haircare", is_active=True, meta={})
+        step_conditioner = RoadmapStep.objects.create(
+            plan=plan_conditioner,
+            step_index=2,
+            product_type="conditioner",
+            status=RoadmapStep.Status.MISSING,
+        )
+        plan_mask = RoadmapPlan.objects.create(user=hair_user, category="haircare", is_active=False, meta={})
+        step_mask = RoadmapStep.objects.create(
+            plan=plan_mask,
+            step_index=3,
+            product_type="hair_mask",
+            status=RoadmapStep.Status.MISSING,
+        )
+
+        t0 = timezone.now() - timedelta(days=14)
+        exposed_conditioner = RoadmapEvent.objects.create(
+            user=hair_user,
+            plan=plan_conditioner,
+            step=step_conditioner,
+            event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            context={"category": "haircare", "sources": ["roadmap_api"]},
+        )
+        RoadmapEvent.objects.filter(id=exposed_conditioner.id).update(created_at=t0)
+        exposed_mask = RoadmapEvent.objects.create(
+            user=hair_user,
+            plan=plan_mask,
+            step=step_mask,
+            event_type=RoadmapEvent.Type.STEP_EXPOSED,
+            context={"category": "haircare", "sources": ["roadmap_api"]},
+        )
+        RoadmapEvent.objects.filter(id=exposed_mask.id).update(created_at=t0 + timedelta(days=1))
+
+        tx_prior = Transaction.objects.create(
+            user=hair_user,
+            total_amount=Decimal("11.00"),
+            channel="web",
+            idempotency_key="v4-hair-target-filter-prior",
+        )
+        Transaction.objects.filter(id=tx_prior.id).update(created_at=t0 - timedelta(days=1))
+        TransactionItem.objects.create(
+            transaction=tx_prior,
+            product=shampoo,
+            quantity=1,
+            unit_price=Decimal("11.00"),
+        )
+        tx_cond = Transaction.objects.create(
+            user=hair_user,
+            total_amount=Decimal("13.00"),
+            channel="web",
+            idempotency_key="v4-hair-target-filter-cond",
+        )
+        Transaction.objects.filter(id=tx_cond.id).update(created_at=t0 + timedelta(days=2))
+        TransactionItem.objects.create(
+            transaction=tx_cond,
+            product=conditioner,
+            quantity=1,
+            unit_price=Decimal("13.00"),
+        )
+        tx_mask = Transaction.objects.create(
+            user=hair_user,
+            total_amount=Decimal("17.00"),
+            channel="web",
+            idempotency_key="v4-hair-target-filter-mask",
+        )
+        Transaction.objects.filter(id=tx_mask.id).update(created_at=t0 + timedelta(days=3))
+        TransactionItem.objects.create(
+            transaction=tx_mask,
+            product=hair_mask,
+            quantity=1,
+            unit_price=Decimal("17.00"),
+        )
+
+        with TemporaryDirectory() as tmp_dir:
+            out_dir = Path(tmp_dir)
+            call_command(
+                "build_roadmap_ml_dataset_v4",
+                days=180,
+                out_dir=str(out_dir),
+                categories="haircare",
+                planned_target_product_types="conditioner",
+                label_window_days=7,
+                popularity_top_n=10,
+                owned_top_k=10,
+            )
+            frame = _read_dataset(out_dir)
+            self.assertFalse(frame.empty)
+            self.assertEqual(set(frame["planned_target_product_type"].astype(str).tolist()), {"conditioner"})
+            self.assertEqual(int(frame["episode_id"].nunique()), 1)
+
+            metadata = json.loads((out_dir / "metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(list(metadata.get("selected_planned_target_product_types") or []), ["conditioner"])
 
 
 class RoadmapNextStepV4AdapterTests(TestCase):
@@ -2517,6 +2815,205 @@ class RoadmapNextStepV4HaircareLeaveInRerankTests(TestCase):
                 )
 
         self.assertEqual(rows[0]["candidate_type"], "hair_oil")
+
+    def test_runtime_corechain_teacher_rerank_promotes_conditioner_for_corechain_target(self):
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=2), "v4-corechain-teacher-1")
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"shampoo": 1.0, "conditioner": 0.1, "hair_mask": 0.2}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        class DummyTeacherModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"conditioner": 2.0, "hair_mask": 0.5, "shampoo": 0.0}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        base_artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["shampoo", "conditioner", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"shampoo": 0.5, "conditioner": 0.3, "hair_mask": 0.2}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+        teacher_artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyTeacherModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["shampoo", "conditioner", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"shampoo": 0.2, "conditioner": 0.6, "hair_mask": 0.2}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_RERANK_ENABLED=True,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_MODEL_PATH="teacher-corechain.pkl",
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_WEIGHT=0.75,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_TARGETS=["conditioner", "hair_mask"],
+        ):
+            with patch("roadmap_app.ml_next_step._load_model", return_value=base_artifact), patch(
+                "roadmap_app.ml_next_step._load_model_for_path",
+                return_value=teacher_artifact,
+            ) as teacher_loader:
+                rows = predict_next_product_types(
+                    user=self.user,
+                    context_product_ids=[],
+                    category="haircare",
+                    planned_target_product_type="conditioner",
+                    planned_target_step_index=2,
+                    candidate_types=["shampoo", "conditioner", "hair_mask"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "conditioner")
+        self.assertIn("haircare_corechain_teacher_rerank", rows[0]["runtime_policies"])
+        self.assertGreater(
+            float(rows[0]["runtime_policy_biases"]["haircare_corechain_teacher_rerank"]),
+            0.0,
+        )
+        teacher_loader.assert_called_once_with("teacher-corechain.pkl")
+
+    def test_runtime_corechain_teacher_rerank_does_not_override_non_corechain_target(self):
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=2), "v4-corechain-teacher-2")
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"shampoo": 1.0, "conditioner": 0.1, "hair_oil": 0.2}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        class DummyTeacherModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"conditioner": 2.0, "hair_oil": 0.5, "shampoo": 0.0}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        base_artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["shampoo", "conditioner", "hair_oil"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"shampoo": 0.5, "conditioner": 0.2, "hair_oil": 0.3}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+        teacher_artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyTeacherModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["shampoo", "conditioner", "hair_oil"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"shampoo": 0.1, "conditioner": 0.7, "hair_oil": 0.2}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_RERANK_ENABLED=True,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_MODEL_PATH="teacher-corechain.pkl",
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_WEIGHT=0.75,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_TARGETS=["conditioner", "hair_mask"],
+        ):
+            with patch("roadmap_app.ml_next_step._load_model", return_value=base_artifact), patch(
+                "roadmap_app.ml_next_step._load_model_for_path",
+                return_value=teacher_artifact,
+            ):
+                rows = predict_next_product_types(
+                    user=self.user,
+                    context_product_ids=[],
+                    category="haircare",
+                    planned_target_product_type="hair_oil",
+                    planned_target_step_index=4,
+                    candidate_types=["shampoo", "conditioner", "hair_oil"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "shampoo")
+        self.assertNotIn("haircare_corechain_teacher_rerank", rows[0].get("runtime_policies") or [])
 
 
 class RoadmapNextStepV4TrainingTests(TestCase):
