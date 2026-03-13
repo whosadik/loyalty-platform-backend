@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from catalog.models import Product
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
+from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate
 from offers.models import CampaignBudget, Offer, OfferAssignment
 from offers.services import get_or_assign_next_offer
 from transactions.models import OwnedProduct, Transaction, TransactionItem
@@ -122,7 +123,10 @@ class Command(BaseCommand):
         def ensure_offer(campaign: CampaignBudget, name: str, **defaults):
             Offer.objects.update_or_create(campaign=campaign, name=name, defaults=defaults)
 
-        bronze, _ = Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": 1.0})
+        bronze, _ = Tier.objects.get_or_create(
+            name="Bronze",
+            defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE},
+        )
 
         default_campaign = ensure_campaign("default", weekly_limit="100000.0", priority=100)
         onboarding_campaign = ensure_campaign("onboarding_first_order", weekly_limit="50000.0", priority=5)
@@ -326,7 +330,9 @@ class Command(BaseCommand):
                 Transaction.objects.filter(id=txn.id).update(created_at=created_at)
 
                 la = LoyaltyAccount.objects.select_for_update().get(user=user)
-                rate = Decimal(str(la.tier.points_rate if la.tier else 1.0))
+                rate = get_effective_points_rate(
+                    la.tier.points_rate if la.tier else DEFAULT_POINTS_RATE
+                )
                 points = int(round(float(total * rate)))
                 entry = LoyaltyLedgerEntry.objects.create(
                     account=la,

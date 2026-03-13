@@ -71,6 +71,42 @@ CADENCE_BY_TYPE: dict[str, str] = {
     "scalp_serum": RoadmapStep.Cadence.OPTIONAL,
 }
 
+ROADMAP_OWNED_FRESHNESS_DEFAULTS: dict[str, dict[str, int]] = {
+    "haircare": {
+        "shampoo": 45,
+        "conditioner": 45,
+        "hair_mask": 60,
+        "hair_oil": 75,
+        "scalp_serum": 45,
+        "leave_in": 45,
+    },
+    "skincare": {
+        "cleanser": 45,
+        "serum": 60,
+        "moisturizer": 60,
+        "spf": 45,
+        "toner": 60,
+        "mask": 75,
+        "eye_cream": 90,
+        "essence": 75,
+    },
+    "makeup": {
+        "foundation": 120,
+        "mascara": 120,
+        "blush": 180,
+        "lipstick": 180,
+        "eyeshadow": 240,
+        "primer": 120,
+        "setting_spray": 120,
+    },
+    "fragrance": {
+        "edp": 365,
+        "body_mist": 180,
+        "edt": 365,
+        "perfume_oil": 365,
+    },
+}
+
 FRAGRANCE_DEFAULT_CHAIN = ["warm_day", "warm_evening", "cold_day", "cold_evening"]
 
 
@@ -136,6 +172,29 @@ def _normalized_int_set(value: Any) -> set[int]:
     return out
 
 
+def _normalized_nested_int_dict(value: Any) -> dict[str, dict[str, int]]:
+    out: dict[str, dict[str, int]] = {}
+    if not isinstance(value, dict):
+        return out
+    for raw_category, raw_mapping in value.items():
+        category = str(raw_category or "").strip().lower()
+        if not category or not isinstance(raw_mapping, dict):
+            continue
+        normalized_mapping: dict[str, int] = {}
+        for raw_key, raw_days in raw_mapping.items():
+            key = str(raw_key or "").strip().lower()
+            try:
+                days = int(raw_days)
+            except Exception:
+                continue
+            if not key or days <= 0:
+                continue
+            normalized_mapping[key] = int(days)
+        if normalized_mapping:
+            out[category] = normalized_mapping
+    return out
+
+
 def _default_rollout_meta() -> dict[str, Any]:
     return {
         "rollout_mode": "none",
@@ -146,6 +205,52 @@ def _default_rollout_meta() -> dict[str, Any]:
         "partial_match_product_type": None,
         "partial_match_step_index": None,
     }
+
+
+def _roadmap_owned_freshness_days(category: str, product_type: str) -> int | None:
+    category_key = str(category or "").strip().lower()
+    product_type_key = str(product_type or "").strip().lower()
+    overrides = _normalized_nested_int_dict(
+        getattr(settings, "ROADMAP_OWNED_FRESHNESS_DAYS", None)
+    )
+    category_overrides = overrides.get(category_key, {})
+    if product_type_key in category_overrides:
+        return int(category_overrides[product_type_key])
+    if "__default__" in category_overrides:
+        return int(category_overrides["__default__"])
+    category_defaults = ROADMAP_OWNED_FRESHNESS_DEFAULTS.get(category_key, {})
+    if product_type_key in category_defaults:
+        return int(category_defaults[product_type_key])
+    if "__default__" in category_defaults:
+        return int(category_defaults["__default__"])
+    return None
+
+
+def _roadmap_owned_is_current(owned: OwnedProduct, *, category: str, now) -> bool:
+    if not bool(getattr(owned, "is_active", False)):
+        return False
+    if int(getattr(owned, "quantity_total", 0) or 0) <= 0:
+        return False
+
+    finish_date = getattr(owned, "finish_date", None)
+    today = timezone.localdate(now)
+    if finish_date is not None:
+        return bool(finish_date >= today)
+
+    product = getattr(owned, "product", None)
+    product_type = str(getattr(product, "product_type", "") or "").strip().lower()
+    freshness_days = _roadmap_owned_freshness_days(category, product_type)
+    if freshness_days is None:
+        return True
+
+    anchor_dt = getattr(owned, "last_acquired_at", None) or getattr(owned, "acquired_at", None)
+    if anchor_dt is None:
+        return True
+    try:
+        age_days = (now - anchor_dt).days
+    except Exception:
+        return True
+    return bool(age_days <= int(freshness_days))
 
 
 def _partial_rollout_percent(category: str | None = None) -> int:
@@ -705,11 +810,16 @@ def _semantic_completion_match_meta(
 
 
 def _category_owned(user, category: str) -> tuple[list[OwnedProduct], set[int], list[str], set[str]]:
+    now = timezone.now()
     owned_rows = list(
         OwnedProduct.objects.filter(user=user, is_active=True, product__category=category)
         .select_related("product")
         .order_by("-last_acquired_at", "-id")
     )
+    owned_rows = [
+        row for row in owned_rows
+        if _roadmap_owned_is_current(row, category=category, now=now)
+    ]
     owned_product_ids = {int(row.product_id) for row in owned_rows}
     owned_types_ordered = _unique([str(row.product.product_type) for row in owned_rows if row.product_id])
     owned_types_set = set(owned_types_ordered)

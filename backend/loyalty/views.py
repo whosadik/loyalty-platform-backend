@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from backend.api_serializers import ApiErrorSerializer
 from .models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
+from .points import DEFAULT_POINTS_RATE
 from .serializers import (
     MeLoyaltyResponseSerializer,
     RedeemPointsRequestSerializer,
@@ -18,7 +19,7 @@ def _ensure_account(user) -> LoyaltyAccount:
     if account.tier_id is None:
         bronze, _ = Tier.objects.get_or_create(
             name="Bronze",
-            defaults={"threshold_spend_90d": 0, "points_rate": 1.0},
+            defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE},
         )
         account.tier = bronze
         account.save(update_fields=["tier"])

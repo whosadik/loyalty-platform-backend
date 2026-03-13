@@ -13,7 +13,7 @@ from offers.models import CampaignBudget, Offer, OfferAssignment
 from offers.services import get_or_assign_next_offer
 from roadmap_app.events import record_exposed_from_offer_assignment
 from roadmap_app.models import RoadmapPlan, RoadmapStep
-from roadmap_app.services import update_roadmap_from_purchase
+from roadmap_app.services import refresh_roadmap, update_roadmap_from_purchase
 from transactions.models import OwnedProduct
 
 
@@ -156,6 +156,87 @@ class RoadmapRuntimeIntegrityTests(TestCase):
         self.assertIsNotNone(next_step)
         self.assertEqual(str(next_step.product_type), "hair_mask")
         self.assertEqual(str(roadmap_ctx["next_product_type"]), "hair_mask")
+
+    def test_refresh_roadmap_ignores_stale_haircare_owned_products(self):
+        shampoo = Product.objects.create(
+            name="Stale Hair Shampoo",
+            brand="B",
+            price=Decimal("11.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Stale Hair Conditioner",
+            brand="B",
+            price=Decimal("12.00"),
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Stale Hair Mask",
+            brand="B",
+            price=Decimal("14.00"),
+            category="haircare",
+            product_type="hair_mask",
+            in_stock=True,
+        )
+
+        now = timezone.now()
+        OwnedProduct.objects.create(
+            user=self.user,
+            product=shampoo,
+            quantity_total=1,
+            is_active=True,
+            last_acquired_at=now - timedelta(days=90),
+        )
+
+        plan = refresh_roadmap(self.user, category="haircare", post_ctx=None)
+        next_step = next((step for step in plan.steps.all() if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}), None)
+        ml_meta = (plan.meta or {}).get("ml") or {}
+
+        self.assertIsNotNone(next_step)
+        self.assertEqual(str(next_step.product_type), "shampoo")
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "shampoo")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index") or 0), 1)
+
+    def test_refresh_roadmap_respects_future_finish_date_even_if_last_acquired_is_old(self):
+        shampoo = Product.objects.create(
+            name="Fresh Hair Shampoo",
+            brand="B",
+            price=Decimal("11.00"),
+            category="haircare",
+            product_type="shampoo",
+            in_stock=True,
+        )
+        Product.objects.create(
+            name="Fresh Hair Conditioner",
+            brand="B",
+            price=Decimal("12.00"),
+            category="haircare",
+            product_type="conditioner",
+            in_stock=True,
+        )
+
+        now = timezone.now()
+        OwnedProduct.objects.create(
+            user=self.user,
+            product=shampoo,
+            quantity_total=1,
+            is_active=True,
+            last_acquired_at=now - timedelta(days=120),
+            finish_date=timezone.localdate(now) + timedelta(days=5),
+        )
+
+        plan = refresh_roadmap(self.user, category="haircare", post_ctx=None)
+        next_step = next((step for step in plan.steps.all() if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}), None)
+        ml_meta = (plan.meta or {}).get("ml") or {}
+
+        self.assertIsNotNone(next_step)
+        self.assertEqual(str(next_step.product_type), "conditioner")
+        self.assertEqual(str(ml_meta.get("planned_target_product_type")), "conditioner")
+        self.assertEqual(int(ml_meta.get("planned_target_step_index") or 0), 2)
 
     def test_get_or_assign_next_offer_copies_step_identity_into_reason(self):
         campaign = self._campaign("integrity_default")

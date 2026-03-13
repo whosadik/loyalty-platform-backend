@@ -9,7 +9,17 @@ from django.db import transaction
 from django.utils import timezone
 
 from roadmap_app.models import RoadmapPlan
-from roadmap_app.services import get_active_plan, refresh_roadmap
+from roadmap_app.services import (
+    _build_chain,
+    _category_owned,
+    _context_product_ids,
+    _owned_fragrance_slots,
+    _post_ctx_types_by_category,
+    _purchased_fragrance_slots,
+    _unique,
+    get_active_plan,
+    refresh_roadmap,
+)
 from transactions.models import Transaction
 
 
@@ -115,6 +125,12 @@ class Command(BaseCommand):
             help="Replay every matching transaction. Default is latest matching transaction per user.",
         )
         parser.add_argument(
+            "--analysis-only",
+            action="store_true",
+            default=False,
+            help="Read-only fast path: analyze current runtime chain/slot via _build_chain without refreshing plans.",
+        )
+        parser.add_argument(
             "--write",
             action="store_true",
             default=False,
@@ -130,7 +146,10 @@ class Command(BaseCommand):
         include_ga = bool(options["include_ga"])
         include_inactive = bool(options["include_inactive"])
         replay_all_transactions = bool(options["all_transactions"])
+        analysis_only = bool(options["analysis_only"])
         should_write = bool(options["write"])
+        if analysis_only and should_write:
+            raise CommandError("--analysis-only cannot be combined with --write")
 
         limit = options.get("limit")
         if limit is not None:
@@ -204,7 +223,14 @@ class Command(BaseCommand):
                 after: dict[str, Any] | None = None
 
                 try:
-                    if should_write:
+                    if analysis_only:
+                        after = self._analysis_snapshot(
+                            user=txn.user,
+                            category=category_key,
+                            post_ctx=post_ctx,
+                            active_plan=active_plan,
+                        )
+                    elif should_write:
                         refreshed = refresh_roadmap(txn.user, category=category_key, post_ctx=post_ctx)
                         after = _plan_snapshot(refreshed)
                     else:
@@ -254,7 +280,11 @@ class Command(BaseCommand):
 
         self.stdout.write("# Replay Recent Purchase-Context Roadmaps")
         self.stdout.write("")
-        self.stdout.write(f"- mode: `{'write' if should_write else 'dry-run'}`")
+        if analysis_only:
+            mode = "analysis-only"
+        else:
+            mode = "write" if should_write else "dry-run"
+        self.stdout.write(f"- mode: `{mode}`")
         self.stdout.write(f"- analysis window: last `{days}` days")
         self.stdout.write(f"- category: `{category}`")
         self.stdout.write(f"- include ga_* users: `{include_ga}`")
@@ -310,3 +340,40 @@ class Command(BaseCommand):
             self.stdout.write("## Errors")
             for item in errors:
                 self.stdout.write(f"- {item}")
+
+    def _analysis_snapshot(
+        self,
+        *,
+        user,
+        category: str,
+        post_ctx: dict[str, Any],
+        active_plan: RoadmapPlan | None,
+    ) -> dict[str, Any]:
+        _, _, owned_types_ordered, _ = _category_owned(user, category)
+        purchased_by_category = _post_ctx_types_by_category(post_ctx)
+        purchased_types = _unique([str(x) for x in purchased_by_category.get(category, [])])
+        if category == "fragrance":
+            owned_types_ordered = _unique(_owned_fragrance_slots(user))
+            purchased_types = _unique(_purchased_fragrance_slots(post_ctx))
+        context_product_ids = _context_product_ids(user, post_ctx, limit=50)
+        _, _, _, ml_runtime = _build_chain(
+            user=user,
+            category=category,
+            purchased_types=purchased_types,
+            owned_types_ordered=owned_types_ordered,
+            context_product_ids=context_product_ids,
+            refresh_caller="update_roadmap_from_purchase",
+        )
+        return {
+            "plan_id": int(getattr(active_plan, "id", 0) or 0),
+            "category": str(category or "").strip().lower(),
+            "decision": str(ml_runtime.get("decision") or "").strip().lower() or "disabled",
+            "model_slot": str(ml_runtime.get("model_slot") or "active").strip().lower() or "active",
+            "planned_target_product_type": str(
+                ml_runtime.get("planned_target_product_type") or ""
+            ).strip().lower(),
+            "planned_target_step_index": int(ml_runtime.get("planned_target_step_index") or 0),
+            "rollout_reason": str(ml_runtime.get("rollout_reason") or "").strip().lower(),
+            "refresh_caller": "update_roadmap_from_purchase",
+            "model_version": str(ml_runtime.get("model_version") or "").strip(),
+        }

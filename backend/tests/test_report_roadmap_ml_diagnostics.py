@@ -1048,6 +1048,7 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["conditioner", "hair_mask", "leave_in", "scalp_serum"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_ACTIVE_MODEL_PRODUCT_TYPES=["leave_in", "scalp_serum"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PERCENT=100,
             ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="diag_partial_mix_test",
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="/models/semantic_v4.pkl",
         ):
@@ -1185,6 +1186,7 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["conditioner", "hair_mask", "leave_in", "scalp_serum"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_ACTIVE_MODEL_PRODUCT_TYPES=["leave_in", "scalp_serum"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=100,
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PERCENT=100,
             ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="diag_partial_mix_md_test",
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_MODEL_PATH="/models/semantic_v4.pkl",
         ):

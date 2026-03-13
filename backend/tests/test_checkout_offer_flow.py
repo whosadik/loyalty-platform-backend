@@ -16,7 +16,10 @@ class CheckoutOfferFlowTests(APITestCase):
 
         CustomerProfile.objects.get_or_create(user=self.user)
 
-        bronze, _ = Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": 1.0})
+        bronze, _ = Tier.objects.get_or_create(
+            name="Bronze",
+            defaults={"threshold_spend_90d": 0, "points_rate": Decimal("0.10")},
+        )
         LoyaltyAccount.objects.get_or_create(user=self.user, defaults={"tier": bronze, "points_balance": 0})
 
         self.p1 = Product.objects.create(

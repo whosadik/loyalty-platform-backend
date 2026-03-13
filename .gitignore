@@ -41,3 +41,4 @@ data/catalog/**
 *.csv
 *.zip
 docs/
+logs/

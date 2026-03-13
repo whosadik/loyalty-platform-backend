@@ -4,13 +4,14 @@ from django.dispatch import receiver
 
 from .models import CustomerProfile
 from loyalty.models import LoyaltyAccount, Tier
+from loyalty.points import DEFAULT_POINTS_RATE
 
 
 def _ensure_default_tiers():
     # Создадим дефолтные уровни один раз (можно позже вынести в отдельную команду)
-    Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": 1.0})
-    Tier.objects.get_or_create(name="Silver", defaults={"threshold_spend_90d": 100, "points_rate": 1.2})
-    Tier.objects.get_or_create(name="Gold", defaults={"threshold_spend_90d": 250, "points_rate": 1.5})
+    Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE})
+    Tier.objects.get_or_create(name="Silver", defaults={"threshold_spend_90d": 100, "points_rate": DEFAULT_POINTS_RATE})
+    Tier.objects.get_or_create(name="Gold", defaults={"threshold_spend_90d": 250, "points_rate": DEFAULT_POINTS_RATE})
 
 
 @receiver(post_save, sender=settings.AUTH_USER_MODEL)

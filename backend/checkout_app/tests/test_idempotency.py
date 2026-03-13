@@ -18,7 +18,7 @@ class CheckoutIdempotencyTests(APITestCase):
         CustomerProfile.objects.get_or_create(user=self.user)
         bronze, _ = Tier.objects.get_or_create(
             name="Bronze",
-            defaults={"threshold_spend_90d": Decimal("0.00"), "points_rate": Decimal("1.00")},
+            defaults={"threshold_spend_90d": Decimal("0.00"), "points_rate": Decimal("0.10")},
         )
         LoyaltyAccount.objects.get_or_create(
             user=self.user,

@@ -10,6 +10,7 @@ from catalog.models import Product
 from users_app.models import CustomerProfile
 from transactions.models import OwnedProduct, Transaction, TransactionItem
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
+from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate
 from .models import Offer, OfferAssignment, CampaignBudget, OfferEvent
 from .serializers import RedeemOfferRequestSerializer, RedeemOfferResponseSerializer
 from offers.services import get_or_assign_next_offer 
@@ -44,7 +45,10 @@ def _ensure_loyalty_account(user):
     account, created = LoyaltyAccount.objects.get_or_create(user=user)
     if account.tier_id is None:
         # на случай старых пользователей
-        bronze, _ = Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": 1.0})
+        bronze, _ = Tier.objects.get_or_create(
+            name="Bronze",
+            defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE},
+        )
         account.tier = bronze
         account.save(update_fields=["tier"])
     return account
@@ -356,7 +360,10 @@ class RedeemOfferView(APIView):
             
             # Пересчёт tier перед начислением (MVP)
             account = _recalculate_tier(request.user, now)
-            points_rate = Decimal(str(account.tier.points_rate if account.tier else 1.0))
+            account = LoyaltyAccount.objects.select_for_update().get(id=account.id)
+            points_rate = get_effective_points_rate(
+                account.tier.points_rate if account.tier else DEFAULT_POINTS_RATE
+            )
 
             lines = [
                 Line(product=it.product, quantity=int(it.quantity), unit_price=Decimal(str(it.unit_price)))
@@ -369,6 +376,7 @@ class RedeemOfferView(APIView):
                 target=target,
                 lines=lines,
                 points_rate=points_rate,
+                redeem_points=int((txn.pricing_meta or {}).get("points_redeemed") or 0),
             )
 
             if not calc["ok"]:
@@ -550,12 +558,14 @@ class OfferPreviewView(APIView):
         if account.tier_id is None:
             bronze, _ = Tier.objects.get_or_create(
                 name="Bronze",
-                defaults={"threshold_spend_90d": 0, "points_rate": 1.0},
+                defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE},
             )
             account.tier = bronze
             account.save(update_fields=["tier"])
 
-        points_rate = Decimal(str(account.tier.points_rate if account.tier else 1.0))
+        points_rate = get_effective_points_rate(
+            account.tier.points_rate if account.tier else DEFAULT_POINTS_RATE
+        )
 
         calc = apply_offer_to_totals(
             offer_type=assignment.offer.offer_type,

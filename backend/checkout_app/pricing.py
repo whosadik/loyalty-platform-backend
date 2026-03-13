@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Iterable, Any
+from typing import Any, Iterable
 
 from catalog.models import Product
+from loyalty.points import clamp_redeem_points, get_effective_points_rate
 
 
 @dataclass
@@ -56,6 +57,39 @@ def calc_eligible(lines: Iterable[Line], target: dict) -> tuple[Decimal, list[in
     return d2(eligible_total), eligible_ids
 
 
+def _split_redeemed_amount(
+    *,
+    payable_total_before_points: Decimal,
+    eligible_total_before_points: Decimal,
+    points_redeemed: int,
+) -> tuple[Decimal, Decimal]:
+    total_before_points = d2(max(payable_total_before_points, Decimal("0")))
+    eligible_before_points = d2(
+        min(max(eligible_total_before_points, Decimal("0")), total_before_points)
+    )
+
+    if total_before_points <= 0 or points_redeemed <= 0:
+        return eligible_before_points, d2(total_before_points - eligible_before_points)
+
+    redeem_amount = Decimal(points_redeemed)
+    rest_before_points = d2(total_before_points - eligible_before_points)
+
+    if eligible_before_points <= 0:
+        eligible_redeemed = Decimal("0")
+    elif eligible_before_points >= total_before_points:
+        eligible_redeemed = redeem_amount
+    else:
+        eligible_share = eligible_before_points / total_before_points
+        eligible_redeemed = d2(redeem_amount * eligible_share)
+
+    eligible_redeemed = min(eligible_redeemed, eligible_before_points, redeem_amount)
+    rest_redeemed = min(redeem_amount - eligible_redeemed, rest_before_points)
+
+    eligible_payable = d2(max(eligible_before_points - eligible_redeemed, Decimal("0")))
+    rest_payable = d2(max(rest_before_points - rest_redeemed, Decimal("0")))
+    return eligible_payable, rest_payable
+
+
 def apply_offer_to_totals(
     *,
     offer_type: str,
@@ -63,7 +97,9 @@ def apply_offer_to_totals(
     target: dict,
     lines: list[Line],
     points_rate: Decimal,
+    redeem_points: int = 0,
 ) -> dict[str, Any]:
+    normalized_points_rate = get_effective_points_rate(points_rate)
     gross_total = calc_gross(lines)
     eligible_total, eligible_item_ids = calc_eligible(lines, target)
 
@@ -78,33 +114,46 @@ def apply_offer_to_totals(
         }
 
     discount_amount = Decimal("0")
-    net_total = gross_total
+    payable_total_before_points = gross_total
     multiplier = Decimal("1")
 
     if offer_type == "discount":
         percent = offer_value
         discount_amount = d2(eligible_total * (percent / Decimal("100")))
-        net_total = gross_total - discount_amount
-        if net_total < 0:
-            net_total = Decimal("0")
-        net_total = d2(net_total)
+        payable_total_before_points = gross_total - discount_amount
+        if payable_total_before_points < 0:
+            payable_total_before_points = Decimal("0")
+        payable_total_before_points = d2(payable_total_before_points)
 
     elif offer_type == "points_multiplier":
         multiplier = offer_value
 
-    # базовые points от net_total (после скидки)
-    base_points = int(round(float(net_total * points_rate)))
+    eligible_total_after_offer = eligible_total
+    if offer_type == "discount":
+        if scope == "cart":
+            eligible_total_after_offer = payable_total_before_points
+        else:
+            eligible_total_after_offer = eligible_total - discount_amount
+    eligible_total_after_offer = d2(max(eligible_total_after_offer, Decimal("0")))
+
+    points_redeemed = clamp_redeem_points(redeem_points, payable_total_before_points)
+    eligible_payable_total, rest_payable_total = _split_redeemed_amount(
+        payable_total_before_points=payable_total_before_points,
+        eligible_total_before_points=eligible_total_after_offer,
+        points_redeemed=points_redeemed,
+    )
+    payable_total = d2(eligible_payable_total + rest_payable_total)
+
+    # Points are earned from the amount the customer actually pays after all deductions.
+    base_points = int(round(float(payable_total * normalized_points_rate)))
     est_points = base_points
 
     if offer_type == "points_multiplier" and multiplier != Decimal("1"):
         if scope == "cart":
             est_points = int(round(float(Decimal(base_points) * multiplier)))
         else:
-            eligible_points = int(round(float(eligible_total * points_rate)))
-            rest_total = gross_total - eligible_total
-            if rest_total < 0:
-                rest_total = Decimal("0")
-            rest_points = int(round(float(rest_total * points_rate)))
+            eligible_points = int(round(float(eligible_payable_total * normalized_points_rate)))
+            rest_points = int(round(float(rest_payable_total * normalized_points_rate)))
             est_points = rest_points + int(round(float(Decimal(eligible_points) * multiplier)))
 
     return {
@@ -113,8 +162,11 @@ def apply_offer_to_totals(
         "eligible_total": str(eligible_total),
         "eligible_item_ids": eligible_item_ids,
         "discount_amount": str(d2(discount_amount)),
-        "net_total": str(d2(net_total)),
+        "net_total_before_points": str(d2(payable_total_before_points)),
+        "net_total": str(payable_total),
+        "points_redeemed": points_redeemed,
         "points_multiplier": str(multiplier),
         "base_points": base_points,
         "estimated_points_earned": est_points,
+        "points_rate": str(normalized_points_rate),
     }

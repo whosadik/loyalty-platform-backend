@@ -126,3 +126,44 @@ class ReplayRecentPurchaseContextRoadmapsTests(TestCase):
         self.assertIn("plans updated: `1`", text)
         self.assertEqual(str(ml.get("model_slot")), "partial_candidate")
         self.assertEqual(str(ml.get("planned_target_product_type")), "hair_mask")
+
+    def test_analysis_only_uses_build_chain_without_refreshing_plan(self):
+        plan, _ = self._fixture("purchase_replay_analysis")
+
+        out = StringIO()
+        with patch(
+            "roadmap_app.management.commands.replay_recent_purchase_context_roadmaps._build_chain",
+            return_value=(
+                ["shampoo", "conditioner", "hair_mask"],
+                {},
+                [],
+                {
+                    "decision": "model_used",
+                    "model_slot": "partial_candidate",
+                    "planned_target_product_type": "hair_mask",
+                    "planned_target_step_index": 3,
+                    "rollout_reason": "selected",
+                    "model_version": "semantic_v4_local",
+                },
+            ),
+        ) as build_chain_mock, patch(
+            "roadmap_app.management.commands.replay_recent_purchase_context_roadmaps.refresh_roadmap",
+        ) as refresh_mock:
+            call_command(
+                "replay_recent_purchase_context_roadmaps",
+                days=30,
+                category="haircare",
+                analysis_only=True,
+                stdout=out,
+            )
+
+        text = out.getvalue()
+        plan.refresh_from_db()
+        ml = (plan.meta or {}).get("ml") or {}
+
+        self.assertIn("mode: `analysis-only`", text)
+        self.assertIn("partial_candidate: `1`", text)
+        self.assertIn("hair_mask: `1`", text)
+        self.assertEqual(str(ml.get("model_slot")), "active")
+        build_chain_mock.assert_called_once()
+        refresh_mock.assert_not_called()

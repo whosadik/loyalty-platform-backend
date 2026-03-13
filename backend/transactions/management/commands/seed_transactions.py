@@ -11,6 +11,7 @@ from django.db.models import Sum
 from catalog.models import Product
 from transactions.models import Transaction, TransactionItem, OwnedProduct
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
+from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate
 
 
 class Command(BaseCommand):
@@ -49,9 +50,9 @@ class Command(BaseCommand):
             by_cat_type.setdefault((p["category"], p["product_type"]), []).append(p)
 
         # ensure tiers exist
-        Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": 1.0})
-        Tier.objects.get_or_create(name="Silver", defaults={"threshold_spend_90d": 100, "points_rate": 1.2})
-        Tier.objects.get_or_create(name="Gold", defaults={"threshold_spend_90d": 250, "points_rate": 1.5})
+        Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE})
+        Tier.objects.get_or_create(name="Silver", defaults={"threshold_spend_90d": 100, "points_rate": DEFAULT_POINTS_RATE})
+        Tier.objects.get_or_create(name="Gold", defaults={"threshold_spend_90d": 250, "points_rate": DEFAULT_POINTS_RATE})
 
         # users
         users = list(User.objects.all().order_by("id")[: opt["users"]])
@@ -174,7 +175,9 @@ class Command(BaseCommand):
 
                 if opt["with_loyalty"]:
                     acc = LoyaltyAccount.objects.select_for_update().get(user=user)
-                    points_rate = Decimal(str(acc.tier.points_rate if acc.tier else 1.0))
+                    points_rate = get_effective_points_rate(
+                        acc.tier.points_rate if acc.tier else DEFAULT_POINTS_RATE
+                    )
                     earned = int(round(float(total * points_rate)))
 
                     LoyaltyLedgerEntry.objects.create(

@@ -8,6 +8,7 @@ from django.db.models import Count, Max, Sum
 from django.utils import timezone
 
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
+from loyalty.points import DEFAULT_POINTS_RATE
 from transactions.models import Transaction
 from transactions.models import TransactionItem
 from users_app.models import CustomerProfile
@@ -18,7 +19,7 @@ def _ensure_account(user) -> LoyaltyAccount:
     if acc.tier_id is None:
         bronze, _ = Tier.objects.get_or_create(
             name="Bronze",
-            defaults={"threshold_spend_90d": 0, "points_rate": 1.0},
+            defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE},
         )
         acc.tier = bronze
         acc.save(update_fields=["tier"])

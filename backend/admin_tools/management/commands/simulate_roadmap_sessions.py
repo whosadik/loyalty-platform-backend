@@ -979,7 +979,7 @@ class Command(BaseCommand):
             tier = Tier.objects.create(
                 name="Bronze",
                 threshold_spend_90d=Decimal("0.00"),
-                points_rate=Decimal("1.00"),
+                points_rate=Decimal("0.10"),
             )
 
         existing_profile_ids = set(
