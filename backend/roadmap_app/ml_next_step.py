@@ -1228,6 +1228,425 @@ def _apply_runtime_corechain_teacher_rerank(
     return blended_rows
 
 
+def _apply_runtime_scalp_teacher_rerank(
+    *,
+    category: str,
+    rows_out: list[dict[str, Any]],
+    now_utc,
+    items: list[dict[str, Any]] | None,
+    profile: Any | None,
+    context_products: list[dict[str, Any]] | None,
+    catalog_products: list[dict[str, Any]] | None,
+    planned_target_product_type: str | None,
+    planned_target_step_index: int | None,
+    candidate_types: list[str] | None,
+) -> list[dict[str, Any]]:
+    if not bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_RERANK_ENABLED", False)):
+        return rows_out
+    if str(category or "").strip().lower() != "haircare":
+        return rows_out
+    if not rows_out:
+        return rows_out
+
+    planned_target = str(planned_target_product_type or "").strip().lower()
+    allowed_targets = {
+        str(item or "").strip().lower()
+        for item in getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_TARGETS", []) or []
+        if str(item or "").strip()
+    }
+    if planned_target not in allowed_targets:
+        return rows_out
+
+    teacher_path_raw = str(
+        getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_MODEL_PATH", "") or ""
+    ).strip()
+    teacher_weight = max(
+        0.0,
+        _to_float(getattr(settings, "ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_WEIGHT", 0.75)),
+    )
+    if not teacher_path_raw or teacher_weight <= 0.0:
+        return rows_out
+
+    teacher_artifact = _load_model_for_path(teacher_path_raw)
+    if not isinstance(teacher_artifact, dict):
+        return rows_out
+    if str(teacher_artifact.get("task") or "").strip() != "roadmap_nextstep_v4_ranking":
+        return rows_out
+
+    teacher_rows = _predict_with_v4_artifact_from_sources(
+        artifact=teacher_artifact,
+        category=category,
+        now_utc=now_utc,
+        items=items,
+        profile=profile,
+        context_products=context_products,
+        catalog_products=catalog_products,
+        planned_target_product_type=planned_target_product_type,
+        planned_target_step_index=planned_target_step_index,
+        candidate_types=candidate_types,
+        allow_teacher_rerank=False,
+    )
+    if not teacher_rows:
+        return rows_out
+
+    blended_rows = blend_prediction_rows(
+        rows_out,
+        teacher_rows,
+        overlay_weight=teacher_weight,
+        overlay_label="teacher",
+    )
+    if not blended_rows:
+        return rows_out
+
+    policy_name = "haircare_scalp_teacher_rerank"
+    for row in blended_rows:
+        components = row.get("blend_components") if isinstance(row.get("blend_components"), dict) else {}
+        base_score = _to_float(components.get("base_score"))
+        blended_score = _to_float(row.get("score"))
+        policy_bias = float(round(blended_score - base_score, 6))
+        if abs(policy_bias) <= 1e-9:
+            continue
+        runtime_policy_biases = {
+            str(k): _to_float(v)
+            for k, v in (row.get("runtime_policy_biases") or {}).items()
+            if str(k).strip()
+        }
+        runtime_policies = [str(x).strip() for x in (row.get("runtime_policies") or []) if str(x).strip()]
+        runtime_policy_biases[policy_name] = policy_bias
+        if policy_name not in runtime_policies:
+            runtime_policies.append(policy_name)
+        row["runtime_policy_biases"] = runtime_policy_biases
+        row["runtime_policies"] = runtime_policies
+        row["runtime_bias"] = float(round(_to_float(row.get("runtime_bias")) + policy_bias, 6))
+    return blended_rows
+
+
+def _build_v4_feature_frame_from_sources(
+    *,
+    artifact: dict[str, Any],
+    category: str,
+    now_utc,
+    items: list[dict[str, Any]] | None,
+    profile: Any | None,
+    context_products: list[dict[str, Any]] | None,
+    catalog_products: list[dict[str, Any]] | None,
+    planned_target_product_type: str | None,
+    planned_target_step_index: int | None,
+    candidate_types: list[str] | None,
+) -> tuple[Any, list[str], list[str], list[str]]:
+    if pd is None:
+        return None, [], [], []
+
+    feature_columns = [str(x) for x in (artifact.get("feature_columns") or []) if str(x)]
+    if not feature_columns:
+        return None, [], [], []
+
+    categorical_features = [
+        str(x) for x in (artifact.get("categorical_features") or []) if str(x)
+    ]
+    numeric_features = [str(x) for x in (artifact.get("numeric_features") or []) if str(x)]
+
+    category = str(category or "").strip().lower()
+    if not category:
+        return None, [], [], []
+
+    candidates = [str(x).strip().lower() for x in (candidate_types or []) if str(x).strip()]
+    if not candidates:
+        candidates = [
+            str(x).strip().lower()
+            for x in ((artifact.get("candidate_types_by_category") or {}).get(category) or [])
+            if str(x).strip()
+        ]
+    candidates = list(dict.fromkeys(candidates))
+    if not candidates:
+        return None, [], [], []
+
+    now_utc = now_utc.astimezone(dt_timezone.utc)
+    since_90d = now_utc - timedelta(days=90)
+
+    normalized_items: list[dict[str, Any]] = []
+    for row in items or []:
+        item_category = str(row.get("category") or "").strip().lower()
+        item_type = str(row.get("product_type") or "").strip().lower()
+        if not item_category or not item_type:
+            continue
+        slot_value = str(row.get("slot") or "").strip().lower()
+        if item_category == "fragrance" and not slot_value:
+            slot_value = slot_of_fragrance(
+                _safe_dict(row.get("attrs")),
+                raw_meta=_safe_dict(row.get("raw_meta")),
+            )
+        ts = row.get("ts")
+        if ts is None:
+            continue
+        normalized_items.append(
+            {
+                "ts": ts.astimezone(dt_timezone.utc),
+                "tx_id": int(row.get("tx_id") or 0),
+                "tx_total": _to_float(row.get("tx_total")),
+                "category": item_category,
+                "product_type": item_type,
+                "concerns": row.get("concerns") if isinstance(row.get("concerns"), list) else [],
+                "actives": row.get("actives") if isinstance(row.get("actives"), list) else [],
+                "flags": row.get("flags") if isinstance(row.get("flags"), list) else [],
+                "supported_skin_types": (
+                    row.get("supported_skin_types")
+                    if isinstance(row.get("supported_skin_types"), list)
+                    else []
+                ),
+                "attrs": _safe_dict(row.get("attrs")),
+                "ingredients_inci": str(row.get("ingredients_inci") or ""),
+                "raw_meta": _safe_dict(row.get("raw_meta")),
+                "quantity": max(1, int(row.get("quantity") or 0)),
+                "slot": slot_value,
+            }
+        )
+    normalized_items.sort(key=lambda row: (row["ts"], int(row.get("tx_id") or 0)))
+
+    profile_sig = profile_signature(profile)
+
+    normalized_context_products: list[dict[str, Any]] = []
+    for row in context_products or []:
+        item_category = str(row.get("category") or "").strip().lower()
+        item_type = str(row.get("product_type") or "").strip().lower()
+        if item_category != category or not item_type:
+            continue
+        slot_value = str(row.get("slot") or "").strip().lower()
+        if item_category == "fragrance" and not slot_value:
+            slot_value = slot_of_fragrance(
+                _safe_dict(row.get("attrs")),
+                raw_meta=_safe_dict(row.get("raw_meta")),
+            )
+        normalized_context_products.append(
+            {
+                "category": item_category,
+                "product_type": item_type,
+                "concerns": row.get("concerns") if isinstance(row.get("concerns"), list) else [],
+                "actives": row.get("actives") if isinstance(row.get("actives"), list) else [],
+                "flags": row.get("flags") if isinstance(row.get("flags"), list) else [],
+                "supported_skin_types": (
+                    row.get("supported_skin_types")
+                    if isinstance(row.get("supported_skin_types"), list)
+                    else []
+                ),
+                "attrs": _safe_dict(row.get("attrs")),
+                "ingredients_inci": str(row.get("ingredients_inci") or ""),
+                "raw_meta": _safe_dict(row.get("raw_meta")),
+                "slot": slot_value,
+            }
+        )
+
+    last_types: list[str] = []
+    last_categories: list[str] = []
+    slot_counter: dict[str, int] = {slot: 0 for slot in SLOTS}
+    owned_counts_all: dict[tuple[str, str], int] = {}
+    candidate_owned_counter: dict[str, int] = {}
+    candidate_seen_90d_counter: dict[str, int] = {}
+    candidate_last_seen_at: dict[str, Any] = {}
+    anchor_item: dict[str, Any] | None = None
+
+    last_ts_in_category = None
+    tx_ids_90d: set[int] = set()
+    tx_amount_90d: dict[int, float] = {}
+
+    for row in reversed(normalized_items):
+        item_category = str(row["category"])
+        item_type = str(row["product_type"])
+        qty = int(row["quantity"])
+        ts = row["ts"]
+
+        if item_type and len(last_types) < 5:
+            last_types.append(item_type)
+        if item_category and len(last_categories) < 5:
+            last_categories.append(item_category)
+
+        if item_category and item_type:
+            key = (item_category, item_type)
+            owned_counts_all[key] = int(owned_counts_all.get(key, 0) + qty)
+
+        if item_category == category:
+            candidate_key = str(row.get("slot") or "") if category == "fragrance" else item_type
+            if candidate_key:
+                candidate_owned_counter[candidate_key] = int(
+                    candidate_owned_counter.get(candidate_key, 0) + qty
+                )
+                if candidate_key not in candidate_last_seen_at:
+                    candidate_last_seen_at[candidate_key] = ts
+            if last_ts_in_category is None:
+                last_ts_in_category = ts
+                anchor_item = row
+            if ts >= since_90d:
+                tx_id = int(row["tx_id"])
+                tx_ids_90d.add(tx_id)
+                tx_amount_90d[tx_id] = float(row["tx_total"])
+                if candidate_key:
+                    candidate_seen_90d_counter[candidate_key] = int(
+                        candidate_seen_90d_counter.get(candidate_key, 0) + qty
+                    )
+
+        if item_category == "fragrance":
+            slot_value = str(row.get("slot") or "")
+            if slot_value in slot_counter:
+                slot_counter[slot_value] += qty
+
+    days_since_last_purchase = -1
+    if last_ts_in_category is not None:
+        days_since_last_purchase = int((now_utc.date() - last_ts_in_category.date()).days)
+
+    planned_target_type_norm = str(planned_target_product_type or "").strip().lower()
+    planned_target_index_int = int(planned_target_step_index or 0)
+
+    base: dict[str, Any] = {
+        "category": category,
+        "month_of_year": int(now_utc.month),
+        "day_of_week": int(now_utc.weekday()),
+        "days_since_last_purchase_in_category": int(days_since_last_purchase),
+        "tx_count_90d_category": int(len(tx_ids_90d)),
+        "tx_amount_90d_category": float(round(sum(tx_amount_90d.values()), 4)),
+        "owned_slot_warm_day": int(slot_counter.get("warm_day", 0)),
+        "owned_slot_warm_evening": int(slot_counter.get("warm_evening", 0)),
+        "owned_slot_cold_day": int(slot_counter.get("cold_day", 0)),
+        "owned_slot_cold_evening": int(slot_counter.get("cold_evening", 0)),
+    }
+    for idx in range(5):
+        base[f"last{idx + 1}_product_type"] = (
+            str(last_types[idx]) if idx < len(last_types) else "__none__"
+        )
+        base[f"last{idx + 1}_category"] = (
+            str(last_categories[idx]) if idx < len(last_categories) else "__none__"
+        )
+
+    owned_feature_columns = [str(x) for x in (artifact.get("owned_feature_columns") or []) if str(x)]
+    for col in owned_feature_columns:
+        base[col] = 0
+
+    owned_feature_map = artifact.get("owned_feature_map") or {}
+    if isinstance(owned_feature_map, dict):
+        for col, raw in owned_feature_map.items():
+            col_name = str(col or "").strip()
+            if not col_name:
+                continue
+            raw_info = raw if isinstance(raw, dict) else {}
+            cat = str(raw_info.get("category") or "").strip().lower()
+            ptype = str(raw_info.get("product_type") or "").strip().lower()
+            if not cat or not ptype:
+                continue
+            base[col_name] = int(owned_counts_all.get((cat, ptype), 0))
+
+    anchor_source_item = normalized_context_products[0] if normalized_context_products else anchor_item
+    rules_chain = effective_nextstep_rules_chain(
+        category=category,
+        rules_chain=[
+            str(x).strip().lower()
+            for x in ((artifact.get("rules_chain_by_category") or {}).get(category) or [])
+            if str(x)
+        ],
+        planned_target_product_type=planned_target_type_norm,
+        profile_sig=profile_sig,
+        anchor_product_type=anchor_source_item.get("product_type") if isinstance(anchor_source_item, dict) else "",
+    )
+    pos_by_candidate = {token: idx for idx, token in enumerate(rules_chain)}
+    pop_map_raw = (artifact.get("candidate_popularity_in_train_by_category") or {}).get(category) or {}
+    pop_map: dict[str, float] = {str(k).strip().lower(): _to_float(v) for k, v in pop_map_raw.items()}
+    candidate_set = set(candidates)
+    candidate_catalog_summaries = build_candidate_catalog_summaries(
+        [
+            row
+            for row in (catalog_products or [])
+            if str(row.get("category") or "").strip().lower() == category
+            and str(row.get("product_type") or "").strip().lower() in candidate_set
+        ]
+    )
+    anchor_sig = product_signature(anchor_source_item)
+
+    context_candidate_tokens = [
+        str(row.get("slot") or "") if category == "fragrance" else str(row.get("product_type") or "")
+        for row in normalized_context_products
+        if str((row.get("slot") or "") if category == "fragrance" else (row.get("product_type") or "")).strip()
+    ]
+    history_candidate_tokens = [
+        token
+        for token in (
+            [str(row.get("slot") or "") for row in reversed(normalized_items) if str(row["category"]) == "fragrance"]
+            if category == "fragrance"
+            else [str(row["product_type"]) for row in reversed(normalized_items) if str(row["category"]) == category]
+        )
+        if token
+    ]
+    recent_candidate_tokens = _ordered_unique_tokens(context_candidate_tokens + history_candidate_tokens)[:5]
+    anchor_chain_token = (
+        recent_candidate_tokens[0]
+        if recent_candidate_tokens
+        else str(anchor_sig.get("product_type") or "").strip().lower()
+    )
+    last1_chain_token = recent_candidate_tokens[0] if recent_candidate_tokens else ""
+    last2_chain_token = recent_candidate_tokens[1] if len(recent_candidate_tokens) > 1 else ""
+    recent_candidate_set = set(recent_candidate_tokens[:3])
+
+    rows: list[dict[str, Any]] = []
+    for candidate in candidates:
+        seen_count_last5 = int(sum(1 for token in recent_candidate_tokens if token == candidate))
+        row = dict(base)
+        row.update(build_base_content_features(profile_sig, anchor_sig))
+        row["candidate_type"] = candidate
+        row["candidate_is_fragrance_slot"] = int(candidate in SLOTS)
+        row["candidate_position_in_chain"] = int(pos_by_candidate.get(candidate, -1))
+        row["candidate_popularity_in_train"] = float(pop_map.get(candidate, 0.0))
+        row["candidate_matches_last1"] = int(bool(recent_candidate_tokens and recent_candidate_tokens[0] == candidate))
+        row["candidate_matches_last3_any"] = int(candidate in recent_candidate_set)
+        row["candidate_seen_count_last5"] = int(seen_count_last5)
+        row["candidate_owned_count_in_category"] = int(candidate_owned_counter.get(candidate, 0))
+        row["candidate_seen_90d_count_in_category"] = int(candidate_seen_90d_counter.get(candidate, 0))
+        row["candidate_days_since_last_seen_in_category"] = int(
+            (now_utc.date() - candidate_last_seen_at[candidate].date()).days
+        ) if candidate in candidate_last_seen_at else -1
+        row.update(
+            build_candidate_content_features(
+                candidate_catalog_summaries.get((category, candidate)),
+                profile_sig,
+                anchor_sig,
+                candidate_type=candidate,
+            )
+        )
+        row.update(
+            build_nextstep_plan_state_features(
+                rules_chain=rules_chain,
+                candidate_type=candidate,
+                planned_target_product_type=planned_target_type_norm,
+                planned_target_step_index=planned_target_index_int,
+            )
+        )
+        row.update(
+            build_chain_transition_features(
+                rules_chain=rules_chain,
+                candidate_type=candidate,
+                anchor_product_type=anchor_chain_token,
+                last1_product_type=last1_chain_token,
+                last2_product_type=last2_chain_token,
+            )
+        )
+        for col in feature_columns:
+            if col in row:
+                continue
+            if col in numeric_features:
+                row[col] = 0.0
+            else:
+                row[col] = "__none__"
+        rows.append(row)
+
+    if not rows:
+        return None, feature_columns, categorical_features, numeric_features
+
+    frame = pd.DataFrame(rows)
+    for col in categorical_features:
+        if col in frame.columns:
+            frame[col] = frame[col].fillna("__none__").astype(str)
+    for col in numeric_features:
+        if col in frame.columns:
+            frame[col] = pd.to_numeric(frame[col], errors="coerce").fillna(0.0)
+    return frame, feature_columns, categorical_features, numeric_features
+
+
 def _predict_with_v4_artifact_from_sources(
     *,
     artifact: dict[str, Any],
@@ -1662,6 +2081,18 @@ def _predict_with_v4_artifact_from_sources(
     rows_out.sort(key=lambda row: float(row.get("score", 0.0)), reverse=True)
     if allow_teacher_rerank:
         rows_out = _apply_runtime_corechain_teacher_rerank(
+            category=category,
+            rows_out=rows_out,
+            now_utc=now_utc,
+            items=normalized_items,
+            profile=profile,
+            context_products=normalized_context_products,
+            catalog_products=catalog_products,
+            planned_target_product_type=planned_target_product_type,
+            planned_target_step_index=planned_target_step_index,
+            candidate_types=candidates,
+        )
+        rows_out = _apply_runtime_scalp_teacher_rerank(
             category=category,
             rows_out=rows_out,
             now_utc=now_utc,

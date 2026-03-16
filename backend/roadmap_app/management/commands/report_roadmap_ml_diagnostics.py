@@ -28,6 +28,7 @@ from transactions.models import Transaction
 FORMAT_CHOICES = ["md", "json", "both"]
 COHORT_MODE_CHOICES = ["fresh", "all"]
 CONTROL_CHOICES = ["non_model", "fallback", "disabled"]
+NEXTSTEP_CANDIDATE_COMPARE_COHORT_CHOICES = ["model_used", "analysis"]
 VALID_CATEGORIES = {"skincare", "haircare", "makeup", "fragrance"}
 VALID_DECISIONS = {"model_used", "fallback", "disabled"}
 DEFAULT_CATEGORIES = ["skincare", "makeup"]
@@ -1439,6 +1440,9 @@ class Command(BaseCommand):
         parser.add_argument("--days", type=int, default=7)
         parser.add_argument("--include-ga", action="store_true", default=False)
         parser.add_argument("--categories", type=str, default="skincare,makeup")
+        parser.add_argument("--refresh-caller", type=str, default="all")
+        parser.add_argument("--planned-target-product-types", type=str, default="all")
+        parser.add_argument("--skip-event-metrics", action="store_true", default=False)
         parser.add_argument("--format", type=str, default="both", choices=FORMAT_CHOICES)
         parser.add_argument("--out", type=str, default=None)
         parser.add_argument("--min-sample", type=int, default=30)
@@ -1447,6 +1451,12 @@ class Command(BaseCommand):
         parser.add_argument("--nextstep-candidate-model-path", type=str, default=None)
         parser.add_argument("--nextstep-candidate-teacher-model-path", type=str, default=None)
         parser.add_argument("--nextstep-candidate-teacher-weight", type=float, default=0.25)
+        parser.add_argument(
+            "--nextstep-candidate-compare-cohort",
+            type=str,
+            default="model_used",
+            choices=NEXTSTEP_CANDIDATE_COMPARE_COHORT_CHOICES,
+        )
         parser.add_argument("--planner-candidate-model-path", type=str, default=None)
 
     def handle(self, *args, **options):
@@ -1456,6 +1466,11 @@ class Command(BaseCommand):
 
         include_ga = bool(options["include_ga"])
         categories = _parse_categories(options.get("categories"))
+        refresh_caller_filter = str(options.get("refresh_caller") or "all").strip().lower()
+        planned_target_filter = _normalized_token_set(options.get("planned_target_product_types"))
+        if "all" in planned_target_filter:
+            planned_target_filter = set()
+        skip_event_metrics = bool(options.get("skip_event_metrics"))
         out_format = str(options["format"] or "both").strip().lower()
         out_raw = options.get("out")
         min_sample = int(options["min_sample"] or 30)
@@ -1471,6 +1486,9 @@ class Command(BaseCommand):
             0.0,
             float(options.get("nextstep_candidate_teacher_weight") or 0.0),
         )
+        nextstep_candidate_compare_cohort = str(
+            options.get("nextstep_candidate_compare_cohort") or "model_used"
+        ).strip().lower()
         planner_candidate_model_path = str(options.get("planner_candidate_model_path") or "").strip()
 
         if control == "fallback":
@@ -1547,6 +1565,17 @@ class Command(BaseCommand):
             ml = _safe_dict(meta.get("ml"))
             shadow = _safe_dict(ml.get("shadow"))
             decision = _decision_from_meta(meta)
+            context_meta = _safe_dict(meta.get("context"))
+            refresh_caller = str(context_meta.get("refresh_caller") or "").strip().lower()
+
+            if refresh_caller_filter not in {"", "all"} and refresh_caller != refresh_caller_filter:
+                continue
+
+            planned_target_product_type = (
+                str(ml.get("planned_target_product_type") or "").strip().lower() or "__none__"
+            )
+            if planned_target_filter and planned_target_product_type not in planned_target_filter:
+                continue
 
             all_scope_plan_ids.add(pid)
             plan_category[pid] = cat
@@ -1555,12 +1584,9 @@ class Command(BaseCommand):
             plan_decision[pid] = decision
             plan_model_slot[pid] = str(ml.get("model_slot") or "active").strip().lower() or "active"
             active_top1_by_plan[pid] = str(_top_prediction_token(ml.get("predictions")) or "")
-            plan_planned_target_product_type[pid] = (
-                str(ml.get("planned_target_product_type") or "").strip().lower() or "__none__"
-            )
+            plan_planned_target_product_type[pid] = planned_target_product_type
             plan_planned_target_step_index[pid] = int(_to_int(ml.get("planned_target_step_index")) or 0)
-            context_meta = _safe_dict(meta.get("context"))
-            plan_refresh_caller[pid] = str(context_meta.get("refresh_caller") or "").strip().lower()
+            plan_refresh_caller[pid] = refresh_caller
             plan_context_product_ids[pid] = _normalize_product_ids(context_meta.get("post_ctx_product_ids"))
             plan_runtime_policies[pid] = _normalize_runtime_policies(ml.get("runtime_policies"))
             plan_runtime_policy_meta_source[pid] = (
@@ -1749,7 +1775,7 @@ class Command(BaseCommand):
 
         latest_plan_refresh_key: dict[int, tuple[Any, int]] = {}
         completion_events_by_plan: dict[int, list[tuple[Any, int, str, str]]] = defaultdict(list)
-        if analysis_plan_ids:
+        if analysis_plan_ids and not skip_event_metrics:
             refresh_qs = RoadmapEvent.objects.filter(
                 created_at__gte=since,
                 created_at__lte=now_utc,
@@ -1805,7 +1831,7 @@ class Command(BaseCommand):
                 slice_buckets[cat]["expose_source"][source][cohort][metric_key] += 1
                 _touch_active_slice(cat, "expose_source", source, pid=pid)
 
-        if analysis_plan_ids:
+        if analysis_plan_ids and not skip_event_metrics:
             exposed_qs = (
                 RoadmapEvent.objects.filter(
                     created_at__gte=since,
@@ -1931,219 +1957,220 @@ class Command(BaseCommand):
             lambda: {"assigned": 0, "exposed": 0, "clicked": 0, "redeemed": 0}
         )
 
-        assignment_qs = OfferAssignment.objects.filter(assigned_at__gte=since, assigned_at__lte=now_utc)
-        if not include_ga:
-            assignment_qs = assignment_qs.exclude(user__username__startswith="ga_")
+        offer_unattributed_event_counts: Counter[str] = Counter()
+        if not skip_event_metrics:
+            assignment_qs = OfferAssignment.objects.filter(assigned_at__gte=since, assigned_at__lte=now_utc)
+            if not include_ga:
+                assignment_qs = assignment_qs.exclude(user__username__startswith="ga_")
 
-        for row in assignment_qs.values("id", "user_id", "assigned_at", "reason", "target"):
-            reason = _safe_dict(row.get("reason"))
-            target = _safe_dict(row.get("target"))
-            if not _is_roadmap_related_assignment(reason=reason, target=target):
-                continue
-
-            roadmap_assignment_total += 1
-            assignment_id = int(row["id"])
-            roadmap_assignment_ids.add(assignment_id)
-            user_id = int(row["user_id"])
-            assigned_at = row["assigned_at"]
-
-            roadmap_reason = _safe_dict(reason.get("roadmap"))
-            roadmap_ctx = _safe_dict(reason.get("roadmap_ctx"))
-            attributed_plan_id = _to_int(roadmap_reason.get("plan_id"))
-            attribution_kind = "explicit_plan_id"
-            if attributed_plan_id is None:
-                attributed_plan_id = _to_int(roadmap_ctx.get("plan_id"))
-                if attributed_plan_id is not None:
-                    attribution_kind = "explicit_ctx_plan_id"
-
-            category_hint = str(
-                roadmap_reason.get("category")
-                or roadmap_ctx.get("category")
-                or target.get("category")
-                or ""
-            ).strip().lower()
-            product_type_hint = str(
-                roadmap_reason.get("next_product_type")
-                or roadmap_ctx.get("next_product_type")
-                or target.get("product_type")
-                or ""
-            ).strip().lower()
-
-            step_index_hint = _to_int(
-                roadmap_reason.get("step_index")
-                or roadmap_ctx.get("step_index")
-                or target.get("step_index")
-            )
-
-            if attributed_plan_id is None:
-                if not category_hint and not product_type_hint:
-                    roadmap_assignment_unattributed += 1
-                    assignment_state[assignment_id] = {"state": "unattributed", "why": "insufficient_context"}
+            for row in assignment_qs.values("id", "user_id", "assigned_at", "reason", "target"):
+                reason = _safe_dict(row.get("reason"))
+                target = _safe_dict(row.get("target"))
+                if not _is_roadmap_related_assignment(reason=reason, target=target):
                     continue
 
-                candidates: list[dict[str, Any]] = []
-                for plan_ref in plans_by_user_scope.get(user_id, []):
-                    pid = int(plan_ref["id"])
-                    if category_hint and str(plan_ref["category"]) != category_hint:
+                roadmap_assignment_total += 1
+                assignment_id = int(row["id"])
+                roadmap_assignment_ids.add(assignment_id)
+                user_id = int(row["user_id"])
+                assigned_at = row["assigned_at"]
+
+                roadmap_reason = _safe_dict(reason.get("roadmap"))
+                roadmap_ctx = _safe_dict(reason.get("roadmap_ctx"))
+                attributed_plan_id = _to_int(roadmap_reason.get("plan_id"))
+                attribution_kind = "explicit_plan_id"
+                if attributed_plan_id is None:
+                    attributed_plan_id = _to_int(roadmap_ctx.get("plan_id"))
+                    if attributed_plan_id is not None:
+                        attribution_kind = "explicit_ctx_plan_id"
+
+                category_hint = str(
+                    roadmap_reason.get("category")
+                    or roadmap_ctx.get("category")
+                    or target.get("category")
+                    or ""
+                ).strip().lower()
+                product_type_hint = str(
+                    roadmap_reason.get("next_product_type")
+                    or roadmap_ctx.get("next_product_type")
+                    or target.get("product_type")
+                    or ""
+                ).strip().lower()
+
+                step_index_hint = _to_int(
+                    roadmap_reason.get("step_index")
+                    or roadmap_ctx.get("step_index")
+                    or target.get("step_index")
+                )
+
+                if attributed_plan_id is None:
+                    if not category_hint and not product_type_hint:
+                        roadmap_assignment_unattributed += 1
+                        assignment_state[assignment_id] = {"state": "unattributed", "why": "insufficient_context"}
                         continue
-                    if product_type_hint and product_type_hint not in plan_step_types.get(pid, set()):
-                        continue
-                    candidates.append(plan_ref)
 
-                if len(candidates) == 1:
-                    attributed_plan_id = int(candidates[0]["id"])
-                    attribution_kind = "fallback_unique"
-                elif len(candidates) > 1:
-                    ranked = sorted(
-                        [
-                            (
-                                abs((assigned_at - candidate["updated_at"]).total_seconds()),
-                                int(candidate["id"]),
-                            )
-                            for candidate in candidates
-                        ],
-                        key=lambda x: x[0],
-                    )
-                    if ranked and ranked[0][0] <= 6 * 3600:
-                        if len(ranked) == 1 or (ranked[0][0] + 60.0) < ranked[1][0]:
-                            attributed_plan_id = int(ranked[0][1])
-                            attribution_kind = "fallback_nearest"
+                    candidates: list[dict[str, Any]] = []
+                    for plan_ref in plans_by_user_scope.get(user_id, []):
+                        pid = int(plan_ref["id"])
+                        if category_hint and str(plan_ref["category"]) != category_hint:
+                            continue
+                        if product_type_hint and product_type_hint not in plan_step_types.get(pid, set()):
+                            continue
+                        candidates.append(plan_ref)
 
-            if attributed_plan_id is None:
-                roadmap_assignment_unattributed += 1
-                assignment_state[assignment_id] = {"state": "unattributed", "why": "ambiguous_or_no_match"}
-                continue
+                    if len(candidates) == 1:
+                        attributed_plan_id = int(candidates[0]["id"])
+                        attribution_kind = "fallback_unique"
+                    elif len(candidates) > 1:
+                        ranked = sorted(
+                            [
+                                (
+                                    abs((assigned_at - candidate["updated_at"]).total_seconds()),
+                                    int(candidate["id"]),
+                                )
+                                for candidate in candidates
+                            ],
+                            key=lambda x: x[0],
+                        )
+                        if ranked and ranked[0][0] <= 6 * 3600:
+                            if len(ranked) == 1 or (ranked[0][0] + 60.0) < ranked[1][0]:
+                                attributed_plan_id = int(ranked[0][1])
+                                attribution_kind = "fallback_nearest"
 
-            if attributed_plan_id not in analysis_plan_ids:
-                roadmap_assignment_out_of_scope += 1
+                if attributed_plan_id is None:
+                    roadmap_assignment_unattributed += 1
+                    assignment_state[assignment_id] = {"state": "unattributed", "why": "ambiguous_or_no_match"}
+                    continue
+
+                if attributed_plan_id not in analysis_plan_ids:
+                    roadmap_assignment_out_of_scope += 1
+                    assignment_state[assignment_id] = {
+                        "state": "out_of_scope",
+                        "plan_id": int(attributed_plan_id),
+                        "attribution_kind": attribution_kind,
+                    }
+                    continue
+
+                cohort = str(cohort_by_plan.get(int(attributed_plan_id)) or "")
+                if cohort not in {"model_used", "control"}:
+                    roadmap_assignment_excluded_non_cohort += 1
+                    assignment_state[assignment_id] = {
+                        "state": "non_cohort",
+                        "plan_id": int(attributed_plan_id),
+                        "attribution_kind": attribution_kind,
+                    }
+                    continue
+
+                roadmap_assignment_attributed += 1
                 assignment_state[assignment_id] = {
-                    "state": "out_of_scope",
+                    "state": "cohort",
+                    "cohort": cohort,
                     "plan_id": int(attributed_plan_id),
                     "attribution_kind": attribution_kind,
+                    "category_hint": category_hint,
+                    "product_type_hint": product_type_hint,
+                    "step_index_hint": step_index_hint,
                 }
-                continue
 
-            cohort = str(cohort_by_plan.get(int(attributed_plan_id)) or "")
-            if cohort not in {"model_used", "control"}:
-                roadmap_assignment_excluded_non_cohort += 1
-                assignment_state[assignment_id] = {
-                    "state": "non_cohort",
-                    "plan_id": int(attributed_plan_id),
-                    "attribution_kind": attribution_kind,
-                }
-                continue
+                pid = int(attributed_plan_id)
+                cat = str(plan_category.get(pid) or "__unknown__")
+                uid = int(plan_user.get(pid))
+                category_overall[cat][cohort]["offer_assigned"] += 1
+                plan_metrics[pid]["offer_assigned"] += 1.0
+                plan_offer_presence[pid]["assigned"] += 1
 
-            roadmap_assignment_attributed += 1
-            assignment_state[assignment_id] = {
-                "state": "cohort",
-                "cohort": cohort,
-                "plan_id": int(attributed_plan_id),
-                "attribution_kind": attribution_kind,
-                "category_hint": category_hint,
-                "product_type_hint": product_type_hint,
-                "step_index_hint": step_index_hint,
+                pt_offer = product_type_hint
+                if not pt_offer:
+                    plan_pts = sorted(plan_step_types.get(pid, set()))
+                    if len(plan_pts) == 1:
+                        pt_offer = str(plan_pts[0])
+                if pt_offer:
+                    _touch_plan_slice(cat, "step_product_type", pt_offer, cohort, pid=pid, uid=uid)
+                    slice_buckets[cat]["step_product_type"][pt_offer][cohort]["offer_assigned"] += 1
+                    _touch_active_slice(cat, "step_product_type", pt_offer, pid=pid)
+                else:
+                    unattributed["offer_assignment_missing_product_type_hint"] += 1
+
+                idx_offer_bucket: str | None = None
+                if step_index_hint is not None:
+                    idx_offer_bucket = _step_index_bucket(step_index_hint)
+                elif pt_offer:
+                    candidate_steps = plan_steps_for_product_type.get((pid, pt_offer), [])
+                    if len(candidate_steps) == 1:
+                        idx_offer_bucket = _step_index_bucket(int(candidate_steps[0]))
+                if idx_offer_bucket:
+                    _touch_plan_slice(cat, "step_index", idx_offer_bucket, cohort, pid=pid, uid=uid)
+                    slice_buckets[cat]["step_index"][idx_offer_bucket][cohort]["offer_assigned"] += 1
+                    _touch_active_slice(cat, "step_index", idx_offer_bucket, pid=pid)
+                else:
+                    unattributed["offer_assignment_missing_step_index_hint"] += 1
+
+            offer_qs = OfferEvent.objects.filter(
+                created_at__gte=since,
+                created_at__lte=now_utc,
+                event_type__in=[
+                    OfferEvent.Type.EXPOSED,
+                    OfferEvent.Type.CLICKED,
+                    OfferEvent.Type.REDEEMED,
+                ],
+            )
+            if not include_ga:
+                offer_qs = offer_qs.exclude(user__username__startswith="ga_")
+
+            offer_event_map = {
+                OfferEvent.Type.EXPOSED: "offer_exposed",
+                OfferEvent.Type.CLICKED: "offer_clicked",
+                OfferEvent.Type.REDEEMED: "offer_redeemed",
             }
+            for row in offer_qs.values("assignment_id", "event_type"):
+                assignment_id = _to_int(row.get("assignment_id"))
+                if assignment_id is None or assignment_id not in roadmap_assignment_ids:
+                    continue
+                metric = offer_event_map.get(str(row.get("event_type") or ""))
+                if not metric:
+                    continue
+                state = assignment_state.get(assignment_id) or {}
+                if state.get("state") != "cohort":
+                    offer_unattributed_event_counts[metric] += 1
+                    continue
 
-            pid = int(attributed_plan_id)
-            cat = str(plan_category.get(pid) or "__unknown__")
-            uid = int(plan_user.get(pid))
-            category_overall[cat][cohort]["offer_assigned"] += 1
-            plan_metrics[pid]["offer_assigned"] += 1.0
-            plan_offer_presence[pid]["assigned"] += 1
+                cohort = str(state.get("cohort"))
+                pid = int(state.get("plan_id"))
+                cat = str(plan_category.get(pid) or "__unknown__")
+                uid = int(plan_user.get(pid))
 
-            pt_offer = product_type_hint
-            if not pt_offer:
-                plan_pts = sorted(plan_step_types.get(pid, set()))
-                if len(plan_pts) == 1:
-                    pt_offer = str(plan_pts[0])
-            if pt_offer:
-                _touch_plan_slice(cat, "step_product_type", pt_offer, cohort, pid=pid, uid=uid)
-                slice_buckets[cat]["step_product_type"][pt_offer][cohort]["offer_assigned"] += 1
-                _touch_active_slice(cat, "step_product_type", pt_offer, pid=pid)
-            else:
-                unattributed["offer_assignment_missing_product_type_hint"] += 1
+                category_overall[cat][cohort][metric] += 1
+                plan_metrics[pid][metric] += 1.0
+                metric_short = metric.split("_", 1)[-1]
+                if metric_short in {"exposed", "clicked", "redeemed"}:
+                    plan_offer_presence[pid][metric_short] += 1
 
-            idx_offer_bucket: str | None = None
-            if step_index_hint is not None:
-                idx_offer_bucket = _step_index_bucket(step_index_hint)
-            elif pt_offer:
-                candidate_steps = plan_steps_for_product_type.get((pid, pt_offer), [])
-                if len(candidate_steps) == 1:
-                    idx_offer_bucket = _step_index_bucket(int(candidate_steps[0]))
-            if idx_offer_bucket:
-                _touch_plan_slice(cat, "step_index", idx_offer_bucket, cohort, pid=pid, uid=uid)
-                slice_buckets[cat]["step_index"][idx_offer_bucket][cohort]["offer_assigned"] += 1
-                _touch_active_slice(cat, "step_index", idx_offer_bucket, pid=pid)
-            else:
-                unattributed["offer_assignment_missing_step_index_hint"] += 1
+                pt_offer = str(state.get("product_type_hint") or "").strip().lower()
+                if not pt_offer:
+                    plan_pts = sorted(plan_step_types.get(pid, set()))
+                    if len(plan_pts) == 1:
+                        pt_offer = str(plan_pts[0])
+                if pt_offer:
+                    _touch_plan_slice(cat, "step_product_type", pt_offer, cohort, pid=pid, uid=uid)
+                    slice_buckets[cat]["step_product_type"][pt_offer][cohort][metric] += 1
+                    _touch_active_slice(cat, "step_product_type", pt_offer, pid=pid)
+                else:
+                    unattributed["offer_event_missing_product_type_hint"] += 1
 
-        offer_unattributed_event_counts: Counter[str] = Counter()
-        offer_qs = OfferEvent.objects.filter(
-            created_at__gte=since,
-            created_at__lte=now_utc,
-            event_type__in=[
-                OfferEvent.Type.EXPOSED,
-                OfferEvent.Type.CLICKED,
-                OfferEvent.Type.REDEEMED,
-            ],
-        )
-        if not include_ga:
-            offer_qs = offer_qs.exclude(user__username__startswith="ga_")
-
-        offer_event_map = {
-            OfferEvent.Type.EXPOSED: "offer_exposed",
-            OfferEvent.Type.CLICKED: "offer_clicked",
-            OfferEvent.Type.REDEEMED: "offer_redeemed",
-        }
-        for row in offer_qs.values("assignment_id", "event_type"):
-            assignment_id = _to_int(row.get("assignment_id"))
-            if assignment_id is None or assignment_id not in roadmap_assignment_ids:
-                continue
-            metric = offer_event_map.get(str(row.get("event_type") or ""))
-            if not metric:
-                continue
-            state = assignment_state.get(assignment_id) or {}
-            if state.get("state") != "cohort":
-                offer_unattributed_event_counts[metric] += 1
-                continue
-
-            cohort = str(state.get("cohort"))
-            pid = int(state.get("plan_id"))
-            cat = str(plan_category.get(pid) or "__unknown__")
-            uid = int(plan_user.get(pid))
-
-            category_overall[cat][cohort][metric] += 1
-            plan_metrics[pid][metric] += 1.0
-            metric_short = metric.split("_", 1)[-1]
-            if metric_short in {"exposed", "clicked", "redeemed"}:
-                plan_offer_presence[pid][metric_short] += 1
-
-            pt_offer = str(state.get("product_type_hint") or "").strip().lower()
-            if not pt_offer:
-                plan_pts = sorted(plan_step_types.get(pid, set()))
-                if len(plan_pts) == 1:
-                    pt_offer = str(plan_pts[0])
-            if pt_offer:
-                _touch_plan_slice(cat, "step_product_type", pt_offer, cohort, pid=pid, uid=uid)
-                slice_buckets[cat]["step_product_type"][pt_offer][cohort][metric] += 1
-                _touch_active_slice(cat, "step_product_type", pt_offer, pid=pid)
-            else:
-                unattributed["offer_event_missing_product_type_hint"] += 1
-
-            idx_offer_bucket: str | None = None
-            step_index_hint = _to_int(state.get("step_index_hint"))
-            if step_index_hint is not None:
-                idx_offer_bucket = _step_index_bucket(step_index_hint)
-            elif pt_offer:
-                candidate_steps = plan_steps_for_product_type.get((pid, pt_offer), [])
-                if len(candidate_steps) == 1:
-                    idx_offer_bucket = _step_index_bucket(int(candidate_steps[0]))
-            if idx_offer_bucket:
-                _touch_plan_slice(cat, "step_index", idx_offer_bucket, cohort, pid=pid, uid=uid)
-                slice_buckets[cat]["step_index"][idx_offer_bucket][cohort][metric] += 1
-                _touch_active_slice(cat, "step_index", idx_offer_bucket, pid=pid)
-            else:
-                unattributed["offer_event_missing_step_index_hint"] += 1
+                idx_offer_bucket: str | None = None
+                step_index_hint = _to_int(state.get("step_index_hint"))
+                if step_index_hint is not None:
+                    idx_offer_bucket = _step_index_bucket(step_index_hint)
+                elif pt_offer:
+                    candidate_steps = plan_steps_for_product_type.get((pid, pt_offer), [])
+                    if len(candidate_steps) == 1:
+                        idx_offer_bucket = _step_index_bucket(int(candidate_steps[0]))
+                if idx_offer_bucket:
+                    _touch_plan_slice(cat, "step_index", idx_offer_bucket, cohort, pid=pid, uid=uid)
+                    slice_buckets[cat]["step_index"][idx_offer_bucket][cohort][metric] += 1
+                    _touch_active_slice(cat, "step_index", idx_offer_bucket, pid=pid)
+                else:
+                    unattributed["offer_event_missing_step_index_hint"] += 1
 
         for pid in analysis_plan_ids:
             cohort = str(cohort_by_plan.get(pid))
@@ -2685,12 +2712,28 @@ class Command(BaseCommand):
             candidate_swap_counts: Counter[tuple[str, str, str]] = Counter()
             candidate_top1_same_plan_ids: set[int] = set()
             candidate_top1_diff_plan_ids: set[int] = set()
+            candidate_baseline_source_counts: Counter[str] = Counter()
+            candidate_compare_plan_ids = (
+                set(analysis_plan_ids)
+                if nextstep_candidate_compare_cohort == "analysis"
+                else set(model_plan_ids)
+            )
 
-            for pid in model_plan_ids:
+            for pid in candidate_compare_plan_ids:
                 active_top1 = str(active_top1_by_plan.get(pid) or "").strip().lower()
+                baseline_source = "active_prediction"
+                if (
+                    not active_top1
+                    and nextstep_candidate_compare_cohort == "analysis"
+                ):
+                    planned_target_baseline = str(plan_planned_target_product_type.get(pid) or "").strip().lower()
+                    if planned_target_baseline not in {"", "__none__"}:
+                        active_top1 = planned_target_baseline
+                        baseline_source = "planned_target"
                 if not active_top1:
                     candidate_skipped_counts["missing_active_top1"] += 1
                     continue
+                candidate_baseline_source_counts[baseline_source] += 1
                 candidate_types = list(plan_step_candidate_types.get(pid) or [])
                 if not candidate_types:
                     candidate_skipped_counts["no_candidate_types"] += 1
@@ -2912,11 +2955,16 @@ class Command(BaseCommand):
                 "blend_mode": (
                     "weighted_probability_sum" if nextstep_candidate_teacher_model_path else None
                 ),
-                "plans_scanned": int(len(model_plan_ids)),
+                "compare_cohort": nextstep_candidate_compare_cohort,
+                "plans_scanned": int(len(candidate_compare_plan_ids)),
                 "predicted_plans": int(len(candidate_top1_by_plan)),
                 "skipped_counts": {
                     str(k): int(v)
                     for k, v in sorted(candidate_skipped_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+                "baseline_source_counts": {
+                    str(k): int(v)
+                    for k, v in sorted(candidate_baseline_source_counts.items(), key=lambda kv: (-kv[1], kv[0]))
                 },
                 "top1_comparison": {
                     "eligible_plans": int(len(candidate_top1_by_plan)),
@@ -3079,6 +3127,9 @@ class Command(BaseCommand):
                 "days": days,
                 "include_ga": include_ga,
                 "categories": categories,
+                "refresh_caller": refresh_caller_filter or "all",
+                "planned_target_product_types": sorted(planned_target_filter) or ["all"],
+                "skip_event_metrics": skip_event_metrics,
                 "format": out_format,
                 "cohort_mode": cohort_mode,
                 "control": control,
@@ -3088,6 +3139,7 @@ class Command(BaseCommand):
                 "nextstep_candidate_teacher_weight": (
                     nextstep_candidate_teacher_weight if nextstep_candidate_teacher_model_path else None
                 ),
+                "nextstep_candidate_compare_cohort": nextstep_candidate_compare_cohort,
                 "planner_candidate_model_path": planner_candidate_model_path or None,
             },
             "overall": {

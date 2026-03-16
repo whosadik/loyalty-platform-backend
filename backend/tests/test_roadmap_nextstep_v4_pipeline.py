@@ -18,6 +18,7 @@ from django.utils import timezone
 
 from catalog.models import Product
 from roadmap_app.ml_next_step import (
+    _apply_runtime_scalp_teacher_rerank,
     predict_next_product_types,
     v4_category_rollout_status,
     v4_category_staged_rollout_status_from_reports,
@@ -1848,6 +1849,355 @@ class RoadmapNextStepV4HaircareScalpChainTests(TestCase):
 
         self.assertEqual(rows[0]["candidate_type"], "conditioner")
 
+    def test_runtime_scalp_teacher_rerank_promotes_scalp_serum_for_scalp_target(self):
+        base_rows = [
+            {
+                "candidate_type": "conditioner",
+                "product_type": "conditioner",
+                "score": 0.60,
+                "runtime_bias": 0.0,
+                "runtime_policy_biases": {},
+                "runtime_policies": [],
+            },
+            {
+                "candidate_type": "scalp_serum",
+                "product_type": "scalp_serum",
+                "score": 0.20,
+                "runtime_bias": 0.0,
+                "runtime_policy_biases": {},
+                "runtime_policies": [],
+            },
+            {
+                "candidate_type": "hair_mask",
+                "product_type": "hair_mask",
+                "score": 0.20,
+                "runtime_bias": 0.0,
+                "runtime_policy_biases": {},
+                "runtime_policies": [],
+            },
+        ]
+        teacher_rows = [
+            {"candidate_type": "conditioner", "product_type": "conditioner", "score": 0.05},
+            {"candidate_type": "scalp_serum", "product_type": "scalp_serum", "score": 0.90},
+            {"candidate_type": "hair_mask", "product_type": "hair_mask", "score": 0.05},
+        ]
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_RERANK_ENABLED=True,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_MODEL_PATH="teacher-scalp.pkl",
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_WEIGHT=0.75,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_TARGETS=["scalp_serum"],
+        ):
+            with patch(
+                "roadmap_app.ml_next_step._load_model_for_path",
+                return_value={"task": "roadmap_nextstep_v4_ranking"},
+            ) as teacher_loader, patch(
+                "roadmap_app.ml_next_step._predict_with_v4_artifact_from_sources",
+                return_value=teacher_rows,
+            ) as teacher_predictor:
+                rows = _apply_runtime_scalp_teacher_rerank(
+                    category="haircare",
+                    rows_out=base_rows,
+                    now_utc=timezone.now(),
+                    items=[],
+                    profile=None,
+                    context_products=[],
+                    catalog_products=[],
+                    planned_target_product_type="scalp_serum",
+                    planned_target_step_index=2,
+                    candidate_types=["conditioner", "scalp_serum", "hair_mask"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "scalp_serum")
+        self.assertIn("haircare_scalp_teacher_rerank", rows[0]["runtime_policies"])
+        self.assertGreater(
+            float(rows[0]["runtime_policy_biases"]["haircare_scalp_teacher_rerank"]),
+            0.0,
+        )
+        teacher_loader.assert_called_once_with("teacher-scalp.pkl")
+        teacher_predictor.assert_called_once()
+        return
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=1), "v4-scalp-teacher-1")
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"conditioner": 3.0, "scalp_serum": 0.1, "hair_mask": 0.3}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        class DummyTeacherModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"conditioner": 0.1, "scalp_serum": 2.0, "hair_mask": 0.2}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        base_artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["conditioner", "scalp_serum", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"conditioner": 0.5, "scalp_serum": 0.2, "hair_mask": 0.3}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+        teacher_artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyTeacherModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["conditioner", "scalp_serum", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"conditioner": 0.2, "scalp_serum": 0.6, "hair_mask": 0.2}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+        zero_bias = lambda **kwargs: (kwargs["score_list"], [0.0 for _ in kwargs["score_list"]])
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED=False,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_RERANK_ENABLED=True,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_MODEL_PATH="teacher-scalp.pkl",
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_WEIGHT=0.75,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_TARGETS=["scalp_serum"],
+        ):
+            with patch("roadmap_app.ml_next_step._load_model", return_value=base_artifact), patch(
+                "roadmap_app.ml_next_step._load_model_for_path",
+                return_value=teacher_artifact,
+            ) as teacher_loader, patch(
+                "roadmap_app.ml_next_step._apply_runtime_progression_bias",
+                side_effect=zero_bias,
+            ), patch(
+                "roadmap_app.ml_next_step._apply_runtime_scalp_planned_target_rerank",
+                side_effect=zero_bias,
+            ), patch(
+                "roadmap_app.ml_next_step._apply_runtime_leavein_planned_target_rerank",
+                side_effect=zero_bias,
+            ):
+                rows = predict_next_product_types(
+                    user=self.user,
+                    context_product_ids=[],
+                    category="haircare",
+                    planned_target_product_type="scalp_serum",
+                    planned_target_step_index=2,
+                    candidate_types=["conditioner", "scalp_serum", "hair_mask"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "scalp_serum")
+        self.assertIn("haircare_scalp_teacher_rerank", rows[0]["runtime_policies"])
+        self.assertGreater(
+            float(rows[0]["runtime_policy_biases"]["haircare_scalp_teacher_rerank"]),
+            0.0,
+        )
+        teacher_loader.assert_called_once_with("teacher-scalp.pkl")
+
+    def test_runtime_scalp_teacher_rerank_does_not_override_conditioner_target(self):
+        base_rows = [
+            {
+                "candidate_type": "conditioner",
+                "product_type": "conditioner",
+                "score": 0.60,
+                "runtime_bias": 0.0,
+                "runtime_policy_biases": {},
+                "runtime_policies": [],
+            },
+            {
+                "candidate_type": "scalp_serum",
+                "product_type": "scalp_serum",
+                "score": 0.20,
+                "runtime_bias": 0.0,
+                "runtime_policy_biases": {},
+                "runtime_policies": [],
+            },
+            {
+                "candidate_type": "hair_mask",
+                "product_type": "hair_mask",
+                "score": 0.20,
+                "runtime_bias": 0.0,
+                "runtime_policy_biases": {},
+                "runtime_policies": [],
+            },
+        ]
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_RERANK_ENABLED=True,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_MODEL_PATH="teacher-scalp.pkl",
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_WEIGHT=0.75,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_TARGETS=["scalp_serum"],
+        ):
+            with patch("roadmap_app.ml_next_step._load_model_for_path") as teacher_loader, patch(
+                "roadmap_app.ml_next_step._predict_with_v4_artifact_from_sources"
+            ) as teacher_predictor:
+                rows = _apply_runtime_scalp_teacher_rerank(
+                    category="haircare",
+                    rows_out=base_rows,
+                    now_utc=timezone.now(),
+                    items=[],
+                    profile=None,
+                    context_products=[],
+                    catalog_products=[],
+                    planned_target_product_type="conditioner",
+                    planned_target_step_index=2,
+                    candidate_types=["conditioner", "scalp_serum", "hair_mask"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "conditioner")
+        self.assertEqual([row["candidate_type"] for row in rows], ["conditioner", "scalp_serum", "hair_mask"])
+        teacher_loader.assert_not_called()
+        teacher_predictor.assert_not_called()
+        return
+        if pd is None:
+            self.skipTest("pandas is required")
+
+        t0 = timezone.now() - timedelta(days=10)
+        self._create_tx(self.p_shampoo, t0 - timedelta(days=1), "v4-scalp-teacher-2")
+
+        class DummyArtifactModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"conditioner": 1.0, "scalp_serum": 0.1, "hair_mask": 0.3}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        class DummyTeacherModel:
+            def predict(self, X):
+                base = pd.Series([0.0] * len(X), index=X.index, dtype=float)
+                base = base + X["candidate_type"].astype(str).map(
+                    {"conditioner": 0.1, "scalp_serum": 2.0, "hair_mask": 0.2}
+                ).fillna(0.0)
+                return base.to_numpy()
+
+        base_artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyArtifactModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["conditioner", "scalp_serum", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"conditioner": 0.5, "scalp_serum": 0.2, "hair_mask": 0.3}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+        teacher_artifact = {
+            "task": "roadmap_nextstep_v4_ranking",
+            "model": DummyTeacherModel(),
+            "preprocessor": None,
+            "model_type": "lightgbm_ranker",
+            "feature_columns": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "categorical_features": [
+                "category",
+                "candidate_type",
+                "planned_target_product_type",
+            ],
+            "numeric_features": [],
+            "candidate_types_by_category": {"haircare": ["conditioner", "scalp_serum", "hair_mask"]},
+            "rules_chain_by_category": {
+                "haircare": ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]
+            },
+            "candidate_popularity_in_train_by_category": {
+                "haircare": {"conditioner": 0.2, "scalp_serum": 0.6, "hair_mask": 0.2}
+            },
+            "owned_feature_columns": [],
+            "owned_feature_map": {},
+            "temperature": 1.0,
+        }
+        zero_bias = lambda **kwargs: (kwargs["score_list"], [0.0 for _ in kwargs["score_list"]])
+
+        with override_settings(
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED=False,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_RERANK_ENABLED=True,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_MODEL_PATH="teacher-scalp.pkl",
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_WEIGHT=0.75,
+            ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_TARGETS=["scalp_serum"],
+        ):
+            with patch("roadmap_app.ml_next_step._load_model", return_value=base_artifact), patch(
+                "roadmap_app.ml_next_step._load_model_for_path",
+                return_value=teacher_artifact,
+            ), patch(
+                "roadmap_app.ml_next_step._apply_runtime_progression_bias",
+                side_effect=zero_bias,
+            ), patch(
+                "roadmap_app.ml_next_step._apply_runtime_scalp_planned_target_rerank",
+                side_effect=zero_bias,
+            ), patch(
+                "roadmap_app.ml_next_step._apply_runtime_leavein_planned_target_rerank",
+                side_effect=zero_bias,
+            ):
+                rows = predict_next_product_types(
+                    user=self.user,
+                    context_product_ids=[],
+                    category="haircare",
+                    planned_target_product_type="conditioner",
+                    planned_target_step_index=2,
+                    candidate_types=["conditioner", "scalp_serum", "hair_mask"],
+                )
+
+        self.assertEqual(rows[0]["candidate_type"], "conditioner")
+        for row in rows:
+            self.assertNotIn("haircare_scalp_teacher_rerank", row.get("runtime_policies") or [])
+
 
 class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
     def _create_makeup_products(self, suffix: str) -> None:
@@ -2130,6 +2480,7 @@ class RoadmapNextStepV4PartialRolloutRuntimeTests(TestCase):
             ROADMAP_NEXTSTEP_V4_PARTIAL_FORCE_ENABLED_CATEGORIES=["haircare"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["hair_mask"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_STEP_INDEXES=["3"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_ACTIVE_MODEL_PRODUCT_TYPES=[],
             ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=0,
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PERCENT=100,
             ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="partial_hair_purchase_ctx_test",

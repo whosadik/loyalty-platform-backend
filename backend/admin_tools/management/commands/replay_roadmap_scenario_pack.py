@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from contextlib import nullcontext
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.test.utils import override_settings
 
 from roadmap_app.ml_next_step import (
     _load_model_for_path,
@@ -335,6 +337,7 @@ class Command(BaseCommand):
         )
         parser.add_argument("--candidate-teacher-model-path", type=str, default="")
         parser.add_argument("--candidate-teacher-weight", type=float, default=0.25)
+        parser.add_argument("--disable-runtime-policies", action="store_true")
         parser.add_argument("--format", type=str, choices=["json", "md"], default="json")
         parser.add_argument("--out", type=str, default="")
 
@@ -347,6 +350,7 @@ class Command(BaseCommand):
         candidate_model_path = str(options.get("candidate_model_path") or "").strip()
         candidate_teacher_model_path = str(options.get("candidate_teacher_model_path") or "").strip()
         candidate_teacher_weight = max(0.0, float(options.get("candidate_teacher_weight") or 0.0))
+        disable_runtime_policies = bool(options.get("disable_runtime_policies"))
         if not active_model_path:
             raise CommandError("--active-model-path is required")
         if not candidate_model_path:
@@ -400,96 +404,82 @@ class Command(BaseCommand):
         swap_stats: dict[tuple[str, str], dict[str, int]] = defaultdict(lambda: defaultdict(int))
         episode_rows: list[dict[str, Any]] = []
 
-        for instance in scenario_instances:
-            plan_id = _to_int(instance.get("plan_id"))
-            user_id = _to_int(instance.get("user_id"))
-            plan = plans_by_id.get(plan_id)
-            if not plan:
-                continue
-            category = str(plan.get("category") or "haircare").strip().lower()
-            t0 = _parse_dt(instance.get("t0_utc")) or plan.get("updated_at")
-            if t0 is None:
-                continue
-
-            plan_meta = plan.get("meta") or {}
-            context_meta = plan_meta.get("context") if isinstance(plan_meta, dict) else {}
-            ml_meta = plan_meta.get("ml") if isinstance(plan_meta, dict) else {}
-            context_product_ids = [
-                _to_int(raw)
-                for raw in (context_meta.get("post_ctx_product_ids") or [])
-                if _to_int(raw) > 0
-            ]
-            context_products = [
-                dict(products_by_id[product_id])
-                for product_id in context_product_ids
-                if product_id in products_by_id
-            ]
-
-            expected_next = str(instance.get("expected_next_product_type") or "").strip().lower()
-            planned_target_product_type = str(
-                instance.get("planned_target_product_type")
-                or (ml_meta.get("planned_target_product_type") if isinstance(ml_meta, dict) else "")
-                or ""
-            ).strip().lower()
-            planned_target_step_index = _to_int(
-                instance.get("planned_target_step_index")
-                or (ml_meta.get("planned_target_step_index") if isinstance(ml_meta, dict) else 0),
-                default=0,
+        settings_ctx = (
+            override_settings(
+                ROADMAP_NEXTSTEP_V4_HAIRCARE_RUNTIME_BIAS_ENABLED=False,
+                ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_RERANK_ENABLED=False,
+                ROADMAP_NEXTSTEP_V4_HAIRCARE_LEAVEIN_RERANK_ENABLED=False,
+                ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_RERANK_ENABLED=False,
             )
+            if disable_runtime_policies
+            else nullcontext()
+        )
+        with settings_ctx:
+            for instance in scenario_instances:
+                plan_id = _to_int(instance.get("plan_id"))
+                user_id = _to_int(instance.get("user_id"))
+                plan = plans_by_id.get(plan_id)
+                if not plan:
+                    continue
+                category = str(plan.get("category") or "haircare").strip().lower()
+                t0 = _parse_dt(instance.get("t0_utc")) or plan.get("updated_at")
+                if t0 is None:
+                    continue
 
-            history_items = [
-                dict(item)
-                for item in (items_by_user_id.get(user_id) or [])
-                if item.get("ts") is not None and item["ts"] <= t0
-            ]
-            profile = profiles_by_user_id.get(user_id) or {}
+                plan_meta = plan.get("meta") or {}
+                context_meta = plan_meta.get("context") if isinstance(plan_meta, dict) else {}
+                ml_meta = plan_meta.get("ml") if isinstance(plan_meta, dict) else {}
+                context_product_ids = [
+                    _to_int(raw)
+                    for raw in (context_meta.get("post_ctx_product_ids") or [])
+                    if _to_int(raw) > 0
+                ]
+                context_products = [
+                    dict(products_by_id[product_id])
+                    for product_id in context_product_ids
+                    if product_id in products_by_id
+                ]
 
-            plan_events = [
-                dict(event)
-                for event in (events_by_plan_id.get(plan_id) or [])
-                if event.get("created_at") is not None and event["created_at"] >= t0
-            ]
-            completed_events = [
-                event for event in plan_events if str(event.get("event_type") or "") == "roadmap_step_completed"
-            ]
-            first_completed = completed_events[0] if completed_events else None
-            actual_completed_product_type = ""
-            actual_matched_by = ""
-            if first_completed:
-                event_context = first_completed.get("context") or {}
-                actual_completed_product_type = str(event_context.get("product_type") or "").strip().lower()
-                actual_matched_by = str(event_context.get("matched_by") or "").strip().lower()
-                if not actual_completed_product_type:
-                    step = steps_by_id.get(_to_int(first_completed.get("step_id")))
-                    actual_completed_product_type = str((step or {}).get("product_type") or "").strip().lower()
+                expected_next = str(instance.get("expected_next_product_type") or "").strip().lower()
+                planned_target_product_type = str(
+                    instance.get("planned_target_product_type")
+                    or (ml_meta.get("planned_target_product_type") if isinstance(ml_meta, dict) else "")
+                    or ""
+                ).strip().lower()
+                planned_target_step_index = _to_int(
+                    instance.get("planned_target_step_index")
+                    or (ml_meta.get("planned_target_step_index") if isinstance(ml_meta, dict) else 0),
+                    default=0,
+                )
 
-            active_predictions = _predict_with_v4_artifact_from_sources(
-                artifact=active_artifact,
-                category=category,
-                now_utc=t0,
-                items=history_items,
-                profile=profile,
-                context_products=context_products,
-                catalog_products=products,
-                planned_target_product_type=planned_target_product_type,
-                planned_target_step_index=planned_target_step_index,
-                candidate_types=None,
-            )
-            candidate_predictions = _predict_with_v4_artifact_from_sources(
-                artifact=candidate_artifact,
-                category=category,
-                now_utc=t0,
-                items=history_items,
-                profile=profile,
-                context_products=context_products,
-                catalog_products=products,
-                planned_target_product_type=planned_target_product_type,
-                planned_target_step_index=planned_target_step_index,
-                candidate_types=None,
-            )
-            if candidate_teacher_artifact and candidate_teacher_weight > 0.0:
-                teacher_predictions = _predict_with_v4_artifact_from_sources(
-                    artifact=candidate_teacher_artifact,
+                history_items = [
+                    dict(item)
+                    for item in (items_by_user_id.get(user_id) or [])
+                    if item.get("ts") is not None and item["ts"] <= t0
+                ]
+                profile = profiles_by_user_id.get(user_id) or {}
+
+                plan_events = [
+                    dict(event)
+                    for event in (events_by_plan_id.get(plan_id) or [])
+                    if event.get("created_at") is not None and event["created_at"] >= t0
+                ]
+                completed_events = [
+                    event for event in plan_events if str(event.get("event_type") or "") == "roadmap_step_completed"
+                ]
+                first_completed = completed_events[0] if completed_events else None
+                actual_completed_product_type = ""
+                actual_matched_by = ""
+                if first_completed:
+                    event_context = first_completed.get("context") or {}
+                    actual_completed_product_type = str(event_context.get("product_type") or "").strip().lower()
+                    actual_matched_by = str(event_context.get("matched_by") or "").strip().lower()
+                    if not actual_completed_product_type:
+                        step = steps_by_id.get(_to_int(first_completed.get("step_id")))
+                        actual_completed_product_type = str((step or {}).get("product_type") or "").strip().lower()
+
+                active_predictions = _predict_with_v4_artifact_from_sources(
+                    artifact=active_artifact,
                     category=category,
                     now_utc=t0,
                     items=history_items,
@@ -500,124 +490,149 @@ class Command(BaseCommand):
                     planned_target_step_index=planned_target_step_index,
                     candidate_types=None,
                 )
-                candidate_predictions = blend_prediction_rows(
-                    candidate_predictions,
-                    teacher_predictions,
-                    overlay_weight=candidate_teacher_weight,
-                    overlay_label="teacher",
+                candidate_predictions = _predict_with_v4_artifact_from_sources(
+                    artifact=candidate_artifact,
+                    category=category,
+                    now_utc=t0,
+                    items=history_items,
+                    profile=profile,
+                    context_products=context_products,
+                    catalog_products=products,
+                    planned_target_product_type=planned_target_product_type,
+                    planned_target_step_index=planned_target_step_index,
+                    candidate_types=None,
                 )
+                if candidate_teacher_artifact and candidate_teacher_weight > 0.0:
+                    teacher_predictions = _predict_with_v4_artifact_from_sources(
+                        artifact=candidate_teacher_artifact,
+                        category=category,
+                        now_utc=t0,
+                        items=history_items,
+                        profile=profile,
+                        context_products=context_products,
+                        catalog_products=products,
+                        planned_target_product_type=planned_target_product_type,
+                        planned_target_step_index=planned_target_step_index,
+                        candidate_types=None,
+                    )
+                    candidate_predictions = blend_prediction_rows(
+                        candidate_predictions,
+                        teacher_predictions,
+                        overlay_weight=candidate_teacher_weight,
+                        overlay_label="teacher",
+                    )
 
-            active_top1 = str(_top_prediction(active_predictions).get("candidate_type") or "").strip().lower()
-            candidate_top1 = str(_top_prediction(candidate_predictions).get("candidate_type") or "").strip().lower()
-            active_top3 = {
-                str(row.get("candidate_type") or "").strip().lower()
-                for row in active_predictions[:3]
-                if str(row.get("candidate_type") or "").strip()
-            }
-            candidate_top3 = {
-                str(row.get("candidate_type") or "").strip().lower()
-                for row in candidate_predictions[:3]
-                if str(row.get("candidate_type") or "").strip()
-            }
-            active_expected_hit = int(bool(expected_next) and active_top1 == expected_next)
-            active_expected_hit_at3 = int(bool(expected_next) and expected_next in active_top3)
-            candidate_expected_hit = int(bool(expected_next) and candidate_top1 == expected_next)
-            candidate_expected_hit_at3 = int(bool(expected_next) and expected_next in candidate_top3)
-            outcome_eligible = int(bool(actual_completed_product_type))
-            active_outcome_hit = int(outcome_eligible and active_top1 == actual_completed_product_type)
-            active_outcome_hit_at3 = int(outcome_eligible and actual_completed_product_type in active_top3)
-            candidate_outcome_hit = int(outcome_eligible and candidate_top1 == actual_completed_product_type)
-            candidate_outcome_hit_at3 = int(outcome_eligible and actual_completed_product_type in candidate_top3)
-            agreement = int(bool(active_top1) and bool(candidate_top1) and active_top1 == candidate_top1)
-
-            aggregate["episodes"] += 1
-            aggregate["agreement"] += agreement
-            aggregate["active_expected_hits"] += active_expected_hit
-            aggregate["active_expected_hits_at3"] += active_expected_hit_at3
-            aggregate["candidate_expected_hits"] += candidate_expected_hit
-            aggregate["candidate_expected_hits_at3"] += candidate_expected_hit_at3
-            aggregate["outcome_eligible"] += outcome_eligible
-            aggregate["active_outcome_hits"] += active_outcome_hit
-            aggregate["active_outcome_hits_at3"] += active_outcome_hit_at3
-            aggregate["candidate_outcome_hits"] += candidate_outcome_hit
-            aggregate["candidate_outcome_hits_at3"] += candidate_outcome_hit_at3
-
-            scenario_key = str(instance.get("scenario_key") or "").strip()
-            if scenario_key:
-                stats = by_scenario_stats[scenario_key]
-                stats["episodes"] += 1
-                stats["agreement"] += agreement
-                stats["active_expected_hits"] += active_expected_hit
-                stats["active_expected_hits_at3"] += active_expected_hit_at3
-                stats["candidate_expected_hits"] += candidate_expected_hit
-                stats["candidate_expected_hits_at3"] += candidate_expected_hit_at3
-                stats["outcome_eligible"] += outcome_eligible
-                stats["active_outcome_hits"] += active_outcome_hit
-                stats["active_outcome_hits_at3"] += active_outcome_hit_at3
-                stats["candidate_outcome_hits"] += candidate_outcome_hit
-                stats["candidate_outcome_hits_at3"] += candidate_outcome_hit_at3
-
-            if expected_next:
-                stats = by_expected_stats[expected_next]
-                stats["episodes"] += 1
-                stats["agreement"] += agreement
-                stats["active_expected_hits"] += active_expected_hit
-                stats["active_expected_hits_at3"] += active_expected_hit_at3
-                stats["candidate_expected_hits"] += candidate_expected_hit
-                stats["candidate_expected_hits_at3"] += candidate_expected_hit_at3
-                stats["outcome_eligible"] += outcome_eligible
-                stats["active_outcome_hits"] += active_outcome_hit
-                stats["active_outcome_hits_at3"] += active_outcome_hit_at3
-                stats["candidate_outcome_hits"] += candidate_outcome_hit
-                stats["candidate_outcome_hits_at3"] += candidate_outcome_hit_at3
-
-            if active_top1 and candidate_top1 and active_top1 != candidate_top1:
-                stats = swap_stats[(active_top1, candidate_top1)]
-                stats["plans"] += 1
-                stats["active_expected_hits"] += active_expected_hit
-                stats["active_expected_hits_at3"] += active_expected_hit_at3
-                stats["candidate_expected_hits"] += candidate_expected_hit
-                stats["candidate_expected_hits_at3"] += candidate_expected_hit_at3
-                stats["outcome_eligible"] += outcome_eligible
-                stats["active_outcome_hits"] += active_outcome_hit
-                stats["active_outcome_hits_at3"] += active_outcome_hit_at3
-                stats["candidate_outcome_hits"] += candidate_outcome_hit
-                stats["candidate_outcome_hits_at3"] += candidate_outcome_hit_at3
-
-            episode_rows.append(
-                {
-                    "scenario_key": scenario_key,
-                    "replica": _to_int(instance.get("replica"), default=0),
-                    "user_id": user_id,
-                    "plan_id": plan_id,
-                    "category": category,
-                    "t0_utc": t0.isoformat().replace("+00:00", "Z"),
-                    "expected_next_product_type": expected_next,
-                    "planned_target_product_type": planned_target_product_type,
-                    "planned_target_step_index": planned_target_step_index,
-                    "actual_completed_product_type": actual_completed_product_type,
-                    "actual_matched_by": actual_matched_by,
-                    "active_top1": active_top1,
-                    "candidate_top1": candidate_top1,
-                    "agreement": agreement,
-                    "active_expected_hit": active_expected_hit,
-                    "active_expected_hit_at3": active_expected_hit_at3,
-                    "candidate_expected_hit": candidate_expected_hit,
-                    "candidate_expected_hit_at3": candidate_expected_hit_at3,
-                    "active_outcome_hit": active_outcome_hit,
-                    "active_outcome_hit_at3": active_outcome_hit_at3,
-                    "candidate_outcome_hit": candidate_outcome_hit,
-                    "candidate_outcome_hit_at3": candidate_outcome_hit_at3,
-                    "active_top3": sorted(active_top3),
-                    "candidate_top3": sorted(candidate_top3),
-                    "active_predictions": active_predictions[:3],
-                    "candidate_predictions": candidate_predictions[:3],
-                    "context_product_ids": context_product_ids,
-                    "history_tx_items": len(history_items),
-                    "future_plan_events": Counter(str(event.get("event_type") or "") for event in plan_events),
-                    "step_count": len(steps_by_plan_id.get(plan_id) or []),
+                active_top1 = str(_top_prediction(active_predictions).get("candidate_type") or "").strip().lower()
+                candidate_top1 = str(_top_prediction(candidate_predictions).get("candidate_type") or "").strip().lower()
+                active_top3 = {
+                    str(row.get("candidate_type") or "").strip().lower()
+                    for row in active_predictions[:3]
+                    if str(row.get("candidate_type") or "").strip()
                 }
-            )
+                candidate_top3 = {
+                    str(row.get("candidate_type") or "").strip().lower()
+                    for row in candidate_predictions[:3]
+                    if str(row.get("candidate_type") or "").strip()
+                }
+                active_expected_hit = int(bool(expected_next) and active_top1 == expected_next)
+                active_expected_hit_at3 = int(bool(expected_next) and expected_next in active_top3)
+                candidate_expected_hit = int(bool(expected_next) and candidate_top1 == expected_next)
+                candidate_expected_hit_at3 = int(bool(expected_next) and expected_next in candidate_top3)
+                outcome_eligible = int(bool(actual_completed_product_type))
+                active_outcome_hit = int(outcome_eligible and active_top1 == actual_completed_product_type)
+                active_outcome_hit_at3 = int(outcome_eligible and actual_completed_product_type in active_top3)
+                candidate_outcome_hit = int(outcome_eligible and candidate_top1 == actual_completed_product_type)
+                candidate_outcome_hit_at3 = int(outcome_eligible and actual_completed_product_type in candidate_top3)
+                agreement = int(bool(active_top1) and bool(candidate_top1) and active_top1 == candidate_top1)
+
+                aggregate["episodes"] += 1
+                aggregate["agreement"] += agreement
+                aggregate["active_expected_hits"] += active_expected_hit
+                aggregate["active_expected_hits_at3"] += active_expected_hit_at3
+                aggregate["candidate_expected_hits"] += candidate_expected_hit
+                aggregate["candidate_expected_hits_at3"] += candidate_expected_hit_at3
+                aggregate["outcome_eligible"] += outcome_eligible
+                aggregate["active_outcome_hits"] += active_outcome_hit
+                aggregate["active_outcome_hits_at3"] += active_outcome_hit_at3
+                aggregate["candidate_outcome_hits"] += candidate_outcome_hit
+                aggregate["candidate_outcome_hits_at3"] += candidate_outcome_hit_at3
+
+                scenario_key = str(instance.get("scenario_key") or "").strip()
+                if scenario_key:
+                    stats = by_scenario_stats[scenario_key]
+                    stats["episodes"] += 1
+                    stats["agreement"] += agreement
+                    stats["active_expected_hits"] += active_expected_hit
+                    stats["active_expected_hits_at3"] += active_expected_hit_at3
+                    stats["candidate_expected_hits"] += candidate_expected_hit
+                    stats["candidate_expected_hits_at3"] += candidate_expected_hit_at3
+                    stats["outcome_eligible"] += outcome_eligible
+                    stats["active_outcome_hits"] += active_outcome_hit
+                    stats["active_outcome_hits_at3"] += active_outcome_hit_at3
+                    stats["candidate_outcome_hits"] += candidate_outcome_hit
+                    stats["candidate_outcome_hits_at3"] += candidate_outcome_hit_at3
+
+                if expected_next:
+                    stats = by_expected_stats[expected_next]
+                    stats["episodes"] += 1
+                    stats["agreement"] += agreement
+                    stats["active_expected_hits"] += active_expected_hit
+                    stats["active_expected_hits_at3"] += active_expected_hit_at3
+                    stats["candidate_expected_hits"] += candidate_expected_hit
+                    stats["candidate_expected_hits_at3"] += candidate_expected_hit_at3
+                    stats["outcome_eligible"] += outcome_eligible
+                    stats["active_outcome_hits"] += active_outcome_hit
+                    stats["active_outcome_hits_at3"] += active_outcome_hit_at3
+                    stats["candidate_outcome_hits"] += candidate_outcome_hit
+                    stats["candidate_outcome_hits_at3"] += candidate_outcome_hit_at3
+
+                if active_top1 and candidate_top1 and active_top1 != candidate_top1:
+                    stats = swap_stats[(active_top1, candidate_top1)]
+                    stats["plans"] += 1
+                    stats["active_expected_hits"] += active_expected_hit
+                    stats["active_expected_hits_at3"] += active_expected_hit_at3
+                    stats["candidate_expected_hits"] += candidate_expected_hit
+                    stats["candidate_expected_hits_at3"] += candidate_expected_hit_at3
+                    stats["outcome_eligible"] += outcome_eligible
+                    stats["active_outcome_hits"] += active_outcome_hit
+                    stats["active_outcome_hits_at3"] += active_outcome_hit_at3
+                    stats["candidate_outcome_hits"] += candidate_outcome_hit
+                    stats["candidate_outcome_hits_at3"] += candidate_outcome_hit_at3
+
+                episode_rows.append(
+                    {
+                        "scenario_key": scenario_key,
+                        "replica": _to_int(instance.get("replica"), default=0),
+                        "user_id": user_id,
+                        "plan_id": plan_id,
+                        "category": category,
+                        "t0_utc": t0.isoformat().replace("+00:00", "Z"),
+                        "expected_next_product_type": expected_next,
+                        "planned_target_product_type": planned_target_product_type,
+                        "planned_target_step_index": planned_target_step_index,
+                        "actual_completed_product_type": actual_completed_product_type,
+                        "actual_matched_by": actual_matched_by,
+                        "active_top1": active_top1,
+                        "candidate_top1": candidate_top1,
+                        "agreement": agreement,
+                        "active_expected_hit": active_expected_hit,
+                        "active_expected_hit_at3": active_expected_hit_at3,
+                        "candidate_expected_hit": candidate_expected_hit,
+                        "candidate_expected_hit_at3": candidate_expected_hit_at3,
+                        "active_outcome_hit": active_outcome_hit,
+                        "active_outcome_hit_at3": active_outcome_hit_at3,
+                        "candidate_outcome_hit": candidate_outcome_hit,
+                        "candidate_outcome_hit_at3": candidate_outcome_hit_at3,
+                        "active_top3": sorted(active_top3),
+                        "candidate_top3": sorted(candidate_top3),
+                        "active_predictions": active_predictions[:3],
+                        "candidate_predictions": candidate_predictions[:3],
+                        "context_product_ids": context_product_ids,
+                        "history_tx_items": len(history_items),
+                        "future_plan_events": Counter(str(event.get("event_type") or "") for event in plan_events),
+                        "step_count": len(steps_by_plan_id.get(plan_id) or []),
+                    }
+                )
 
         by_scenario_rows = []
         for scenario_key, stats in sorted(by_scenario_stats.items()):
@@ -723,6 +738,7 @@ class Command(BaseCommand):
                 "candidate_model_path": candidate_model_path,
                 "candidate_teacher_model_path": candidate_teacher_model_path or None,
                 "candidate_teacher_weight": candidate_teacher_weight if candidate_teacher_model_path else None,
+                "disable_runtime_policies": disable_runtime_policies,
                 "format": str(options.get("format") or "json"),
             },
             "pack_summary": summary,

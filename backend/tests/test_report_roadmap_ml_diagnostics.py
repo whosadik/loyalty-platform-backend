@@ -1227,6 +1227,7 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
             ROADMAP_NEXTSTEP_V4_PARTIAL_ENABLED_CATEGORIES=["haircare"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_PURCHASE_CONTEXT_ONLY_CATEGORIES=["haircare"],
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PRODUCT_TYPES=["hair_mask"],
+            ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_ACTIVE_MODEL_PRODUCT_TYPES=[],
             ROADMAP_NEXTSTEP_V4_PARTIAL_PERCENT=0,
             ROADMAP_NEXTSTEP_V4_PARTIAL_HAIRCARE_PERCENT=100,
             ROADMAP_NEXTSTEP_V4_PARTIAL_SALT="diag_partial_purchase_only_test",
@@ -1246,6 +1247,217 @@ class ReportRoadmapMlDiagnosticsTests(TestCase):
                 for row in projected["by_slot_and_planned_target"]
             )
         )
+
+    def test_report_can_filter_by_refresh_caller(self):
+        u_cold = self._user("diag_refresh_filter_cold")
+        u_purchase = self._user("diag_refresh_filter_purchase")
+
+        plan_cold, steps_cold = self._plan(
+            user=u_cold,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "conditioner")],
+            ml_extra={
+                "model_slot": "active",
+                "model_version": "active_v4",
+                "planned_target_product_type": "conditioner",
+            },
+        )
+        plan_cold.meta["context"] = {"refresh_caller": "refresh_roadmap"}
+        plan_cold.save(update_fields=["meta", "updated_at"])
+
+        plan_purchase, steps_purchase = self._plan(
+            user=u_purchase,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "hair_mask")],
+            ml_extra={
+                "model_slot": "active",
+                "model_version": "active_v4",
+                "planned_target_product_type": "hair_mask",
+            },
+        )
+        plan_purchase.meta["context"] = {"refresh_caller": "update_roadmap_from_purchase"}
+        plan_purchase.save(update_fields=["meta", "updated_at"])
+
+        self._emit_step_events(user=u_cold, plan=plan_cold, step=steps_cold[0], exposed=5, completed=1)
+        self._emit_step_events(user=u_purchase, plan=plan_purchase, step=steps_purchase[0], exposed=5, completed=4)
+
+        payload = self._run_report_json(
+            control="disabled",
+            categories="haircare",
+            min_sample=1,
+            refresh_caller="update_roadmap_from_purchase",
+        )
+        self.assertEqual(payload["params"]["refresh_caller"], "update_roadmap_from_purchase")
+
+        served = payload["runtime_observability"]["served_model_slots"]
+        self.assertEqual(served["slot_counts"]["active"], 1)
+        row = self._served_slot_row(payload, category="haircare", model_slot="active")
+        self.assertEqual(row["plans"], 1)
+        self.assertEqual(row["step_completed"], 4)
+        self.assertAlmostEqual(float(row["step_completion_rate"]), 0.8, places=6)
+
+    def test_report_can_filter_candidate_compare_by_planned_target_product_type(self):
+        u_scalp = self._user("diag_target_filter_scalp")
+        u_conditioner = self._user("diag_target_filter_conditioner")
+
+        plan_scalp, steps_scalp = self._plan(
+            user=u_scalp,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "scalp_serum")],
+            ml_extra={
+                "predictions": [{"candidate_type": "conditioner", "score": 0.72}],
+                "planned_target_product_type": "scalp_serum",
+                "planned_target_step_index": 2,
+            },
+        )
+        plan_scalp.meta["context"] = {"refresh_caller": "update_roadmap_from_purchase"}
+        plan_scalp.save(update_fields=["meta", "updated_at"])
+
+        plan_conditioner, steps_conditioner = self._plan(
+            user=u_conditioner,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "conditioner")],
+            ml_extra={
+                "predictions": [{"candidate_type": "shampoo", "score": 0.81}],
+                "planned_target_product_type": "conditioner",
+                "planned_target_step_index": 2,
+            },
+        )
+        plan_conditioner.meta["context"] = {"refresh_caller": "update_roadmap_from_purchase"}
+        plan_conditioner.save(update_fields=["meta", "updated_at"])
+
+        self._emit_step_events(user=u_scalp, plan=plan_scalp, step=steps_scalp[1], completed=1)
+        self._emit_step_events(user=u_conditioner, plan=plan_conditioner, step=steps_conditioner[1], completed=1)
+
+        def _predict_candidate(model_path, *, user, **kwargs):
+            self.assertEqual(model_path, "/models/nextstep-candidate/model.pkl")
+            if int(user) == int(u_scalp.id):
+                return [{"candidate_type": "scalp_serum", "score": 0.93}]
+            if int(user) == int(u_conditioner.id):
+                return [{"candidate_type": "conditioner", "score": 0.89}]
+            return []
+
+        with patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.nextstep_model_artifact_summary",
+            side_effect=[
+                {"model_path": "/models/nextstep-active/model.pkl", "model_version": "active_v1", "exists": True},
+                {"model_path": "/models/nextstep-candidate/model.pkl", "model_version": "scalp_teacher_v1", "exists": True},
+            ],
+        ), patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.predict_next_product_types_for_model_path",
+            side_effect=_predict_candidate,
+        ):
+            payload = self._run_report_json(
+                control="disabled",
+                categories="haircare",
+                min_sample=1,
+                refresh_caller="update_roadmap_from_purchase",
+                planned_target_product_types="scalp_serum",
+                nextstep_candidate_model_path="/models/nextstep-candidate/model.pkl",
+            )
+
+        self.assertEqual(payload["params"]["planned_target_product_types"], ["scalp_serum"])
+        self.assertEqual(payload["overall"]["plans_total_in_scope"], 1)
+        compare = payload["runtime_observability"]["candidate_path_compare"]
+        self.assertEqual(compare["plans_scanned"], 1)
+        self.assertEqual(compare["predicted_plans"], 1)
+        self.assertEqual(compare["top1_comparison"]["different_top1_plans"], 1)
+        self.assertEqual(compare["top_swaps"][0]["active_top1"], "conditioner")
+        self.assertEqual(compare["top_swaps"][0]["candidate_top1"], "scalp_serum")
+
+    def test_report_candidate_compare_can_use_analysis_cohort_with_planned_target_baseline(self):
+        user = self._user("diag_analysis_cohort_scalp")
+
+        plan, steps = self._plan(
+            user=user,
+            decision="disabled",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "scalp_serum")],
+            ml_extra={
+                "planned_target_product_type": "scalp_serum",
+                "planned_target_step_index": 2,
+            },
+        )
+        plan.meta["context"] = {"refresh_caller": "update_roadmap_from_purchase"}
+        plan.save(update_fields=["meta", "updated_at"])
+        self._emit_step_events(user=user, plan=plan, step=steps[1], completed=1)
+
+        with patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.nextstep_model_artifact_summary",
+            side_effect=[
+                {"model_path": "/models/nextstep-active/model.pkl", "model_version": "active_v1", "exists": True},
+                {"model_path": "/models/nextstep-candidate/model.pkl", "model_version": "scalp_candidate_v1", "exists": True},
+            ],
+        ), patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.predict_next_product_types_for_model_path",
+            return_value=[{"candidate_type": "conditioner", "score": 0.91}],
+        ):
+            payload = self._run_report_json(
+                control="disabled",
+                categories="haircare",
+                min_sample=1,
+                refresh_caller="update_roadmap_from_purchase",
+                planned_target_product_types="scalp_serum",
+                nextstep_candidate_model_path="/models/nextstep-candidate/model.pkl",
+                nextstep_candidate_compare_cohort="analysis",
+            )
+
+        self.assertEqual(payload["params"]["nextstep_candidate_compare_cohort"], "analysis")
+        compare = payload["runtime_observability"]["candidate_path_compare"]
+        self.assertEqual(compare["compare_cohort"], "analysis")
+        self.assertEqual(compare["plans_scanned"], 1)
+        self.assertEqual(compare["predicted_plans"], 1)
+        self.assertEqual(compare["baseline_source_counts"]["planned_target"], 1)
+        self.assertEqual(compare["top_swaps"][0]["active_top1"], "scalp_serum")
+        self.assertEqual(compare["top_swaps"][0]["candidate_top1"], "conditioner")
+
+    def test_report_candidate_compare_can_skip_event_metrics(self):
+        user = self._user("diag_skip_event_metrics")
+
+        plan, steps = self._plan(
+            user=user,
+            decision="model_used",
+            category="haircare",
+            steps=[(1, "shampoo"), (2, "leave_in")],
+            ml_extra={
+                "predictions": [{"candidate_type": "hair_oil", "score": 0.73}],
+                "planned_target_product_type": "leave_in",
+                "planned_target_step_index": 2,
+            },
+        )
+        plan.meta["context"] = {"refresh_caller": "update_roadmap_from_purchase"}
+        plan.save(update_fields=["meta", "updated_at"])
+        self._emit_step_events(user=user, plan=plan, step=steps[1], exposed=2, clicked=1, completed=1)
+
+        with patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.nextstep_model_artifact_summary",
+            side_effect=[
+                {"model_path": "/models/nextstep-active/model.pkl", "model_version": "active_v1", "exists": True},
+                {"model_path": "/models/nextstep-candidate/model.pkl", "model_version": "leavein_candidate_v1", "exists": True},
+            ],
+        ), patch(
+            "roadmap_app.management.commands.report_roadmap_ml_diagnostics.predict_next_product_types_for_model_path",
+            return_value=[{"candidate_type": "leave_in", "score": 0.94}],
+        ):
+            payload = self._run_report_json(
+                control="disabled",
+                categories="haircare",
+                min_sample=1,
+                refresh_caller="update_roadmap_from_purchase",
+                nextstep_candidate_model_path="/models/nextstep-candidate/model.pkl",
+                skip_event_metrics=True,
+            )
+
+        self.assertTrue(payload["params"]["skip_event_metrics"])
+        compare = payload["runtime_observability"]["candidate_path_compare"]
+        self.assertEqual(compare["plans_scanned"], 1)
+        self.assertEqual(compare["predicted_plans"], 1)
+        self.assertEqual(compare["top1_comparison"]["different_top1_plans"], 1)
+        self.assertEqual(compare["outcome_comparison"]["eligible_plans"], 0)
 
     def test_report_markdown_includes_projected_partial_slot_sections(self):
         user = self._user("diag_proj_partial_md")

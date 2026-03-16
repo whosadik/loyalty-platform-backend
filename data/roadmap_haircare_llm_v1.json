@@ -1,0 +1,4975 @@
+{
+  "scenario_set": "haircare_llm_v1",
+  "category": "haircare",
+  "shared_catalog": [
+    {
+      "product_key": "shampoo_repair_1",
+      "name": "Bond Repair Shampoo",
+      "brand": "TrichoLab",
+      "price": "6900",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "shampoo",
+      "concerns": [
+        "damage",
+        "dryness",
+        "split_ends",
+        "repair"
+      ],
+      "actives": [
+        "keratin",
+        "ceramide",
+        "amino_acids"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "normal",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "bond_repair",
+        "finish": "soft"
+      },
+      "ingredients_inci": "Water, Sodium Cocoyl Isethionate, Hydrolyzed Keratin, Ceramide NP, Amino Acids, Panthenol"
+    },
+    {
+      "product_key": "shampoo_balance_1",
+      "name": "Scalp Balance Shampoo",
+      "brand": "RootSense",
+      "price": "6200",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "shampoo",
+      "concerns": [
+        "oiliness",
+        "flakes",
+        "itchiness",
+        "scalp_balance"
+      ],
+      "actives": [
+        "salicylic_acid",
+        "niacinamide",
+        "zinc_pca"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "oily",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "balance",
+        "finish": "fresh"
+      },
+      "ingredients_inci": "Water, Mild Surfactants, Salicylic Acid, Niacinamide, Zinc PCA, Tea Tree Oil"
+    },
+    {
+      "product_key": "shampoo_hydrate_1",
+      "name": "Hydra Soft Shampoo",
+      "brand": "Marelle",
+      "price": "6400",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "shampoo",
+      "concerns": [
+        "dryness",
+        "hydration",
+        "smoothness"
+      ],
+      "actives": [
+        "glycerin",
+        "aloe",
+        "panthenol"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "dry",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "hydra_soft",
+        "finish": "soft"
+      },
+      "ingredients_inci": "Water, Cocamidopropyl Betaine, Glycerin, Aloe Vera Juice, Panthenol, Squalane"
+    },
+    {
+      "product_key": "shampoo_curl_1",
+      "name": "Curl Definition Wash",
+      "brand": "CoilTheory",
+      "price": "7100",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "shampoo",
+      "concerns": [
+        "definition",
+        "frizz",
+        "dryness"
+      ],
+      "actives": [
+        "aloe",
+        "linseed",
+        "glycerin"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "curly",
+        "scalp_type": "normal",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "curl_definition",
+        "finish": "defined"
+      },
+      "ingredients_inci": "Water, Gentle Cleansers, Aloe Vera Juice, Linseed Extract, Glycerin, Panthenol"
+    },
+    {
+      "product_key": "shampoo_volume_1",
+      "name": "Airy Volume Shampoo",
+      "brand": "Vellet",
+      "price": "6000",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "shampoo",
+      "concerns": [
+        "volume",
+        "flatness",
+        "lightweight_care"
+      ],
+      "actives": [
+        "biotin",
+        "rice_protein",
+        "panthenol"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "normal",
+        "hair_thickness": "fine"
+      },
+      "raw_meta": {
+        "line": "airy_volume",
+        "finish": "airy"
+      },
+      "ingredients_inci": "Water, Mild Surfactants, Biotin, Hydrolyzed Rice Protein, Panthenol, Niacinamide"
+    },
+    {
+      "product_key": "conditioner_repair_1",
+      "name": "Bond Repair Conditioner",
+      "brand": "TrichoLab",
+      "price": "7300",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "conditioner",
+      "concerns": [
+        "damage",
+        "repair",
+        "split_ends",
+        "smoothness"
+      ],
+      "actives": [
+        "keratin",
+        "ceramide",
+        "amino_acids"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "normal",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "bond_repair",
+        "finish": "sleek"
+      },
+      "ingredients_inci": "Water, Behentrimonium Chloride, Hydrolyzed Keratin, Ceramide NP, Amino Acids, Panthenol"
+    },
+    {
+      "product_key": "conditioner_repair_alt_1",
+      "name": "Ceramide Repair Conditioner",
+      "brand": "Marelle",
+      "price": "7600",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "conditioner",
+      "concerns": [
+        "damage",
+        "repair",
+        "smoothness"
+      ],
+      "actives": [
+        "ceramide_np",
+        "amino_acids",
+        "panthenol"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "normal",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "repair_barrier",
+        "finish": "soft"
+      },
+      "ingredients_inci": "Water, Cetearyl Alcohol, Ceramide NP, Amino Acids, Panthenol, Squalane"
+    },
+    {
+      "product_key": "conditioner_light_1",
+      "name": "Weightless Volume Conditioner",
+      "brand": "Vellet",
+      "price": "6800",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "conditioner",
+      "concerns": [
+        "volume",
+        "flatness",
+        "lightweight_care"
+      ],
+      "actives": [
+        "rice_protein",
+        "biotin",
+        "panthenol"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "normal",
+        "hair_thickness": "fine"
+      },
+      "raw_meta": {
+        "line": "airy_volume",
+        "finish": "airy"
+      },
+      "ingredients_inci": "Water, Conditioning Base, Hydrolyzed Rice Protein, Biotin, Panthenol, Aloe Vera Juice"
+    },
+    {
+      "product_key": "conditioner_balance_1",
+      "name": "Fresh Root Conditioner",
+      "brand": "RootSense",
+      "price": "6700",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "conditioner",
+      "concerns": [
+        "lightweight_care",
+        "scalp_balance",
+        "smoothness"
+      ],
+      "actives": [
+        "niacinamide",
+        "panthenol",
+        "aloe"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "oily",
+        "hair_thickness": "fine"
+      },
+      "raw_meta": {
+        "line": "fresh_root",
+        "finish": "fresh"
+      },
+      "ingredients_inci": "Water, Conditioning Base, Niacinamide, Panthenol, Aloe Vera Juice, Glycerin"
+    },
+    {
+      "product_key": "conditioner_curl_1",
+      "name": "Curl Slip Conditioner",
+      "brand": "CoilTheory",
+      "price": "7500",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "conditioner",
+      "concerns": [
+        "definition",
+        "detangling",
+        "frizz_control"
+      ],
+      "actives": [
+        "aloe",
+        "linseed",
+        "jojoba_oil"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "curly",
+        "scalp_type": "normal",
+        "hair_thickness": "thick"
+      },
+      "raw_meta": {
+        "line": "curl_definition",
+        "finish": "defined"
+      },
+      "ingredients_inci": "Water, Conditioning Base, Aloe Vera Juice, Linseed Extract, Jojoba Oil, Panthenol"
+    },
+    {
+      "product_key": "hair_mask_repair_1",
+      "name": "Overnight Repair Mask",
+      "brand": "TrichoLab",
+      "price": "8900",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "hair_mask",
+      "concerns": [
+        "damage",
+        "repair",
+        "split_ends",
+        "hydration"
+      ],
+      "actives": [
+        "keratin",
+        "ceramide",
+        "shea_butter"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "dry",
+        "hair_thickness": "thick"
+      },
+      "raw_meta": {
+        "line": "bond_repair",
+        "finish": "rich"
+      },
+      "ingredients_inci": "Water, Fatty Alcohols, Hydrolyzed Keratin, Ceramide NP, Shea Butter, Panthenol"
+    },
+    {
+      "product_key": "hair_mask_repair_alt_1",
+      "name": "Ceramide Recovery Mask",
+      "brand": "Marelle",
+      "price": "9100",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "hair_mask",
+      "concerns": [
+        "repair",
+        "damage",
+        "smoothness",
+        "hydration"
+      ],
+      "actives": [
+        "ceramide_np",
+        "amino_acids",
+        "shea_butter"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "dry",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "repair_barrier",
+        "finish": "soft"
+      },
+      "ingredients_inci": "Water, Conditioning Base, Ceramide NP, Amino Acids, Shea Butter, Glycerin"
+    },
+    {
+      "product_key": "hair_mask_light_1",
+      "name": "Feather Light Mask",
+      "brand": "Vellet",
+      "price": "8200",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "hair_mask",
+      "concerns": [
+        "lightweight_care",
+        "volume",
+        "smoothness"
+      ],
+      "actives": [
+        "rice_protein",
+        "panthenol",
+        "aloe"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "normal",
+        "hair_thickness": "fine"
+      },
+      "raw_meta": {
+        "line": "airy_volume",
+        "finish": "airy"
+      },
+      "ingredients_inci": "Water, Conditioning Base, Rice Protein, Panthenol, Aloe Vera Juice, Glycerin"
+    },
+    {
+      "product_key": "hair_mask_hydrate_1",
+      "name": "Deep Hydra Mask",
+      "brand": "Marelle",
+      "price": "8600",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "hair_mask",
+      "concerns": [
+        "hydration",
+        "dryness",
+        "smoothness",
+        "frizz_control"
+      ],
+      "actives": [
+        "glycerin",
+        "aloe",
+        "squalane"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "curly",
+        "scalp_type": "dry",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "hydra_soft",
+        "finish": "soft"
+      },
+      "ingredients_inci": "Water, Conditioning Base, Glycerin, Aloe Vera Juice, Squalane, Panthenol"
+    },
+    {
+      "product_key": "hair_oil_smooth_1",
+      "name": "Gloss Hair Oil",
+      "brand": "Lustre&Co",
+      "price": "7800",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "hair_oil",
+      "concerns": [
+        "shine",
+        "frizz_control",
+        "split_ends",
+        "smoothness"
+      ],
+      "actives": [
+        "argan_oil",
+        "jojoba_oil",
+        "squalane"
+      ],
+      "flags": [
+        "heavy_oils"
+      ],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "normal",
+        "hair_thickness": "thick"
+      },
+      "raw_meta": {
+        "line": "glass_finish",
+        "finish": "glossy"
+      },
+      "ingredients_inci": "Cyclopentasiloxane, Argan Oil, Jojoba Oil, Squalane, Fragrance"
+    },
+    {
+      "product_key": "hair_oil_light_1",
+      "name": "Light Finish Oil",
+      "brand": "Lustre&Co",
+      "price": "7600",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "hair_oil",
+      "concerns": [
+        "shine",
+        "smoothness",
+        "split_ends"
+      ],
+      "actives": [
+        "argan_oil",
+        "squalane",
+        "jojoba_oil"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "normal",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "light_finish",
+        "finish": "glossy"
+      },
+      "ingredients_inci": "Cyclopentasiloxane, Argan Oil, Squalane, Jojoba Oil, Tocopherol"
+    },
+    {
+      "product_key": "scalp_serum_balance_1",
+      "name": "Micro Balance Scalp Serum",
+      "brand": "RootSense",
+      "price": "8400",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "scalp_serum",
+      "concerns": [
+        "oiliness",
+        "flakes",
+        "itchiness",
+        "scalp_balance"
+      ],
+      "actives": [
+        "salicylic_acid",
+        "niacinamide",
+        "zinc_pca"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "oily",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "balance",
+        "finish": "fresh"
+      },
+      "ingredients_inci": "Water, Propanediol, Salicylic Acid, Niacinamide, Zinc PCA, Tea Tree Oil"
+    },
+    {
+      "product_key": "scalp_serum_balance_alt_1",
+      "name": "Clarifying Scalp Drops",
+      "brand": "TrichoLab",
+      "price": "8600",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "scalp_serum",
+      "concerns": [
+        "oiliness",
+        "flakes",
+        "scalp_health",
+        "scalp_balance"
+      ],
+      "actives": [
+        "niacinamide",
+        "tea_tree",
+        "zinc_pca"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "oily",
+        "hair_thickness": "fine"
+      },
+      "raw_meta": {
+        "line": "clarity",
+        "finish": "fresh"
+      },
+      "ingredients_inci": "Water, Niacinamide, Tea Tree Oil, Zinc PCA, Panthenol, Aloe Vera Juice"
+    },
+    {
+      "product_key": "scalp_serum_sensitive_1",
+      "name": "Calm Scalp Serum",
+      "brand": "Marelle",
+      "price": "8500",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "scalp_serum",
+      "concerns": [
+        "itchiness",
+        "flakes",
+        "scalp_health",
+        "scalp_balance"
+      ],
+      "actives": [
+        "aloe",
+        "niacinamide",
+        "panthenol"
+      ],
+      "flags": [
+        "fragrance"
+      ],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "sensitive",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "calm_balance",
+        "finish": "fresh"
+      },
+      "ingredients_inci": "Water, Aloe Vera Juice, Niacinamide, Panthenol, Glycerin, Allantoin"
+    },
+    {
+      "product_key": "leave_in_curl_1",
+      "name": "Curl Memory Leave-In",
+      "brand": "CoilTheory",
+      "price": "7700",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "leave_in",
+      "concerns": [
+        "definition",
+        "frizz_control",
+        "detangling",
+        "hydration"
+      ],
+      "actives": [
+        "linseed",
+        "aloe",
+        "panthenol"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "curly",
+        "scalp_type": "normal",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "curl_definition",
+        "finish": "defined"
+      },
+      "ingredients_inci": "Water, Aloe Vera Juice, Linseed Extract, Panthenol, Glycerin, Polyquaternium"
+    },
+    {
+      "product_key": "leave_in_curl_alt_1",
+      "name": "Definition Milk Leave-In",
+      "brand": "Marelle",
+      "price": "7900",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "leave_in",
+      "concerns": [
+        "definition",
+        "frizz",
+        "hydration",
+        "detangling"
+      ],
+      "actives": [
+        "aloe",
+        "glycerin",
+        "linseed"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "curly",
+        "scalp_type": "dry",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "hydra_curl",
+        "finish": "soft"
+      },
+      "ingredients_inci": "Water, Aloe Vera Juice, Glycerin, Linseed Extract, Panthenol, Squalane"
+    },
+    {
+      "product_key": "leave_in_light_1",
+      "name": "Airy Leave-In Mist",
+      "brand": "Vellet",
+      "price": "7200",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "leave_in",
+      "concerns": [
+        "lightweight_care",
+        "volume",
+        "detangling",
+        "shine"
+      ],
+      "actives": [
+        "rice_protein",
+        "panthenol",
+        "aloe"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "normal",
+        "hair_thickness": "fine"
+      },
+      "raw_meta": {
+        "line": "airy_volume",
+        "finish": "airy"
+      },
+      "ingredients_inci": "Water, Hydrolyzed Rice Protein, Panthenol, Aloe Vera Juice, Polyquaternium"
+    },
+    {
+      "product_key": "leave_in_light_alt_1",
+      "name": "Weightless Detangle Spray",
+      "brand": "TrichoLab",
+      "price": "7400",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "leave_in",
+      "concerns": [
+        "lightweight_care",
+        "detangling",
+        "shine",
+        "volume"
+      ],
+      "actives": [
+        "panthenol",
+        "rice_protein",
+        "niacinamide"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "straight",
+        "scalp_type": "normal",
+        "hair_thickness": "fine"
+      },
+      "raw_meta": {
+        "line": "clarity",
+        "finish": "airy"
+      },
+      "ingredients_inci": "Water, Panthenol, Hydrolyzed Rice Protein, Niacinamide, Aloe Vera Juice, Polyquaternium"
+    },
+    {
+      "product_key": "leave_in_repair_1",
+      "name": "Repair Shield Leave-In",
+      "brand": "TrichoLab",
+      "price": "8000",
+      "currency": "KZT",
+      "category": "haircare",
+      "product_type": "leave_in",
+      "concerns": [
+        "repair",
+        "split_ends",
+        "smoothness",
+        "frizz_control"
+      ],
+      "actives": [
+        "keratin",
+        "ceramide",
+        "panthenol"
+      ],
+      "flags": [],
+      "attrs": {
+        "hair_type": "wavy",
+        "scalp_type": "normal",
+        "hair_thickness": "medium"
+      },
+      "raw_meta": {
+        "line": "bond_repair",
+        "finish": "sleek"
+      },
+      "ingredients_inci": "Water, Hydrolyzed Keratin, Ceramide NP, Panthenol, Amino Acids, Polyquaternium"
+    }
+  ],
+  "scenarios": [
+    {
+      "slug": "repair_mask_after_core_exact",
+      "segment": "bond_repair_baseline",
+      "expected_next_product_type": "hair_mask",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "repair",
+          "hydration"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "dry",
+          "hair_thickness": "thick",
+          "concerns": [
+            "damage",
+            "split_ends",
+            "dryness",
+            "repair"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -21,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -8,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_repair_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_repair_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "recommended",
+          "recommended_product_key": "hair_mask_repair_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "repair_intensity",
+            "routine_progression"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "hair_oil",
+          "status": "missing",
+          "recommended_product_key": "hair_oil_smooth_1",
+          "cadence": "optional",
+          "score": 0.69,
+          "confidence": 0.71,
+          "why": [
+            "finish_step",
+            "split_end_control"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "hair_mask_repair_1",
+              "purchased_product_key": "hair_mask_repair_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "curly_definition_leave_in_semantic",
+      "segment": "curl_definition_alt_match",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "definition",
+          "frizz_control"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "curly",
+          "scalp_type": "dry",
+          "hair_thickness": "medium",
+          "concerns": [
+            "definition",
+            "frizz",
+            "dryness",
+            "detangling"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "leave_in_curl_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "deep_hydration",
+            "frizz_control_path"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "leave_in_curl_1",
+              "purchased_product_key": "leave_in_curl_alt_1",
+              "semantic_score": 0.93
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "oily_scalp_serum_before_conditioner_exact",
+      "segment": "profile_override_oily_scalp",
+      "expected_next_product_type": "scalp_serum",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "oily",
+        "goals": [
+          "scalp_balance",
+          "scalp_health"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "oily",
+          "hair_thickness": "medium",
+          "concerns": [
+            "oiliness",
+            "flakes",
+            "itchiness",
+            "build_up"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_balance_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "scalp_serum_balance_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_balance_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "scalp_serum",
+          "status": "recommended",
+          "recommended_product_key": "scalp_serum_balance_1",
+          "cadence": "daily",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "scalp_balance_need",
+            "profile_override_chain"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "conditioner",
+          "status": "missing",
+          "recommended_product_key": "conditioner_balance_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "light_root_safe",
+            "mid_length_softness"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "scalp_serum_balance_1",
+              "purchased_product_key": "scalp_serum_balance_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "fine_hair_weightless_conditioner_click",
+      "segment": "volume_safe_conditioning",
+      "expected_next_product_type": "conditioner",
+      "outcome_tag": "clicked_no_purchase",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "volume",
+          "lightweight_care"
+        ],
+        "avoid_flags": [],
+        "budget": "low",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "normal",
+          "hair_thickness": "fine",
+          "concerns": [
+            "flatness",
+            "volume",
+            "lightweight_care"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_volume_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_volume_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "recommended",
+          "recommended_product_key": "conditioner_light_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "weightless_conditioning",
+            "volume_safe"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "missing",
+          "recommended_product_key": "hair_mask_light_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "targeted_nourishment",
+            "avoid_overweight"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_light_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_light_1"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "coily_leave_in_exact_after_mask",
+      "segment": "coily_definition_progression",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "definition",
+          "hydration"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "coily",
+          "scalp_type": "dry",
+          "hair_thickness": "thick",
+          "concerns": [
+            "definition",
+            "dryness",
+            "detangling",
+            "frizz_control"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "leave_in_curl_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "deep_hydration",
+            "frizz_control_path"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "leave_in_curl_1",
+              "purchased_product_key": "leave_in_curl_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "sensitive_scalp_serum_semantic_alt",
+      "segment": "sensitive_scalp_profile_override",
+      "expected_next_product_type": "scalp_serum",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "sensitive",
+        "goals": [
+          "scalp_health",
+          "scalp_balance"
+        ],
+        "avoid_flags": [
+          "fragrance"
+        ],
+        "budget": "high",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "sensitive",
+          "hair_thickness": "medium",
+          "concerns": [
+            "itchiness",
+            "flakes",
+            "scalp_health"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "scalp_serum_balance_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "scalp_serum",
+          "status": "recommended",
+          "recommended_product_key": "scalp_serum_sensitive_1",
+          "cadence": "daily",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "scalp_relief",
+            "profile_override_chain"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "conditioner",
+          "status": "missing",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_sensitive_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_sensitive_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_sensitive_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "scalp_serum_sensitive_1",
+              "purchased_product_key": "scalp_serum_balance_alt_1",
+              "semantic_score": 0.88
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "heavy_oils_avoid_mask_skipped",
+      "segment": "avoid_heavy_oils_repair_path",
+      "expected_next_product_type": "hair_mask",
+      "outcome_tag": "skipped",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "repair",
+          "smoothness"
+        ],
+        "avoid_flags": [
+          "heavy_oils"
+        ],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "dry",
+          "hair_thickness": "thick",
+          "concerns": [
+            "damage",
+            "split_ends",
+            "dryness",
+            "frizz_control"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -21,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -8,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_repair_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_repair_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "recommended",
+          "recommended_product_key": "hair_mask_repair_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "repair_intensity",
+            "routine_progression"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "missing",
+          "recommended_product_key": "leave_in_repair_1",
+          "cadence": "optional",
+          "score": 0.69,
+          "confidence": 0.71,
+          "why": [
+            "repair_seal",
+            "daily_protection"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_skipped",
+          "offset_hours": 18,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1",
+            "skip_reason": "wait_for_payday"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "curly_leave_in_vs_oil_exposed_only",
+      "segment": "leave_in_oil_ambiguity",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "exposed_no_click",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "definition",
+          "frizz_control"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "curly",
+          "scalp_type": "normal",
+          "hair_thickness": "medium",
+          "concerns": [
+            "frizz",
+            "detangling",
+            "definition"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -21,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -8,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "hair_oil",
+          "status": "missing",
+          "recommended_product_key": "hair_oil_light_1",
+          "cadence": "optional",
+          "score": 0.69,
+          "confidence": 0.71,
+          "why": [
+            "finish_step",
+            "split_end_control"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "thick_hair_finish_oil_exact",
+      "segment": "shine_finish_path",
+      "expected_next_product_type": "hair_oil",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "shine",
+          "smoothness"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "normal",
+          "hair_thickness": "thick",
+          "concerns": [
+            "shine",
+            "split_ends",
+            "frizz_control"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_oil_smooth_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_repair_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "repair_intensity",
+            "routine_progression"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "hair_oil",
+          "status": "recommended",
+          "recommended_product_key": "hair_oil_smooth_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "finish_step",
+            "split_end_control"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_oil",
+            "recommended_product_key": "hair_oil_smooth_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_oil",
+            "recommended_product_key": "hair_oil_smooth_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_oil",
+            "recommended_product_key": "hair_oil_smooth_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "hair_oil_smooth_1",
+              "purchased_product_key": "hair_oil_smooth_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "oily_fine_scalp_serum_click_no_purchase",
+      "segment": "oily_scalp_low_commitment",
+      "expected_next_product_type": "scalp_serum",
+      "outcome_tag": "clicked_no_purchase",
+      "profile": {
+        "skin_type": "oily",
+        "goals": [
+          "scalp_balance"
+        ],
+        "avoid_flags": [],
+        "budget": "low",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "oily",
+          "hair_thickness": "fine",
+          "concerns": [
+            "oiliness",
+            "itchiness",
+            "flatness"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_balance_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_balance_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "scalp_serum",
+          "status": "recommended",
+          "recommended_product_key": "scalp_serum_balance_1",
+          "cadence": "daily",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "scalp_balance_need",
+            "profile_override_chain"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "conditioner",
+          "status": "missing",
+          "recommended_product_key": "conditioner_light_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "weightless_conditioning",
+            "volume_safe"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "sulfate_avoid_conditioner_semantic",
+      "segment": "sulfate_avoid_repair_support",
+      "expected_next_product_type": "conditioner",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "sensitive",
+        "goals": [
+          "repair",
+          "smoothness"
+        ],
+        "avoid_flags": [
+          "sulfates"
+        ],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "normal",
+          "hair_thickness": "medium",
+          "concerns": [
+            "damage",
+            "split_ends",
+            "smoothness"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "conditioner_repair_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_repair_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "recommended",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "missing",
+          "recommended_product_key": "hair_mask_repair_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "repair_intensity",
+            "routine_progression"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_repair_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "conditioner_repair_1",
+              "purchased_product_key": "conditioner_repair_alt_1",
+              "semantic_score": 0.9
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "curly_mask_exact_after_conditioner",
+      "segment": "curly_hydration_progression",
+      "expected_next_product_type": "hair_mask",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "hydration",
+          "definition"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "curly",
+          "scalp_type": "dry",
+          "hair_thickness": "medium",
+          "concerns": [
+            "dryness",
+            "frizz_control",
+            "definition"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -21,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -8,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "recommended",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "deep_hydration",
+            "frizz_control_path"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "missing",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.69,
+          "confidence": 0.71,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_hydrate_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_hydrate_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_hydrate_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "hair_mask_hydrate_1",
+              "purchased_product_key": "hair_mask_hydrate_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "coily_leave_in_semantic_alt",
+      "segment": "coily_alt_leave_in_match",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "definition",
+          "hydration"
+        ],
+        "avoid_flags": [],
+        "budget": "high",
+        "hair_profile": {
+          "hair_type": "coily",
+          "scalp_type": "dry",
+          "hair_thickness": "thick",
+          "concerns": [
+            "definition",
+            "dryness",
+            "detangling",
+            "frizz_control"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "leave_in_curl_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "deep_hydration",
+            "frizz_control_path"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "leave_in_curl_1",
+              "purchased_product_key": "leave_in_curl_alt_1",
+              "semantic_score": 0.95
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "scalp_balance_serum_exact_repeat",
+      "segment": "scalp_health_repeat_need",
+      "expected_next_product_type": "scalp_serum",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "combination",
+        "goals": [
+          "scalp_balance",
+          "scalp_health"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "oily",
+          "hair_thickness": "medium",
+          "concerns": [
+            "oiliness",
+            "flakes",
+            "build_up"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_balance_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "scalp_serum_balance_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_balance_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "scalp_serum",
+          "status": "recommended",
+          "recommended_product_key": "scalp_serum_balance_1",
+          "cadence": "daily",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "scalp_balance_need",
+            "profile_override_chain"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "conditioner",
+          "status": "missing",
+          "recommended_product_key": "conditioner_balance_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "light_root_safe",
+            "mid_length_softness"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "scalp_serum_balance_1",
+              "purchased_product_key": "scalp_serum_balance_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "fine_wavy_light_leave_in_click",
+      "segment": "light_finish_detangle",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "clicked_no_purchase",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "lightweight_care",
+          "detangling"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "normal",
+          "hair_thickness": "fine",
+          "concerns": [
+            "flatness",
+            "detangling",
+            "lightweight_care"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_volume_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_light_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_light_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_volume_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_light_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "weightless_conditioning",
+            "volume_safe"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_light_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "targeted_nourishment",
+            "avoid_overweight"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_light_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "light_finish",
+            "detangle_without_weight"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_light_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_light_1"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "repair_conditioner_exact_after_shampoo",
+      "segment": "repair_foundation_build",
+      "expected_next_product_type": "conditioner",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "repair",
+          "smoothness"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "normal",
+          "hair_thickness": "medium",
+          "concerns": [
+            "damage",
+            "split_ends",
+            "dryness"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "conditioner_repair_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_repair_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "recommended",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "missing",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "repair_intensity",
+            "routine_progression"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_repair_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "conditioner_repair_1",
+              "purchased_product_key": "conditioner_repair_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "wavy_frizz_mask_semantic",
+      "segment": "hydration_mask_alt_match",
+      "expected_next_product_type": "hair_mask",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "hydration",
+          "frizz_control"
+        ],
+        "avoid_flags": [],
+        "budget": "high",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "dry",
+          "hair_thickness": "thick",
+          "concerns": [
+            "dryness",
+            "frizz",
+            "smoothness"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -21,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -8,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_repair_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "recommended",
+          "recommended_product_key": "hair_mask_repair_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "repair_intensity",
+            "routine_progression"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "missing",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.69,
+          "confidence": 0.71,
+          "why": [
+            "finish_support",
+            "frizz_control_path"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "hair_mask_repair_1",
+              "purchased_product_key": "hair_mask_repair_alt_1",
+              "semantic_score": 0.89
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "curly_oily_scalp_serum_skipped",
+      "segment": "curl_scalp_balance_deferral",
+      "expected_next_product_type": "scalp_serum",
+      "outcome_tag": "skipped",
+      "profile": {
+        "skin_type": "combination",
+        "goals": [
+          "scalp_balance",
+          "definition"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "curly",
+          "scalp_type": "oily",
+          "hair_thickness": "medium",
+          "concerns": [
+            "oiliness",
+            "flakes",
+            "definition"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "scalp_serum",
+          "status": "recommended",
+          "recommended_product_key": "scalp_serum_balance_1",
+          "cadence": "daily",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "scalp_balance_need",
+            "profile_override_chain"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "conditioner",
+          "status": "missing",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_skipped",
+          "offset_hours": 18,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1",
+            "skip_reason": "already_have_similar_product"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "oily_fine_conditioner_exposed_only",
+      "segment": "serum_vs_conditioner_ambiguity",
+      "expected_next_product_type": "conditioner",
+      "outcome_tag": "exposed_no_click",
+      "profile": {
+        "skin_type": "oily",
+        "goals": [
+          "lightweight_care",
+          "smoothness"
+        ],
+        "avoid_flags": [],
+        "budget": "low",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "oily",
+          "hair_thickness": "fine",
+          "concerns": [
+            "oiliness",
+            "flatness",
+            "lightweight_care"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_balance_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_balance_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "recommended",
+          "recommended_product_key": "conditioner_balance_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "weightless_conditioning",
+            "volume_safe"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "missing",
+          "recommended_product_key": "hair_mask_light_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "targeted_nourishment",
+            "avoid_overweight"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_balance_1"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "curly_leave_in_exact_after_hydration",
+      "segment": "curl_memory_progression",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "definition",
+          "frizz_control"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "curly",
+          "scalp_type": "normal",
+          "hair_thickness": "medium",
+          "concerns": [
+            "definition",
+            "detangling",
+            "frizz_control"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "leave_in_curl_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "deep_hydration",
+            "frizz_control_path"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "leave_in_curl_1",
+              "purchased_product_key": "leave_in_curl_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "damaged_wavy_mask_exact",
+      "segment": "repair_mask_followup",
+      "expected_next_product_type": "hair_mask",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "repair",
+          "hydration"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "dry",
+          "hair_thickness": "medium",
+          "concerns": [
+            "damage",
+            "split_ends",
+            "dryness"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -21,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -8,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_repair_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_repair_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "recommended",
+          "recommended_product_key": "hair_mask_repair_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "repair_intensity",
+            "routine_progression"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "missing",
+          "recommended_product_key": "leave_in_repair_1",
+          "cadence": "optional",
+          "score": 0.69,
+          "confidence": 0.71,
+          "why": [
+            "repair_seal",
+            "daily_protection"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "hair_mask_repair_1",
+              "purchased_product_key": "hair_mask_repair_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "coily_sensitive_scalp_serum_semantic",
+      "segment": "coily_sensitive_scalp_alt_match",
+      "expected_next_product_type": "scalp_serum",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "sensitive",
+        "goals": [
+          "scalp_health",
+          "hydration"
+        ],
+        "avoid_flags": [
+          "fragrance"
+        ],
+        "budget": "high",
+        "hair_profile": {
+          "hair_type": "coily",
+          "scalp_type": "sensitive",
+          "hair_thickness": "thick",
+          "concerns": [
+            "itchiness",
+            "flakes",
+            "scalp_health",
+            "dryness"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "scalp_serum_balance_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "scalp_serum",
+          "status": "recommended",
+          "recommended_product_key": "scalp_serum_sensitive_1",
+          "cadence": "daily",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "scalp_relief",
+            "profile_override_chain"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "conditioner",
+          "status": "missing",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_sensitive_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_sensitive_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_sensitive_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "scalp_serum_sensitive_1",
+              "purchased_product_key": "scalp_serum_balance_alt_1",
+              "semantic_score": 0.87
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "fine_volume_conditioner_skipped",
+      "segment": "volume_user_avoids_heavy_layers",
+      "expected_next_product_type": "conditioner",
+      "outcome_tag": "skipped",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "volume",
+          "lightweight_care"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "normal",
+          "hair_thickness": "fine",
+          "concerns": [
+            "flatness",
+            "volume",
+            "lightweight_care"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_volume_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_volume_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "recommended",
+          "recommended_product_key": "conditioner_light_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "weightless_conditioning",
+            "volume_safe"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "missing",
+          "recommended_product_key": "hair_mask_light_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "targeted_nourishment",
+            "avoid_overweight"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_light_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_skipped",
+          "offset_hours": 18,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_light_1",
+            "skip_reason": "deferred_choice"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "coily_leave_in_exposed_only",
+      "segment": "coily_finish_reminder",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "exposed_no_click",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "definition",
+          "hydration"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "coily",
+          "scalp_type": "dry",
+          "hair_thickness": "thick",
+          "concerns": [
+            "definition",
+            "dryness",
+            "detangling"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "deep_hydration",
+            "frizz_control_path"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "straight_repair_mask_semantic_alt",
+      "segment": "repair_mask_alt_conversion",
+      "expected_next_product_type": "hair_mask",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "repair",
+          "smoothness"
+        ],
+        "avoid_flags": [],
+        "budget": "high",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "dry",
+          "hair_thickness": "thick",
+          "concerns": [
+            "damage",
+            "split_ends",
+            "repair"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -21,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -8,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_repair_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_repair_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_repair_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_repair_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "repair_layer",
+            "post_shampoo_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "recommended",
+          "recommended_product_key": "hair_mask_repair_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "repair_intensity",
+            "routine_progression"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "hair_oil",
+          "status": "missing",
+          "recommended_product_key": "hair_oil_smooth_1",
+          "cadence": "optional",
+          "score": 0.69,
+          "confidence": 0.71,
+          "why": [
+            "finish_step",
+            "split_end_control"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 3,
+          "context": {
+            "category": "haircare",
+            "product_type": "hair_mask",
+            "recommended_product_key": "hair_mask_repair_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "hair_mask_repair_1",
+              "purchased_product_key": "hair_mask_repair_alt_1",
+              "semantic_score": 0.91
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "heavy_oils_avoid_leave_in_exact",
+      "segment": "leave_in_over_oil_profile_choice",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "dry",
+        "goals": [
+          "definition",
+          "frizz_control"
+        ],
+        "avoid_flags": [
+          "heavy_oils"
+        ],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "curly",
+          "scalp_type": "dry",
+          "hair_thickness": "medium",
+          "concerns": [
+            "frizz",
+            "definition",
+            "detangling"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "leave_in_curl_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "deep_hydration",
+            "frizz_control_path"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "leave_in_curl_1",
+              "purchased_product_key": "leave_in_curl_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "oily_wavy_serum_exact_followup",
+      "segment": "repeat_scalp_control",
+      "expected_next_product_type": "scalp_serum",
+      "outcome_tag": "completed_exact",
+      "profile": {
+        "skin_type": "combination",
+        "goals": [
+          "scalp_balance"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "oily",
+          "hair_thickness": "medium",
+          "concerns": [
+            "oiliness",
+            "build_up",
+            "itchiness"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_balance_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "scalp_serum_balance_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_balance_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "scalp_serum",
+          "status": "recommended",
+          "recommended_product_key": "scalp_serum_balance_1",
+          "cadence": "daily",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "scalp_balance_need",
+            "profile_override_chain"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "conditioner",
+          "status": "missing",
+          "recommended_product_key": "conditioner_balance_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "light_root_safe",
+            "mid_length_softness"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 42,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "scalp_serum",
+            "recommended_product_key": "scalp_serum_balance_1",
+            "matched_by": "recommended_product_id",
+            "match_meta": {
+              "recommended_product_key": "scalp_serum_balance_1",
+              "purchased_product_key": "scalp_serum_balance_1"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "wavy_balance_conditioner_click",
+      "segment": "root_friendly_conditioner_interest",
+      "expected_next_product_type": "conditioner",
+      "outcome_tag": "clicked_no_purchase",
+      "profile": {
+        "skin_type": "oily",
+        "goals": [
+          "lightweight_care",
+          "smoothness"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "wavy",
+          "scalp_type": "oily",
+          "hair_thickness": "fine",
+          "concerns": [
+            "oiliness",
+            "flatness",
+            "smoothness"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -14,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_balance_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_balance_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "recommended",
+          "recommended_product_key": "conditioner_balance_1",
+          "cadence": "weekly",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "weightless_conditioning",
+            "volume_safe"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "missing",
+          "recommended_product_key": "hair_mask_light_1",
+          "cadence": "weekly",
+          "score": 0.71,
+          "confidence": 0.74,
+          "why": [
+            "targeted_nourishment",
+            "avoid_overweight"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_balance_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 2,
+          "context": {
+            "category": "haircare",
+            "product_type": "conditioner",
+            "recommended_product_key": "conditioner_balance_1"
+          }
+        }
+      ]
+    },
+    {
+      "slug": "curly_leave_in_semantic_second_alt",
+      "segment": "curl_alt_leave_in_repeat",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "definition",
+          "hydration"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "curly",
+          "scalp_type": "normal",
+          "hair_thickness": "medium",
+          "concerns": [
+            "definition",
+            "dryness",
+            "frizz_control"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_curl_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_hydrate_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "leave_in_curl_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_curl_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_curl_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "slip_need",
+            "curl_support"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_hydrate_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "deep_hydration",
+            "frizz_control_path"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_curl_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "definition_support",
+            "anti_frizz_hold"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_curl_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "leave_in_curl_1",
+              "purchased_product_key": "leave_in_curl_alt_1",
+              "semantic_score": 0.92
+            }
+          }
+        }
+      ]
+    },
+    {
+      "slug": "volume_safe_light_leave_in_semantic",
+      "segment": "fine_hair_detangle_alt_match",
+      "expected_next_product_type": "leave_in",
+      "outcome_tag": "completed_semantic",
+      "profile": {
+        "skin_type": "normal",
+        "goals": [
+          "lightweight_care",
+          "detangling"
+        ],
+        "avoid_flags": [],
+        "budget": "medium",
+        "hair_profile": {
+          "hair_type": "straight",
+          "scalp_type": "normal",
+          "hair_thickness": "fine",
+          "concerns": [
+            "volume",
+            "flatness",
+            "detangling"
+          ]
+        }
+      },
+      "transactions": [
+        {
+          "offset_days": -28,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "shampoo_volume_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -16,
+          "channel": "offline",
+          "items": [
+            {
+              "product_key": "conditioner_light_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": -6,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "hair_mask_light_1",
+              "quantity": 1
+            }
+          ]
+        },
+        {
+          "offset_days": 2,
+          "channel": "online",
+          "items": [
+            {
+              "product_key": "leave_in_light_alt_1",
+              "quantity": 1
+            }
+          ]
+        }
+      ],
+      "steps": [
+        {
+          "step_index": 1,
+          "product_type": "shampoo",
+          "status": "completed",
+          "recommended_product_key": "shampoo_volume_1",
+          "cadence": "weekly",
+          "score": 0.84,
+          "confidence": 0.89,
+          "why": [
+            "routine_foundation",
+            "cleanse_match"
+          ]
+        },
+        {
+          "step_index": 2,
+          "product_type": "conditioner",
+          "status": "completed",
+          "recommended_product_key": "conditioner_light_1",
+          "cadence": "weekly",
+          "score": 0.86,
+          "confidence": 0.9,
+          "why": [
+            "weightless_conditioning",
+            "volume_safe"
+          ]
+        },
+        {
+          "step_index": 3,
+          "product_type": "hair_mask",
+          "status": "completed",
+          "recommended_product_key": "hair_mask_light_1",
+          "cadence": "weekly",
+          "score": 0.82,
+          "confidence": 0.91,
+          "why": [
+            "targeted_nourishment",
+            "avoid_overweight"
+          ]
+        },
+        {
+          "step_index": 4,
+          "product_type": "leave_in",
+          "status": "recommended",
+          "recommended_product_key": "leave_in_light_1",
+          "cadence": "optional",
+          "score": 0.94,
+          "confidence": 0.92,
+          "why": [
+            "light_finish",
+            "detangle_without_weight"
+          ]
+        }
+      ],
+      "events": [
+        {
+          "event_type": "roadmap_plan_refreshed",
+          "offset_hours": 0,
+          "step_index": null,
+          "context": {
+            "category": "haircare"
+          }
+        },
+        {
+          "event_type": "roadmap_step_exposed",
+          "offset_hours": 1,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_light_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_clicked",
+          "offset_hours": 5,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_light_1"
+          }
+        },
+        {
+          "event_type": "roadmap_step_completed",
+          "offset_hours": 46,
+          "step_index": 4,
+          "context": {
+            "category": "haircare",
+            "product_type": "leave_in",
+            "recommended_product_key": "leave_in_light_1",
+            "matched_by": "semantic_content_match",
+            "match_meta": {
+              "recommended_product_key": "leave_in_light_1",
+              "purchased_product_key": "leave_in_light_alt_1",
+              "semantic_score": 0.9
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

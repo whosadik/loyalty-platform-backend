@@ -25,6 +25,7 @@ else:
 ALLOWED_CATEGORIES = {x[0] for x in Product.Category.choices}
 ALLOWED_STRENGTH = {x[0] for x in Product.Strength.choices}
 ALLOWED_STEPS = {x[0] for x in Product.Step.choices}
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif")
 
 
 def _resolve_path(raw_path: str) -> Path:
@@ -100,6 +101,32 @@ def _parse_json(value: Any, default: Any) -> Any:
         return json.loads(s)
     except Exception:
         return default
+
+
+def _is_real_product_image_url(value: Any) -> bool:
+    url = _str(value).lower()
+    if not url:
+        return False
+    if not url.endswith(IMAGE_EXTENSIONS):
+        return False
+    if "/p/sl/" in url or "label" in url:
+        return False
+    return True
+
+
+def _normalize_product_images(primary_url: Any, gallery_urls: list[Any]) -> tuple[str, list[str]]:
+    normalized_gallery: list[str] = []
+    seen: set[str] = set()
+
+    for raw in [_str(primary_url), *[_str(item) for item in gallery_urls]]:
+        if not raw or raw in seen:
+            continue
+        seen.add(raw)
+        if _is_real_product_image_url(raw):
+            normalized_gallery.append(raw)
+
+    primary = normalized_gallery[0] if normalized_gallery else ""
+    return _clip(primary, 500), normalized_gallery
 
 
 def _norm_category(value: Any) -> str:
@@ -377,6 +404,10 @@ class Command(BaseCommand):
                     if not isinstance(image_urls, list):
                         image_urls = []
                     image_urls = [_str(x) for x in image_urls if _str(x)]
+                    image_url, image_urls = _normalize_product_images(
+                        row[col["photo_url_primary"]] if "photo_url_primary" in col else "",
+                        image_urls,
+                    )
 
                     payload = {
                         "name": _clip(name, 200),
@@ -405,7 +436,7 @@ class Command(BaseCommand):
                             category=category,
                             product_type=product_type,
                         ),
-                        "image_url": _clip(_str(row[col["photo_url_primary"]]) if "photo_url_primary" in col else "", 500),
+                        "image_url": image_url,
                         "image_urls": image_urls,
                         "description": _str(row[col["description_text"]]) if "description_text" in col else "",
                         "application_text": _str(row[col["application_text"]]) if "application_text" in col else "",

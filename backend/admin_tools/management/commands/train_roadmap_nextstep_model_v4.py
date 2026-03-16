@@ -168,6 +168,70 @@ def _target_report_stem(target_column: str) -> str:
     return f"roadmap_nextstep_v4_eval__{token}"
 
 
+def _safe_token(value: Any, *, fallback: str) -> str:
+    token = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    return token or fallback
+
+
+def _scenario_dataset_token(dataset_meta: dict[str, Any], *, fallback: str) -> str:
+    scenario_token = _safe_token(dataset_meta.get("source_scenario_set"), fallback="")
+    filter_values = dataset_meta.get("expected_next_product_type_filter") or []
+    if not isinstance(filter_values, list):
+        filter_values = [filter_values]
+    filter_tokens = [
+        _safe_token(value, fallback="")
+        for value in filter_values
+        if _safe_token(value, fallback="")
+    ]
+    if filter_tokens:
+        filter_token = "_".join(filter_tokens)
+        if scenario_token:
+            return f"{scenario_token}__{filter_token}"
+        return filter_token
+    return scenario_token or fallback
+
+
+def _resolve_model_version(
+    requested: str,
+    *,
+    model_dir: Path,
+    label_protocol_version: str,
+    dataset_meta: dict[str, Any],
+) -> str:
+    default_version = "roadmap_next_step_v4"
+    model_version = str(requested or "").strip() or default_version
+    if model_version != default_version:
+        return model_version
+    if str(label_protocol_version or "").strip().lower() != "scenario_pack_expected_next_v1":
+        return model_version
+    scenario_token = _scenario_dataset_token(dataset_meta, fallback="")
+    if scenario_token:
+        return f"{default_version}__{scenario_token}"
+    model_dir_token = _safe_token(model_dir.name, fallback="scenario_pack")
+    return f"{default_version}__{model_dir_token}"
+
+
+def _resolve_report_stem(
+    requested: str,
+    *,
+    target_column: str,
+    label_protocol_version: str,
+    dataset_meta: dict[str, Any],
+    model_version: str,
+) -> str:
+    raw_requested = str(requested or "").strip()
+    if raw_requested:
+        return _safe_token(raw_requested, fallback="roadmap_nextstep_v4_eval")
+    if target_column != "y":
+        return _target_report_stem(target_column)
+    if str(label_protocol_version or "").strip().lower() == "scenario_pack_expected_next_v1":
+        scenario_token = _scenario_dataset_token(dataset_meta, fallback="")
+        if scenario_token:
+            return f"roadmap_nextstep_v4_eval__{scenario_token}"
+        return f"roadmap_nextstep_v4_eval__{_safe_token(model_version, fallback='scenario_pack')}"
+    return _target_report_stem(target_column)
+
+
 def _make_one_hot_encoder():
     try:
         return OneHotEncoder(handle_unknown="ignore", sparse_output=True)
@@ -683,6 +747,12 @@ class Command(BaseCommand):
         parser.add_argument("--data-dir", type=str, default="data/ml/roadmap_nextstep_v4")
         parser.add_argument("--model-dir", type=str, default="models/roadmap_next_step_v4")
         parser.add_argument("--model-version", type=str, default="roadmap_next_step_v4")
+        parser.add_argument(
+            "--report-stem",
+            type=str,
+            default="",
+            help="Optional report stem for reports/<stem>.json|md. Defaults to target-specific stem.",
+        )
         parser.add_argument("--seed", type=int, default=42)
         parser.add_argument("--trials", type=int, default=3)
         parser.add_argument("--estimator", type=str, default="auto", help="auto|lightgbm|catboost|logistic")
@@ -713,11 +783,11 @@ class Command(BaseCommand):
 
         data_dir = _resolve_existing_dir(str(options["data_dir"]))
         model_dir = _resolve_output_dir(str(options["model_dir"]))
-        model_version = str(options["model_version"]).strip() or "roadmap_next_step_v4"
         seed = int(options["seed"])
         max_trials = int(options["trials"])
         allow_fallback = bool(options["allow_fallback"])
         target_column = str(options.get("target_column") or "y").strip()
+        requested_report_stem = str(options.get("report_stem") or "").strip()
         estimator_name = _resolve_estimator_name(
             str(options.get("estimator") or "auto"),
             allow_fallback=allow_fallback,
@@ -740,6 +810,21 @@ class Command(BaseCommand):
         dataset_df, dataset_path = _load_dataset(data_dir)
         split_payload = json.loads(splits_path.read_text(encoding="utf-8"))
         dataset_meta = json.loads(metadata_path.read_text(encoding="utf-8"))
+        label_protocol_version = str(dataset_meta.get("label_protocol_version") or "legacy_v4")
+        outcome_windows_days = [int(x) for x in (dataset_meta.get("outcome_windows_days") or [])]
+        model_version = _resolve_model_version(
+            str(options.get("model_version") or ""),
+            model_dir=model_dir,
+            label_protocol_version=label_protocol_version,
+            dataset_meta=dataset_meta,
+        )
+        report_stem = _resolve_report_stem(
+            requested_report_stem,
+            target_column=target_column,
+            label_protocol_version=label_protocol_version,
+            dataset_meta=dataset_meta,
+            model_version=model_version,
+        )
 
         required_cols = {"user_id", "episode_id", "group_id", "category", "candidate_type", target_column}
         missing = sorted(required_cols.difference(set(dataset_df.columns)))
@@ -989,8 +1074,6 @@ class Command(BaseCommand):
         )
         selected = feature_results[selected_feature_set]
         dataset_baselines = dataset_meta.get("baselines") or {}
-        label_protocol_version = str(dataset_meta.get("label_protocol_version") or "legacy_v4")
-        outcome_windows_days = [int(x) for x in (dataset_meta.get("outcome_windows_days") or [])]
         if target_column == "y":
             baseline_comparison = _compare_with_baselines(
                 metrics_val=selected["metrics_val"],
@@ -1090,6 +1173,7 @@ class Command(BaseCommand):
             "dataset_baselines": dataset_baselines,
             "baseline_comparison": baseline_comparison,
             "runtime_guard": runtime_guard,
+            "report_stem": report_stem,
             "eval_report_path": str(model_eval_report_path),
         }
         model_metadata_path = model_dir / "metadata.json"
@@ -1152,13 +1236,13 @@ class Command(BaseCommand):
                 "fit_rows_after_positive_filter": int(len(fit_train_df)),
             },
             "runtime_guard": runtime_guard,
+            "report_stem": report_stem,
         }
         model_eval_report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         model_eval_report_md_path.write_text(_build_eval_markdown(report), encoding="utf-8")
 
         reports_dir = (_repo_root() / "reports").resolve()
         reports_dir.mkdir(parents=True, exist_ok=True)
-        report_stem = _target_report_stem(target_column)
         report_json_path = reports_dir / f"{report_stem}.json"
         report_md_path = reports_dir / f"{report_stem}.md"
         report_json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

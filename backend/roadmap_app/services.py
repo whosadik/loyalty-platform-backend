@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections import defaultdict
 from typing import Any
 
@@ -437,6 +438,26 @@ def _default_ml_threshold(mode: str) -> float:
     return float(getattr(settings, "ROADMAP_NEXTSTEP_CONFIDENCE_THRESHOLD", 0.35))
 
 
+def _json_safe_meta_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe_meta_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_meta_value(v) for v in value]
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        try:
+            return str(isoformat())
+        except Exception:
+            pass
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return str(value)
+
+
 def _normalize_plan_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     out = dict(meta) if isinstance(meta, dict) else {}
     ml = out.get("ml")
@@ -511,7 +532,7 @@ def _normalize_plan_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     ml_out["partial_match_step_index"] = partial_match_step_index
 
     out["ml"] = ml_out
-    return out
+    return _json_safe_meta_value(out)
 
 
 def _resolve_categories_from_post_ctx(post_ctx: dict[str, Any] | None) -> list[str]:
