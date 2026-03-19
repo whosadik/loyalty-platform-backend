@@ -194,7 +194,7 @@ def _build_rec_profile(cp: CustomerProfile) -> RecUserProfile:
 
 def _load_products_for_recs() -> list[dict[str, Any]]:
     db_name = connection.settings_dict.get("NAME", "default")
-    key = f"recs:products:v2:{db_name}"
+    key = f"recs:products:v3:{db_name}"
     cached = cache.get(key)
     if cached is not None:
         sample_ids = [int(p["id"]) for p in cached[:100] if isinstance(p, dict) and p.get("id")]
@@ -208,6 +208,7 @@ def _load_products_for_recs() -> list[dict[str, Any]]:
         Product.objects.filter(in_stock=True, price__isnull=False).values(
             "id","name","brand","price","category","product_type",
             "concerns","attrs","raw_meta","actives","flags","supported_skin_types","strength","in_stock",
+            "ingredients_inci",
         )
     )
     cache.set(key, data, timeout=600)  # 10 минут

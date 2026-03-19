@@ -1,0 +1,30 @@
+{
+  "strategy": "time_based",
+  "train_end_utc": "2026-03-11T06:01:56.657809Z",
+  "valid_end_utc": "2026-03-11T06:12:37.808491Z",
+  "counts": {
+    "train": 4,
+    "val": 1,
+    "test": 2
+  },
+  "user_overlap_counts": {
+    "train_val": 0,
+    "train_test": 0,
+    "val_test": 0
+  },
+  "decision_ids": {
+    "train": [
+      2,
+      3,
+      4,
+      5
+    ],
+    "val": [
+      1
+    ],
+    "test": [
+      6,
+      7
+    ]
+  }
+}

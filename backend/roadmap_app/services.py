@@ -25,6 +25,7 @@ from roadmap_app.ml_next_step import (
     v4_min_lift_guard_status,
 )
 from roadmap_app.models import RoadmapPlan, RoadmapStep
+from roadmap_app.sku_ranking import rerank_roadmap_candidate_rows
 from transactions.models import OwnedProduct, TransactionItem
 from users_app.models import CustomerProfile
 from users_app.services import favorite_category_snapshot
@@ -627,6 +628,52 @@ def _fragrance_slots_from_products_qs(rows: list[dict[str, Any]]) -> list[str]:
         if slot in FRAGRANCE_SLOTS and slot not in slots:
             slots.append(slot)
     return slots
+
+
+def _is_fragrance_slot_step(category: str, product_type: str) -> bool:
+    return str(category or "").strip().lower() == "fragrance" and str(product_type or "").strip().lower() in FRAGRANCE_SLOTS
+
+
+def _fragrance_slot_from_product_row(row: Any) -> str | None:
+    if isinstance(row, Product):
+        attrs = getattr(row, "attrs", None) or {}
+        raw_meta = getattr(row, "raw_meta", None) or {}
+    elif isinstance(row, dict):
+        attrs = row.get("attrs") or {}
+        raw_meta = row.get("raw_meta") or {}
+    else:
+        return None
+    slot = slot_of_fragrance(attrs, raw_meta=raw_meta)
+    return str(slot or "").strip().lower() or None
+
+
+def _fragrance_slot_for_product_id(
+    product_id: int | None,
+    *,
+    product_rows_by_id: dict[int, dict[str, Any]] | None = None,
+) -> str | None:
+    pid = _to_int_or_none(product_id)
+    if pid is None or pid <= 0:
+        return None
+    row = (product_rows_by_id or {}).get(int(pid))
+    if row is None:
+        row = Product.objects.filter(id=pid).values("attrs", "raw_meta").first()
+    return _fragrance_slot_from_product_row(row)
+
+
+def _is_slot_consistent_fragrance_product_id(
+    *,
+    product_id: int | None,
+    expected_slot: str,
+    product_rows_by_id: dict[int, dict[str, Any]] | None = None,
+) -> bool:
+    expected = str(expected_slot or "").strip().lower()
+    if expected not in FRAGRANCE_SLOTS:
+        return False
+    return _fragrance_slot_for_product_id(
+        product_id,
+        product_rows_by_id=product_rows_by_id,
+    ) == expected
 
 
 def _owned_fragrance_slots(user) -> list[str]:
@@ -1249,6 +1296,7 @@ def _recommend_candidates_for_type(
     category: str,
     product_type: str,
     context_product_ids: list[int],
+    context_products: list[dict[str, Any]],
     owned_product_ids: set[int],
     used_recommended_ids: set[int],
     prof,
@@ -1256,8 +1304,8 @@ def _recommend_candidates_for_type(
     co_map: dict[int, dict[int, int]],
 ) -> list[dict[str, Any]]:
     max_suggestions = max(5, int(getattr(settings, "ROADMAP_SUGGESTIONS_LIMIT", 10)))
-    if category == "fragrance" and product_type in FRAGRANCE_SLOTS:
-        # Soft slot layer: try slot-filtered candidates first, then fallback to regular fragrance picks.
+    if _is_fragrance_slot_step(category, product_type):
+        # Slot-aware fragrance roadmap only accepts candidates that resolve back to the same slot.
         recs = rec_recommend(
             prof=prof,
             products=products_for_recs,
@@ -1274,8 +1322,7 @@ def _recommend_candidates_for_type(
             slot = slot_of_fragrance(product.get("attrs") or {}, raw_meta=product.get("raw_meta") or {})
             if slot == product_type:
                 slot_filtered.append(row)
-        if slot_filtered:
-            recs = slot_filtered
+        recs = slot_filtered
     else:
         recs = rec_recommend(
             prof=prof,
@@ -1306,19 +1353,41 @@ def _recommend_candidates_for_type(
             break
 
     if filtered:
-        return filtered
+        return rerank_roadmap_candidate_rows(
+            category=category,
+            product_type=product_type,
+            profile=prof,
+            context_products=context_products,
+            rows=filtered,
+        )
 
     db_qs = Product.objects.filter(
         category=category,
         in_stock=True,
         price__isnull=False,
     ).exclude(id__in=list(blocked))
-    if not (category == "fragrance" and product_type in FRAGRANCE_SLOTS):
+    if not _is_fragrance_slot_step(category, product_type):
         db_qs = db_qs.filter(product_type=product_type)
-    fallback_rows = list(db_qs.values("id", "category", "product_type", "brand", "attrs", "raw_meta").order_by("id")[: max_suggestions * 2])
+    fallback_rows = list(
+        db_qs.values(
+            "id",
+            "category",
+            "product_type",
+            "brand",
+            "attrs",
+            "raw_meta",
+            "concerns",
+            "actives",
+            "flags",
+            "supported_skin_types",
+            "ingredients_inci",
+            "price",
+            "in_stock",
+        ).order_by("id")[: max_suggestions * 2]
+    )
     out: list[dict[str, Any]] = []
     for row in fallback_rows:
-        if category == "fragrance" and product_type in FRAGRANCE_SLOTS:
+        if _is_fragrance_slot_step(category, product_type):
             slot = slot_of_fragrance(row.get("attrs") or {}, raw_meta=row.get("raw_meta") or {})
             if slot != product_type:
                 continue
@@ -1334,28 +1403,23 @@ def _recommend_candidates_for_type(
             break
 
     if out:
-        return out
-
-    # Ultimate fallback for slot mode: do not enforce slot filter to avoid empty roadmap recommendations.
-    if category == "fragrance" and product_type in FRAGRANCE_SLOTS:
-        fallback_rows = list(
-            Product.objects.filter(category=category, in_stock=True, price__isnull=False)
-            .exclude(id__in=list(blocked))
-            .values("id", "category", "product_type", "brand", "attrs")
-            .order_by("id")[:max_suggestions]
+        return rerank_roadmap_candidate_rows(
+            category=category,
+            product_type=product_type,
+            profile=prof,
+            context_products=context_products,
+            rows=out,
         )
-        for row in fallback_rows:
-            out.append(
-                {
-                    "product": row,
-                    "score": 0.0,
-                    "components": {"mode": "fallback_db_no_slot"},
-                    "why": ["fallback catalog match (slot relaxed)"],
-                }
-            )
-            if len(out) >= max_suggestions:
-                break
-    return out
+
+    if _is_fragrance_slot_step(category, product_type):
+        return []
+    return rerank_roadmap_candidate_rows(
+        category=category,
+        product_type=product_type,
+        profile=prof,
+        context_products=context_products,
+        rows=out,
+    )
 
 
 def _status_for_type(product_type: str, owned_types_set: set[str], purchased_types_set: set[str]) -> str:
@@ -1481,6 +1545,16 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
     prof = _build_rec_profile(cp)
     products_for_recs = _load_products_for_recs()
+    product_rows_by_id = {
+        int(row["id"]): row
+        for row in products_for_recs
+        if isinstance(row, dict) and _to_int_or_none(row.get("id")) is not None
+    }
+    context_products = [
+        product_rows_by_id[int(pid)]
+        for pid in context_product_ids
+        if int(pid) in product_rows_by_id
+    ]
     co_map = _cooccurrence_90d(now)
     used_recommended_ids: set[int] = set()
 
@@ -1505,12 +1579,23 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
                 category=category,
                 product_type=product_type,
                 context_product_ids=context_product_ids,
+                context_products=context_products,
                 owned_product_ids=owned_product_ids,
                 used_recommended_ids=used_recommended_ids,
                 prof=prof,
                 products_for_recs=products_for_recs,
                 co_map=co_map,
             )
+            if _is_fragrance_slot_step(category, product_type):
+                recs = [
+                    row
+                    for row in recs
+                    if _is_slot_consistent_fragrance_product_id(
+                        product_id=_to_int_or_none((row.get("product") or {}).get("id")),
+                        expected_slot=product_type,
+                        product_rows_by_id=product_rows_by_id,
+                    )
+                ]
             suggestions = []
             for row in recs:
                 product = row.get("product") or {}
@@ -1521,12 +1606,39 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
                 suggestions.append(pid)
             suggestions = _unique([str(x) for x in suggestions])
             suggestions = [int(x) for x in suggestions][: max(5, int(getattr(settings, "ROADMAP_SUGGESTIONS_LIMIT", 10)))]
+            if _is_fragrance_slot_step(category, product_type):
+                suggestions = [
+                    pid
+                    for pid in suggestions
+                    if _is_slot_consistent_fragrance_product_id(
+                        product_id=pid,
+                        expected_slot=product_type,
+                        product_rows_by_id=product_rows_by_id,
+                    )
+                ]
 
             if suggestions:
                 recommended_product_id = int(suggestions[0])
-                used_recommended_ids.add(recommended_product_id)
-                status = RoadmapStep.Status.RECOMMENDED
-                rec_top = recs[0] if recs else None
+                if _is_fragrance_slot_step(category, product_type) and not _is_slot_consistent_fragrance_product_id(
+                    product_id=recommended_product_id,
+                    expected_slot=product_type,
+                    product_rows_by_id=product_rows_by_id,
+                ):
+                    recommended_product_id = None
+                    suggestions = []
+                    status = RoadmapStep.Status.MISSING
+                    rec_top = None
+                else:
+                    used_recommended_ids.add(recommended_product_id)
+                    status = RoadmapStep.Status.RECOMMENDED
+                    rec_top = next(
+                        (
+                            row
+                            for row in recs
+                            if _to_int_or_none((row.get("product") or {}).get("id")) == recommended_product_id
+                        ),
+                        recs[0] if recs else None,
+                    )
             else:
                 status = RoadmapStep.Status.MISSING
 
@@ -1838,7 +1950,13 @@ def update_roadmap_from_purchase(user, post_ctx: dict[str, Any] | None) -> dict[
         roadmap_ctx["step_id"] = int(next_step.id)
         roadmap_ctx["step_index"] = int(next_step.step_index)
         roadmap_ctx["next_product_type"] = next_step.product_type
-        if next_step.recommended_product_id:
+        if next_step.recommended_product_id and (
+            not _is_fragrance_slot_step(selected_category, next_step.product_type)
+            or _is_slot_consistent_fragrance_product_id(
+                product_id=next_step.recommended_product_id,
+                expected_slot=next_step.product_type,
+            )
+        ):
             roadmap_ctx["next_product_id"] = int(next_step.recommended_product_id)
 
     return {
@@ -1877,7 +1995,15 @@ def match_completed_steps_for_purchase(user, post_ctx: dict[str, Any] | None) ->
 
         matched_by = None
         match_meta: dict[str, Any] = {}
-        if step.recommended_product_id and int(step.recommended_product_id) in purchased_ids:
+        exact_recommended_match = bool(
+            step.recommended_product_id and int(step.recommended_product_id) in purchased_ids
+        )
+        if exact_recommended_match and _is_fragrance_slot_step(category, step.product_type):
+            exact_recommended_match = _is_slot_consistent_fragrance_product_id(
+                product_id=step.recommended_product_id,
+                expected_slot=step.product_type,
+            )
+        if exact_recommended_match:
             matched_by = "recommended_product_id"
             match_meta = {
                 "recommended_product_id": int(step.recommended_product_id),

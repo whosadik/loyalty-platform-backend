@@ -84,6 +84,7 @@ class AdminCacheInvalidateView(APIView):
                 f"recs:cooc90d:v1:{db_name}",
                 f"recs:products:v2:{db_name}",
                 f"recs:cooc90d:v2:{db_name}",
+                f"recs:products:v3:{db_name}",
             ]
             for fallback_key in fallback_keys:
                 deleted += self._delete_exact(fallback_key)

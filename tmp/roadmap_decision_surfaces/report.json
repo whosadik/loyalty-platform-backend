@@ -1,0 +1,121 @@
+{
+  "window_days": 180,
+  "label_window_days": 7,
+  "include_ga": false,
+  "surface_types": {
+    "initial_refresh": {
+      "raw_count": 7,
+      "trusted_count": 7,
+      "raw_users": 7,
+      "trusted_users": 7,
+      "categories": [
+        "makeup",
+        "skincare"
+      ],
+      "non_stop_positive_share": 0.0,
+      "fragrance_share": 0.0,
+      "positives_by_category": {},
+      "excluded_reasons": {},
+      "step_advance_count": 0
+    },
+    "post_refresh_rebuild": {
+      "raw_count": 0,
+      "trusted_count": 0,
+      "raw_users": 0,
+      "trusted_users": 0,
+      "categories": [],
+      "non_stop_positive_share": 0.0,
+      "fragrance_share": 0.0,
+      "positives_by_category": {},
+      "excluded_reasons": {},
+      "step_advance_count": 0
+    },
+    "post_completed": {
+      "raw_count": 0,
+      "trusted_count": 0,
+      "raw_users": 0,
+      "trusted_users": 0,
+      "categories": [],
+      "non_stop_positive_share": 0.0,
+      "fragrance_share": 0.0,
+      "positives_by_category": {},
+      "excluded_reasons": {},
+      "step_advance_count": 0
+    },
+    "post_skipped": {
+      "raw_count": 0,
+      "trusted_count": 0,
+      "raw_users": 0,
+      "trusted_users": 0,
+      "categories": [],
+      "non_stop_positive_share": 0.0,
+      "fragrance_share": 0.0,
+      "positives_by_category": {},
+      "excluded_reasons": {},
+      "step_advance_count": 0
+    },
+    "other_trusted_transition": {
+      "raw_count": 0,
+      "trusted_count": 0,
+      "raw_users": 0,
+      "trusted_users": 0,
+      "categories": [],
+      "non_stop_positive_share": 0.0,
+      "fragrance_share": 0.0,
+      "positives_by_category": {},
+      "excluded_reasons": {},
+      "step_advance_count": 0
+    }
+  },
+  "initial_only": {
+    "trusted_decisions_total": 7,
+    "positives_excluding_stop": 0,
+    "stop_rate": 1.0,
+    "users": 7,
+    "plans": 7,
+    "positives_by_category": {},
+    "positives_by_decision_type": {},
+    "positives_by_label_source": {},
+    "fragrance_trusted_positives_count": 0
+  },
+  "continuation_only": {
+    "trusted_decisions_total": 0,
+    "positives_excluding_stop": 0,
+    "stop_rate": 0.0,
+    "users": 0,
+    "plans": 0,
+    "positives_by_category": {},
+    "positives_by_decision_type": {},
+    "positives_by_label_source": {},
+    "fragrance_trusted_positives_count": 0
+  },
+  "combined": {
+    "trusted_decisions_total": 7,
+    "positives_excluding_stop": 0,
+    "stop_rate": 1.0,
+    "users": 7,
+    "plans": 7,
+    "positives_by_category": {},
+    "positives_by_decision_type": {},
+    "positives_by_label_source": {},
+    "fragrance_trusted_positives_count": 0
+  },
+  "raw_plan_refreshed_events": 7,
+  "excluded_noisy_decision_points_count": 0,
+  "excluded_counts": {},
+  "excluded_legacy_bad_fragrance_completions_count": 0,
+  "readiness": {
+    "haircare_only_initial_planner": {
+      "status": "no",
+      "why": "Too few trusted haircare initial positives for a stable baseline."
+    },
+    "multi_category_initial_planner": {
+      "status": "no",
+      "why": "Initial positives are too sparse or too concentrated in one category."
+    },
+    "full_planner_with_continuation_transitions": {
+      "status": "no",
+      "why": "Continuation positives are too sparse and category coverage is too weak."
+    }
+  }
+}

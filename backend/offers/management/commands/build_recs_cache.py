@@ -19,6 +19,7 @@ class Command(BaseCommand):
             cache.delete(f"recs:cooc90d:v1:{db_name}")
             cache.delete(f"recs:products:v2:{db_name}")
             cache.delete(f"recs:cooc90d:v2:{db_name}")
+            cache.delete(f"recs:products:v3:{db_name}")
             self.stdout.write(self.style.WARNING("Cleared recs cache keys."))
 
         now = timezone.now()
