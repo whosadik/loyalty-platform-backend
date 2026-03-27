@@ -8,6 +8,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from backend.request_language import get_request_language
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiExample, OpenApiParameter, extend_schema
 
@@ -157,7 +158,13 @@ class MeRoadmapView(APIView):
                 request_id=request_id,
                 offer_assignment_id=offer_assignment.id if offer_assignment else None,
             )
-        return Response(RoadmapPlanReadSerializer(plan).data)
+        language = get_request_language(request)
+        return Response(
+            RoadmapPlanReadSerializer(
+                plan,
+                context={"request": request, "language": language},
+            ).data
+        )
 
 
 class MeRoadmapRefreshView(APIView):
@@ -193,7 +200,13 @@ class MeRoadmapRefreshView(APIView):
         s.is_valid(raise_exception=True)
         category = s.validated_data.get("category") or resolve_primary_roadmap_category(request.user)
         plan = refresh_roadmap(request.user, category=category, post_ctx=None)
-        return Response(RoadmapPlanReadSerializer(plan).data)
+        language = get_request_language(request)
+        return Response(
+            RoadmapPlanReadSerializer(
+                plan,
+                context={"request": request, "language": language},
+            ).data
+        )
 
 
 class MeRoadmapStepPatchView(APIView):
@@ -245,7 +258,21 @@ class MeRoadmapStepPatchView(APIView):
                     offer_assignment_id=offer_assignment.id if offer_assignment else None,
                 ),
             )
-        return Response({"ok": True, "step": RoadmapStepReadSerializer(step).data})
+        language = get_request_language(request)
+        return Response(
+            {
+                "ok": True,
+                "step": RoadmapStepReadSerializer(
+                    step,
+                    context={
+                        "request": request,
+                        "language": language,
+                        "category": step.plan.category,
+                        "plan_id": step.plan_id,
+                    },
+                ).data,
+            }
+        )
 
 
 class MeRoadmapStepClickView(APIView):

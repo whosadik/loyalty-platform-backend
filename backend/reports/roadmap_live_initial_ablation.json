@@ -1,0 +1,1853 @@
+{
+  "dataset_dir": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\tmp\\roadmap_planner_live_initial_v1",
+  "model_root": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\models\\roadmap_live_initial_planner_v1",
+  "split_schemes": {
+    "time": {
+      "categories": {
+        "haircare": {
+          "feature_groups": {
+            "full_features": [],
+            "without_profile_features": [
+              "profile_avoid_flags_count",
+              "profile_budget",
+              "profile_fragrance_intensity_pref",
+              "profile_fragrance_liked_families_count",
+              "profile_fragrance_liked_notes_count",
+              "profile_goals_count",
+              "profile_hair_concerns_count",
+              "profile_hair_thickness",
+              "profile_hair_type",
+              "profile_has_scalp_objective",
+              "profile_makeup_concerns_count",
+              "profile_makeup_coverage_pref_count",
+              "profile_makeup_coverage_pref_primary",
+              "profile_makeup_finish_pref_count",
+              "profile_makeup_finish_pref_primary",
+              "profile_makeup_tone_family",
+              "profile_makeup_undertone",
+              "profile_scalp_objective_count",
+              "profile_scalp_type",
+              "profile_skin_type"
+            ],
+            "without_prior_state_history": [
+              "days_since_last_purchase_in_category",
+              "favorite_brand_in_category",
+              "fragrance_slot_coverage_count",
+              "last1_category",
+              "last1_product_type",
+              "last2_category",
+              "last2_product_type",
+              "last3_category",
+              "last3_product_type",
+              "last4_category",
+              "last4_product_type",
+              "last5_category",
+              "last5_product_type",
+              "prior_category_distinct_token_count",
+              "prior_category_purchase_total",
+              "tx_amount_90d_category",
+              "tx_count_90d_category"
+            ],
+            "without_catalog_coverage_features": [
+              "anchor_actives_count",
+              "anchor_concerns_count",
+              "anchor_coverage",
+              "anchor_finish",
+              "anchor_hair_thickness",
+              "anchor_hair_type",
+              "anchor_has_scalp_focus",
+              "anchor_inci_token_count",
+              "anchor_intensity",
+              "anchor_notes_count",
+              "anchor_product_type",
+              "anchor_scalp_active_count",
+              "anchor_scalp_concern_count",
+              "anchor_scalp_type",
+              "anchor_scent_family",
+              "anchor_supported_skin_types_count",
+              "anchor_tone_family",
+              "anchor_undertone"
+            ],
+            "without_seeded_scenario_family_indicators": []
+          },
+          "test_metrics": {
+            "full_features": {
+              "rows": 32,
+              "acc_at_1": 0.0,
+              "recall_at_3": 0.0,
+              "macro_f1": 0.0,
+              "balanced_accuracy": 0.0,
+              "stop_accuracy": 0.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 32,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "conditioner": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "hair_mask": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "hair_oil": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "leave_in": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "scalp_serum": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "shampoo": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "hair_oil",
+                  "count": 32
+                }
+              ]
+            },
+            "without_profile_features": {
+              "rows": 32,
+              "acc_at_1": 0.0,
+              "recall_at_3": 0.0,
+              "macro_f1": 0.0,
+              "balanced_accuracy": 0.0,
+              "stop_accuracy": 0.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 32,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "conditioner": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "hair_mask": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "hair_oil": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "leave_in": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "scalp_serum": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "shampoo": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "hair_oil",
+                  "count": 32
+                }
+              ]
+            },
+            "without_prior_state_history": {
+              "rows": 32,
+              "acc_at_1": 0.0,
+              "recall_at_3": 0.0,
+              "macro_f1": 0.0,
+              "balanced_accuracy": 0.0,
+              "stop_accuracy": 0.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 32,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "conditioner": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "hair_mask": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "hair_oil": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "leave_in": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "scalp_serum": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "shampoo": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "hair_oil",
+                  "count": 32
+                }
+              ]
+            },
+            "without_catalog_coverage_features": {
+              "rows": 32,
+              "acc_at_1": 0.0,
+              "recall_at_3": 0.0,
+              "macro_f1": 0.0,
+              "balanced_accuracy": 0.0,
+              "stop_accuracy": 0.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 32,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "conditioner": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "hair_mask": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "hair_oil": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "leave_in": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "scalp_serum": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "shampoo": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "hair_oil",
+                  "count": 32
+                }
+              ]
+            },
+            "without_seeded_scenario_family_indicators": {
+              "status": "skipped",
+              "reason": "feature_group_not_present"
+            }
+          }
+        },
+        "skincare": {
+          "feature_groups": {
+            "full_features": [],
+            "without_profile_features": [
+              "profile_avoid_flags_count",
+              "profile_budget",
+              "profile_fragrance_intensity_pref",
+              "profile_fragrance_liked_families_count",
+              "profile_fragrance_liked_notes_count",
+              "profile_goals_count",
+              "profile_hair_concerns_count",
+              "profile_hair_thickness",
+              "profile_hair_type",
+              "profile_has_scalp_objective",
+              "profile_makeup_concerns_count",
+              "profile_makeup_coverage_pref_count",
+              "profile_makeup_coverage_pref_primary",
+              "profile_makeup_finish_pref_count",
+              "profile_makeup_finish_pref_primary",
+              "profile_makeup_tone_family",
+              "profile_makeup_undertone",
+              "profile_scalp_objective_count",
+              "profile_scalp_type",
+              "profile_skin_type"
+            ],
+            "without_prior_state_history": [
+              "days_since_last_purchase_in_category",
+              "favorite_brand_in_category",
+              "fragrance_slot_coverage_count",
+              "last1_category",
+              "last1_product_type",
+              "last2_category",
+              "last2_product_type",
+              "last3_category",
+              "last3_product_type",
+              "last4_category",
+              "last4_product_type",
+              "last5_category",
+              "last5_product_type",
+              "prior_category_distinct_token_count",
+              "prior_category_purchase_total",
+              "tx_amount_90d_category",
+              "tx_count_90d_category"
+            ],
+            "without_catalog_coverage_features": [
+              "anchor_actives_count",
+              "anchor_concerns_count",
+              "anchor_coverage",
+              "anchor_finish",
+              "anchor_hair_thickness",
+              "anchor_hair_type",
+              "anchor_has_scalp_focus",
+              "anchor_inci_token_count",
+              "anchor_intensity",
+              "anchor_notes_count",
+              "anchor_product_type",
+              "anchor_scalp_active_count",
+              "anchor_scalp_concern_count",
+              "anchor_scalp_type",
+              "anchor_scent_family",
+              "anchor_supported_skin_types_count",
+              "anchor_tone_family",
+              "anchor_undertone"
+            ],
+            "without_seeded_scenario_family_indicators": []
+          },
+          "test_metrics": {
+            "full_features": {
+              "rows": 74,
+              "acc_at_1": 0.0,
+              "recall_at_3": 0.0,
+              "macro_f1": 0.0,
+              "balanced_accuracy": 0.0,
+              "stop_accuracy": 0.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 74,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cleanser": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "essence": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "eye_cream": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "mask": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "moisturizer": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "serum": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "spf": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "toner": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "essence",
+                  "count": 48
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "toner",
+                  "count": 19
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "eye_cream",
+                  "count": 6
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "cleanser",
+                  "count": 1
+                }
+              ]
+            },
+            "without_profile_features": {
+              "rows": 74,
+              "acc_at_1": 0.0,
+              "recall_at_3": 0.0,
+              "macro_f1": 0.0,
+              "balanced_accuracy": 0.0,
+              "stop_accuracy": 0.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 74,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cleanser": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "essence": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "eye_cream": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "mask": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "moisturizer": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "serum": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "spf": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "toner": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "toner",
+                  "count": 35
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "essence",
+                  "count": 32
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "eye_cream",
+                  "count": 6
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "cleanser",
+                  "count": 1
+                }
+              ]
+            },
+            "without_prior_state_history": {
+              "rows": 74,
+              "acc_at_1": 0.0,
+              "recall_at_3": 0.283784,
+              "macro_f1": 0.0,
+              "balanced_accuracy": 0.0,
+              "stop_accuracy": 0.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 74,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cleanser": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "essence": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "eye_cream": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "mask": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "moisturizer": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "serum": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "spf": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "toner": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "essence",
+                  "count": 60
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "moisturizer",
+                  "count": 7
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "eye_cream",
+                  "count": 6
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "cleanser",
+                  "count": 1
+                }
+              ]
+            },
+            "without_catalog_coverage_features": {
+              "rows": 74,
+              "acc_at_1": 0.0,
+              "recall_at_3": 0.148649,
+              "macro_f1": 0.0,
+              "balanced_accuracy": 0.0,
+              "stop_accuracy": 0.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 74,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cleanser": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "essence": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "eye_cream": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "mask": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "moisturizer": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "serum": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "spf": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "toner": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "essence",
+                  "count": 42
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "toner",
+                  "count": 22
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "eye_cream",
+                  "count": 9
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "cleanser",
+                  "count": 1
+                }
+              ]
+            },
+            "without_seeded_scenario_family_indicators": {
+              "status": "skipped",
+              "reason": "feature_group_not_present"
+            }
+          }
+        },
+        "fragrance": {
+          "feature_groups": {
+            "full_features": [],
+            "without_profile_features": [
+              "profile_avoid_flags_count",
+              "profile_budget",
+              "profile_fragrance_intensity_pref",
+              "profile_fragrance_liked_families_count",
+              "profile_fragrance_liked_notes_count",
+              "profile_goals_count",
+              "profile_hair_concerns_count",
+              "profile_hair_thickness",
+              "profile_hair_type",
+              "profile_has_scalp_objective",
+              "profile_makeup_concerns_count",
+              "profile_makeup_coverage_pref_count",
+              "profile_makeup_coverage_pref_primary",
+              "profile_makeup_finish_pref_count",
+              "profile_makeup_finish_pref_primary",
+              "profile_makeup_tone_family",
+              "profile_makeup_undertone",
+              "profile_scalp_objective_count",
+              "profile_scalp_type",
+              "profile_skin_type"
+            ],
+            "without_prior_state_history": [
+              "days_since_last_purchase_in_category",
+              "favorite_brand_in_category",
+              "fragrance_slot_coverage_count",
+              "last1_category",
+              "last1_product_type",
+              "last2_category",
+              "last2_product_type",
+              "last3_category",
+              "last3_product_type",
+              "last4_category",
+              "last4_product_type",
+              "last5_category",
+              "last5_product_type",
+              "prior_category_distinct_token_count",
+              "prior_category_purchase_total",
+              "tx_amount_90d_category",
+              "tx_count_90d_category"
+            ],
+            "without_catalog_coverage_features": [
+              "anchor_actives_count",
+              "anchor_concerns_count",
+              "anchor_coverage",
+              "anchor_finish",
+              "anchor_hair_thickness",
+              "anchor_hair_type",
+              "anchor_has_scalp_focus",
+              "anchor_inci_token_count",
+              "anchor_intensity",
+              "anchor_notes_count",
+              "anchor_product_type",
+              "anchor_scalp_active_count",
+              "anchor_scalp_concern_count",
+              "anchor_scalp_type",
+              "anchor_scent_family",
+              "anchor_supported_skin_types_count",
+              "anchor_tone_family",
+              "anchor_undertone"
+            ],
+            "without_seeded_scenario_family_indicators": []
+          },
+          "test_metrics": {
+            "full_features": {
+              "rows": 13,
+              "acc_at_1": 1.0,
+              "recall_at_3": 1.0,
+              "macro_f1": 1.0,
+              "balanced_accuracy": 1.0,
+              "stop_accuracy": 1.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 13,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "cold_day": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cold_evening": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_day": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_evening": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": []
+            },
+            "without_profile_features": {
+              "rows": 13,
+              "acc_at_1": 1.0,
+              "recall_at_3": 1.0,
+              "macro_f1": 1.0,
+              "balanced_accuracy": 1.0,
+              "stop_accuracy": 1.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 13,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "cold_day": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cold_evening": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_day": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_evening": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": []
+            },
+            "without_prior_state_history": {
+              "rows": 13,
+              "acc_at_1": 1.0,
+              "recall_at_3": 1.0,
+              "macro_f1": 1.0,
+              "balanced_accuracy": 1.0,
+              "stop_accuracy": 1.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 13,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "cold_day": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cold_evening": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_day": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_evening": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": []
+            },
+            "without_catalog_coverage_features": {
+              "rows": 13,
+              "acc_at_1": 0.461538,
+              "recall_at_3": 1.0,
+              "macro_f1": 0.631579,
+              "balanced_accuracy": 0.461538,
+              "stop_accuracy": 0.461538,
+              "per_label": {
+                "__stop__": {
+                  "support": 13,
+                  "precision": 1.0,
+                  "recall": 0.461538
+                },
+                "cold_day": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cold_evening": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_day": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_evening": {
+                  "support": 0,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "cold_evening",
+                  "count": 7
+                }
+              ]
+            },
+            "without_seeded_scenario_family_indicators": {
+              "status": "skipped",
+              "reason": "feature_group_not_present"
+            }
+          }
+        }
+      }
+    },
+    "user": {
+      "categories": {
+        "haircare": {
+          "feature_groups": {
+            "full_features": [],
+            "without_profile_features": [
+              "profile_avoid_flags_count",
+              "profile_budget",
+              "profile_fragrance_intensity_pref",
+              "profile_fragrance_liked_families_count",
+              "profile_fragrance_liked_notes_count",
+              "profile_goals_count",
+              "profile_hair_concerns_count",
+              "profile_hair_thickness",
+              "profile_hair_type",
+              "profile_has_scalp_objective",
+              "profile_makeup_concerns_count",
+              "profile_makeup_coverage_pref_count",
+              "profile_makeup_coverage_pref_primary",
+              "profile_makeup_finish_pref_count",
+              "profile_makeup_finish_pref_primary",
+              "profile_makeup_tone_family",
+              "profile_makeup_undertone",
+              "profile_scalp_objective_count",
+              "profile_scalp_type",
+              "profile_skin_type"
+            ],
+            "without_prior_state_history": [
+              "days_since_last_purchase_in_category",
+              "favorite_brand_in_category",
+              "fragrance_slot_coverage_count",
+              "last1_category",
+              "last1_product_type",
+              "last2_category",
+              "last2_product_type",
+              "last3_category",
+              "last3_product_type",
+              "last4_category",
+              "last4_product_type",
+              "last5_category",
+              "last5_product_type",
+              "prior_category_distinct_token_count",
+              "prior_category_purchase_total",
+              "tx_amount_90d_category",
+              "tx_count_90d_category"
+            ],
+            "without_catalog_coverage_features": [
+              "anchor_actives_count",
+              "anchor_concerns_count",
+              "anchor_coverage",
+              "anchor_finish",
+              "anchor_hair_thickness",
+              "anchor_hair_type",
+              "anchor_has_scalp_focus",
+              "anchor_inci_token_count",
+              "anchor_intensity",
+              "anchor_notes_count",
+              "anchor_product_type",
+              "anchor_scalp_active_count",
+              "anchor_scalp_concern_count",
+              "anchor_scalp_type",
+              "anchor_scent_family",
+              "anchor_supported_skin_types_count",
+              "anchor_tone_family",
+              "anchor_undertone"
+            ],
+            "without_seeded_scenario_family_indicators": []
+          },
+          "test_metrics": {
+            "full_features": {
+              "rows": 21,
+              "acc_at_1": 1.0,
+              "recall_at_3": 1.0,
+              "macro_f1": 1.0,
+              "balanced_accuracy": 1.0,
+              "stop_accuracy": 1.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "conditioner": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "hair_mask": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "hair_oil": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "leave_in": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "scalp_serum": {
+                  "support": 2,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "shampoo": {
+                  "support": 1,
+                  "precision": 1.0,
+                  "recall": 1.0
+                }
+              },
+              "confusion_top_pairs": []
+            },
+            "without_profile_features": {
+              "rows": 21,
+              "acc_at_1": 1.0,
+              "recall_at_3": 1.0,
+              "macro_f1": 1.0,
+              "balanced_accuracy": 1.0,
+              "stop_accuracy": 1.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "conditioner": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "hair_mask": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "hair_oil": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "leave_in": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "scalp_serum": {
+                  "support": 2,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "shampoo": {
+                  "support": 1,
+                  "precision": 1.0,
+                  "recall": 1.0
+                }
+              },
+              "confusion_top_pairs": []
+            },
+            "without_prior_state_history": {
+              "rows": 21,
+              "acc_at_1": 1.0,
+              "recall_at_3": 1.0,
+              "macro_f1": 1.0,
+              "balanced_accuracy": 1.0,
+              "stop_accuracy": 1.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "conditioner": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "hair_mask": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "hair_oil": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "leave_in": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "scalp_serum": {
+                  "support": 2,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "shampoo": {
+                  "support": 1,
+                  "precision": 1.0,
+                  "recall": 1.0
+                }
+              },
+              "confusion_top_pairs": []
+            },
+            "without_catalog_coverage_features": {
+              "rows": 21,
+              "acc_at_1": 1.0,
+              "recall_at_3": 1.0,
+              "macro_f1": 1.0,
+              "balanced_accuracy": 1.0,
+              "stop_accuracy": 1.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "conditioner": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "hair_mask": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "hair_oil": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "leave_in": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "scalp_serum": {
+                  "support": 2,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "shampoo": {
+                  "support": 1,
+                  "precision": 1.0,
+                  "recall": 1.0
+                }
+              },
+              "confusion_top_pairs": []
+            },
+            "without_seeded_scenario_family_indicators": {
+              "status": "skipped",
+              "reason": "feature_group_not_present"
+            }
+          }
+        },
+        "skincare": {
+          "feature_groups": {
+            "full_features": [],
+            "without_profile_features": [
+              "profile_avoid_flags_count",
+              "profile_budget",
+              "profile_fragrance_intensity_pref",
+              "profile_fragrance_liked_families_count",
+              "profile_fragrance_liked_notes_count",
+              "profile_goals_count",
+              "profile_hair_concerns_count",
+              "profile_hair_thickness",
+              "profile_hair_type",
+              "profile_has_scalp_objective",
+              "profile_makeup_concerns_count",
+              "profile_makeup_coverage_pref_count",
+              "profile_makeup_coverage_pref_primary",
+              "profile_makeup_finish_pref_count",
+              "profile_makeup_finish_pref_primary",
+              "profile_makeup_tone_family",
+              "profile_makeup_undertone",
+              "profile_scalp_objective_count",
+              "profile_scalp_type",
+              "profile_skin_type"
+            ],
+            "without_prior_state_history": [
+              "days_since_last_purchase_in_category",
+              "favorite_brand_in_category",
+              "fragrance_slot_coverage_count",
+              "last1_category",
+              "last1_product_type",
+              "last2_category",
+              "last2_product_type",
+              "last3_category",
+              "last3_product_type",
+              "last4_category",
+              "last4_product_type",
+              "last5_category",
+              "last5_product_type",
+              "prior_category_distinct_token_count",
+              "prior_category_purchase_total",
+              "tx_amount_90d_category",
+              "tx_count_90d_category"
+            ],
+            "without_catalog_coverage_features": [
+              "anchor_actives_count",
+              "anchor_concerns_count",
+              "anchor_coverage",
+              "anchor_finish",
+              "anchor_hair_thickness",
+              "anchor_hair_type",
+              "anchor_has_scalp_focus",
+              "anchor_inci_token_count",
+              "anchor_intensity",
+              "anchor_notes_count",
+              "anchor_product_type",
+              "anchor_scalp_active_count",
+              "anchor_scalp_concern_count",
+              "anchor_scalp_type",
+              "anchor_scent_family",
+              "anchor_supported_skin_types_count",
+              "anchor_tone_family",
+              "anchor_undertone"
+            ],
+            "without_seeded_scenario_family_indicators": []
+          },
+          "test_metrics": {
+            "full_features": {
+              "rows": 86,
+              "acc_at_1": 0.918605,
+              "recall_at_3": 1.0,
+              "macro_f1": 0.922444,
+              "balanced_accuracy": 0.92161,
+              "stop_accuracy": 0.842105,
+              "per_label": {
+                "__stop__": {
+                  "support": 19,
+                  "precision": 0.8,
+                  "recall": 0.842105
+                },
+                "cleanser": {
+                  "support": 6,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "essence": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "eye_cream": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "mask": {
+                  "support": 3,
+                  "precision": 0.666667,
+                  "recall": 0.666667
+                },
+                "moisturizer": {
+                  "support": 14,
+                  "precision": 0.846154,
+                  "recall": 0.785714
+                },
+                "serum": {
+                  "support": 17,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "spf": {
+                  "support": 17,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "toner": {
+                  "support": 2,
+                  "precision": 1.0,
+                  "recall": 1.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "moisturizer",
+                  "pred": "__stop__",
+                  "count": 3
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "moisturizer",
+                  "count": 2
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "mask",
+                  "count": 1
+                },
+                {
+                  "truth": "mask",
+                  "pred": "__stop__",
+                  "count": 1
+                }
+              ]
+            },
+            "without_profile_features": {
+              "rows": 86,
+              "acc_at_1": 0.918605,
+              "recall_at_3": 1.0,
+              "macro_f1": 0.922444,
+              "balanced_accuracy": 0.92161,
+              "stop_accuracy": 0.842105,
+              "per_label": {
+                "__stop__": {
+                  "support": 19,
+                  "precision": 0.8,
+                  "recall": 0.842105
+                },
+                "cleanser": {
+                  "support": 6,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "essence": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "eye_cream": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "mask": {
+                  "support": 3,
+                  "precision": 0.666667,
+                  "recall": 0.666667
+                },
+                "moisturizer": {
+                  "support": 14,
+                  "precision": 0.846154,
+                  "recall": 0.785714
+                },
+                "serum": {
+                  "support": 17,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "spf": {
+                  "support": 17,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "toner": {
+                  "support": 2,
+                  "precision": 1.0,
+                  "recall": 1.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "moisturizer",
+                  "pred": "__stop__",
+                  "count": 3
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "moisturizer",
+                  "count": 2
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "mask",
+                  "count": 1
+                },
+                {
+                  "truth": "mask",
+                  "pred": "__stop__",
+                  "count": 1
+                }
+              ]
+            },
+            "without_prior_state_history": {
+              "rows": 86,
+              "acc_at_1": 0.930233,
+              "recall_at_3": 1.0,
+              "macro_f1": 0.939683,
+              "balanced_accuracy": 0.925369,
+              "stop_accuracy": 0.947368,
+              "per_label": {
+                "__stop__": {
+                  "support": 19,
+                  "precision": 0.782609,
+                  "recall": 0.947368
+                },
+                "cleanser": {
+                  "support": 6,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "essence": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "eye_cream": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "mask": {
+                  "support": 3,
+                  "precision": 1.0,
+                  "recall": 0.666667
+                },
+                "moisturizer": {
+                  "support": 14,
+                  "precision": 0.909091,
+                  "recall": 0.714286
+                },
+                "serum": {
+                  "support": 17,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "spf": {
+                  "support": 17,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "toner": {
+                  "support": 2,
+                  "precision": 1.0,
+                  "recall": 1.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "moisturizer",
+                  "pred": "__stop__",
+                  "count": 4
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "moisturizer",
+                  "count": 1
+                },
+                {
+                  "truth": "mask",
+                  "pred": "__stop__",
+                  "count": 1
+                }
+              ]
+            },
+            "without_catalog_coverage_features": {
+              "rows": 86,
+              "acc_at_1": 0.918605,
+              "recall_at_3": 1.0,
+              "macro_f1": 0.922444,
+              "balanced_accuracy": 0.92161,
+              "stop_accuracy": 0.842105,
+              "per_label": {
+                "__stop__": {
+                  "support": 19,
+                  "precision": 0.8,
+                  "recall": 0.842105
+                },
+                "cleanser": {
+                  "support": 6,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "essence": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "eye_cream": {
+                  "support": 4,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "mask": {
+                  "support": 3,
+                  "precision": 0.666667,
+                  "recall": 0.666667
+                },
+                "moisturizer": {
+                  "support": 14,
+                  "precision": 0.846154,
+                  "recall": 0.785714
+                },
+                "serum": {
+                  "support": 17,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "spf": {
+                  "support": 17,
+                  "precision": 1.0,
+                  "recall": 1.0
+                },
+                "toner": {
+                  "support": 2,
+                  "precision": 1.0,
+                  "recall": 1.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "moisturizer",
+                  "pred": "__stop__",
+                  "count": 3
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "moisturizer",
+                  "count": 2
+                },
+                {
+                  "truth": "__stop__",
+                  "pred": "mask",
+                  "count": 1
+                },
+                {
+                  "truth": "mask",
+                  "pred": "__stop__",
+                  "count": 1
+                }
+              ]
+            },
+            "without_seeded_scenario_family_indicators": {
+              "status": "skipped",
+              "reason": "feature_group_not_present"
+            }
+          }
+        },
+        "fragrance": {
+          "feature_groups": {
+            "full_features": [],
+            "without_profile_features": [
+              "profile_avoid_flags_count",
+              "profile_budget",
+              "profile_fragrance_intensity_pref",
+              "profile_fragrance_liked_families_count",
+              "profile_fragrance_liked_notes_count",
+              "profile_goals_count",
+              "profile_hair_concerns_count",
+              "profile_hair_thickness",
+              "profile_hair_type",
+              "profile_has_scalp_objective",
+              "profile_makeup_concerns_count",
+              "profile_makeup_coverage_pref_count",
+              "profile_makeup_coverage_pref_primary",
+              "profile_makeup_finish_pref_count",
+              "profile_makeup_finish_pref_primary",
+              "profile_makeup_tone_family",
+              "profile_makeup_undertone",
+              "profile_scalp_objective_count",
+              "profile_scalp_type",
+              "profile_skin_type"
+            ],
+            "without_prior_state_history": [
+              "days_since_last_purchase_in_category",
+              "favorite_brand_in_category",
+              "fragrance_slot_coverage_count",
+              "last1_category",
+              "last1_product_type",
+              "last2_category",
+              "last2_product_type",
+              "last3_category",
+              "last3_product_type",
+              "last4_category",
+              "last4_product_type",
+              "last5_category",
+              "last5_product_type",
+              "prior_category_distinct_token_count",
+              "prior_category_purchase_total",
+              "tx_amount_90d_category",
+              "tx_count_90d_category"
+            ],
+            "without_catalog_coverage_features": [
+              "anchor_actives_count",
+              "anchor_concerns_count",
+              "anchor_coverage",
+              "anchor_finish",
+              "anchor_hair_thickness",
+              "anchor_hair_type",
+              "anchor_has_scalp_focus",
+              "anchor_inci_token_count",
+              "anchor_intensity",
+              "anchor_notes_count",
+              "anchor_product_type",
+              "anchor_scalp_active_count",
+              "anchor_scalp_concern_count",
+              "anchor_scalp_type",
+              "anchor_scent_family",
+              "anchor_supported_skin_types_count",
+              "anchor_tone_family",
+              "anchor_undertone"
+            ],
+            "without_seeded_scenario_family_indicators": []
+          },
+          "test_metrics": {
+            "full_features": {
+              "rows": 22,
+              "acc_at_1": 0.5,
+              "recall_at_3": 0.909091,
+              "macro_f1": 0.231579,
+              "balanced_accuracy": 0.273333,
+              "stop_accuracy": 0.7,
+              "per_label": {
+                "__stop__": {
+                  "support": 10,
+                  "precision": 0.777778,
+                  "recall": 0.7
+                },
+                "cold_day": {
+                  "support": 3,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cold_evening": {
+                  "support": 6,
+                  "precision": 0.307692,
+                  "recall": 0.666667
+                },
+                "warm_day": {
+                  "support": 2,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_evening": {
+                  "support": 1,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "cold_evening",
+                  "count": 3
+                },
+                {
+                  "truth": "cold_day",
+                  "pred": "cold_evening",
+                  "count": 3
+                },
+                {
+                  "truth": "cold_evening",
+                  "pred": "__stop__",
+                  "count": 2
+                },
+                {
+                  "truth": "warm_day",
+                  "pred": "cold_evening",
+                  "count": 2
+                },
+                {
+                  "truth": "warm_evening",
+                  "pred": "cold_evening",
+                  "count": 1
+                }
+              ]
+            },
+            "without_profile_features": {
+              "rows": 22,
+              "acc_at_1": 0.5,
+              "recall_at_3": 0.909091,
+              "macro_f1": 0.231579,
+              "balanced_accuracy": 0.273333,
+              "stop_accuracy": 0.7,
+              "per_label": {
+                "__stop__": {
+                  "support": 10,
+                  "precision": 0.777778,
+                  "recall": 0.7
+                },
+                "cold_day": {
+                  "support": 3,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cold_evening": {
+                  "support": 6,
+                  "precision": 0.307692,
+                  "recall": 0.666667
+                },
+                "warm_day": {
+                  "support": 2,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_evening": {
+                  "support": 1,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "cold_evening",
+                  "count": 3
+                },
+                {
+                  "truth": "cold_day",
+                  "pred": "cold_evening",
+                  "count": 3
+                },
+                {
+                  "truth": "cold_evening",
+                  "pred": "__stop__",
+                  "count": 2
+                },
+                {
+                  "truth": "warm_day",
+                  "pred": "cold_evening",
+                  "count": 2
+                },
+                {
+                  "truth": "warm_evening",
+                  "pred": "cold_evening",
+                  "count": 1
+                }
+              ]
+            },
+            "without_prior_state_history": {
+              "rows": 22,
+              "acc_at_1": 0.545455,
+              "recall_at_3": 0.954545,
+              "macro_f1": 0.22682,
+              "balanced_accuracy": 0.266667,
+              "stop_accuracy": 1.0,
+              "per_label": {
+                "__stop__": {
+                  "support": 10,
+                  "precision": 0.526316,
+                  "recall": 1.0
+                },
+                "cold_day": {
+                  "support": 3,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cold_evening": {
+                  "support": 6,
+                  "precision": 0.666667,
+                  "recall": 0.333333
+                },
+                "warm_day": {
+                  "support": 2,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_evening": {
+                  "support": 1,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "cold_evening",
+                  "pred": "__stop__",
+                  "count": 4
+                },
+                {
+                  "truth": "cold_day",
+                  "pred": "__stop__",
+                  "count": 2
+                },
+                {
+                  "truth": "warm_day",
+                  "pred": "__stop__",
+                  "count": 2
+                },
+                {
+                  "truth": "cold_day",
+                  "pred": "cold_evening",
+                  "count": 1
+                },
+                {
+                  "truth": "warm_evening",
+                  "pred": "__stop__",
+                  "count": 1
+                }
+              ]
+            },
+            "without_catalog_coverage_features": {
+              "rows": 22,
+              "acc_at_1": 0.5,
+              "recall_at_3": 0.863636,
+              "macro_f1": 0.231579,
+              "balanced_accuracy": 0.273333,
+              "stop_accuracy": 0.7,
+              "per_label": {
+                "__stop__": {
+                  "support": 10,
+                  "precision": 0.777778,
+                  "recall": 0.7
+                },
+                "cold_day": {
+                  "support": 3,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "cold_evening": {
+                  "support": 6,
+                  "precision": 0.307692,
+                  "recall": 0.666667
+                },
+                "warm_day": {
+                  "support": 2,
+                  "precision": 0.0,
+                  "recall": 0.0
+                },
+                "warm_evening": {
+                  "support": 1,
+                  "precision": 0.0,
+                  "recall": 0.0
+                }
+              },
+              "confusion_top_pairs": [
+                {
+                  "truth": "__stop__",
+                  "pred": "cold_evening",
+                  "count": 3
+                },
+                {
+                  "truth": "cold_day",
+                  "pred": "cold_evening",
+                  "count": 3
+                },
+                {
+                  "truth": "cold_evening",
+                  "pred": "__stop__",
+                  "count": 2
+                },
+                {
+                  "truth": "warm_day",
+                  "pred": "cold_evening",
+                  "count": 2
+                },
+                {
+                  "truth": "warm_evening",
+                  "pred": "cold_evening",
+                  "count": 1
+                }
+              ]
+            },
+            "without_seeded_scenario_family_indicators": {
+              "status": "skipped",
+              "reason": "feature_group_not_present"
+            }
+          }
+        }
+      }
+    }
+  }
+}

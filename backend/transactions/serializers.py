@@ -1,9 +1,13 @@
+from __future__ import annotations
+
 from decimal import Decimal
 
 from rest_framework import serializers
 
+from backend.request_language import AppLanguage, get_context_language
 from catalog.models import Product
 from catalog.serializers import ProductSerializer
+from roadmap_app.serializers import serialize_roadmap_step_snapshot
 from .models import CartItem, OwnedProduct, Transaction, TransactionItem, WishlistItem
 
 
@@ -19,6 +23,25 @@ def _coerce_int(value, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+TRANSACTION_DESCRIPTION_COPY: dict[AppLanguage, dict[str, str]] = {
+    "ru": {
+        "gift_card_purchase": "Покупка подарочной карты",
+        "purchase_single": "Покупка",
+        "purchase_many": "Покупка, {count} товара",
+    },
+    "kk": {
+        "gift_card_purchase": "Сыйлық картасын сатып алу",
+        "purchase_single": "Сатып алу",
+        "purchase_many": "Сатып алу, {count} тауар",
+    },
+    "en": {
+        "gift_card_purchase": "Gift card purchase",
+        "purchase_single": "Purchase",
+        "purchase_many": "Purchase, {count} items",
+    },
+}
 
 
 class TransactionSnapshotMixin(serializers.Serializer):
@@ -47,6 +70,9 @@ class TransactionSnapshotMixin(serializers.Serializer):
     def _meta(self, obj: Transaction) -> dict:
         return obj.pricing_meta if isinstance(obj.pricing_meta, dict) else {}
 
+    def _language(self) -> AppLanguage:
+        return get_context_language(self.context)
+
     def _gross_total(self, obj: Transaction) -> Decimal:
         meta = self._meta(obj)
         return _coerce_decimal(meta.get("gross_total", obj.total_amount or "0.00"))
@@ -62,12 +88,14 @@ class TransactionSnapshotMixin(serializers.Serializer):
         return str(self._meta(obj).get("type") or "purchase")
 
     def get_description(self, obj: Transaction) -> str:
+        copy = TRANSACTION_DESCRIPTION_COPY[self._language()]
         if self.get_type(obj) == "gift_card_purchase":
-            return "Gift card purchase"
+            return copy["gift_card_purchase"]
+
         item_count = sum(int(item.quantity or 0) for item in obj.items.all())
         if item_count <= 1:
-            return "Покупка"
-        return f"Покупка, {item_count} товара"
+            return copy["purchase_single"]
+        return copy["purchase_many"].format(count=item_count)
 
     def get_status(self, obj: Transaction) -> str:
         return str(self._meta(obj).get("status") or "completed")
@@ -124,7 +152,10 @@ class TransactionSnapshotMixin(serializers.Serializer):
         return self._meta(obj).get("next_offer")
 
     def get_next_roadmap_step(self, obj: Transaction):
-        return self._meta(obj).get("next_roadmap_step")
+        value = self._meta(obj).get("next_roadmap_step")
+        if isinstance(value, dict):
+            return serialize_roadmap_step_snapshot(value, language=self._language())
+        return value
 
     def get_gift_card(self, obj: Transaction):
         return self._meta(obj).get("gift_card")
@@ -208,15 +239,15 @@ class TransactionSerializer(TransactionSnapshotMixin, serializers.ModelSerialize
         txn = Transaction.objects.create(user=user, **validated_data)
 
         total = Decimal("0.00")
-        for it in items_data:
-            TransactionItem.objects.create(transaction=txn, **it)
-            owned, created = OwnedProduct.objects.get_or_create(user=user, product=it["product"])
-            owned.quantity_total = (owned.quantity_total or 0) + int(it["quantity"])
+        for item in items_data:
+            TransactionItem.objects.create(transaction=txn, **item)
+            owned, _ = OwnedProduct.objects.get_or_create(user=user, product=item["product"])
+            owned.quantity_total = (owned.quantity_total or 0) + int(item["quantity"])
             owned.is_active = True
             owned.last_acquired_at = txn.created_at
             owned.save(update_fields=["quantity_total", "is_active", "last_acquired_at"])
 
-            total += Decimal(str(it["unit_price"])) * int(it["quantity"])
+            total += Decimal(str(item["unit_price"])) * int(item["quantity"])
 
         txn.total_amount = total
         txn.save(update_fields=["total_amount"])

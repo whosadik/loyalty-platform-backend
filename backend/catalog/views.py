@@ -6,6 +6,7 @@ from django.db.models import Q
 from rest_framework.permissions import AllowAny, IsAdminUser, SAFE_METHODS
 from rest_framework.views import APIView
 
+from backend.request_language import get_request_language
 from .brand_payloads import get_brand_detail_payload, list_brand_summary_payloads
 from .home_hero import get_home_hero_payload
 from .models import Product
@@ -101,7 +102,7 @@ class BrandDetailView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, brand_slug: str):
-        payload = get_brand_detail_payload(brand_slug)
+        payload = get_brand_detail_payload(brand_slug, get_request_language(request))
         if payload is None:
             raise NotFound("Brand not found.")
         return Response(BrandDetailSerializer(payload).data)
@@ -111,5 +112,5 @@ class HomeHeroView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        payload = get_home_hero_payload()
+        payload = get_home_hero_payload(get_request_language(request))
         return Response(HomeHeroSerializer(payload).data)

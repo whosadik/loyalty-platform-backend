@@ -42,3 +42,8 @@ data/catalog/**
 *.zip
 docs/
 logs/
+*.md
+tmp/**
+logs
+backups/
+tests/

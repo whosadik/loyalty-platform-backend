@@ -1,52 +1,90 @@
-from rest_framework.views import APIView
-from rest_framework.response import Response
+from __future__ import annotations
+
 from rest_framework.permissions import IsAuthenticated
-from drf_spectacular.types import OpenApiTypes
-from drf_spectacular.utils import OpenApiResponse, extend_schema
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from backend.api_serializers import ApiErrorSerializer
+from backend.request_language import AppLanguage, get_request_language
 from catalog.models import Product
 from catalog.serializers import ProductSerializer
-from users_app.models import CustomerProfile
-from .serializers import RoutineGenerateRequestSerializer, RoutineValidateRequestSerializer
-
+from drf_spectacular.types import OpenApiTypes
+from drf_spectacular.utils import OpenApiResponse, extend_schema
 from ml_logic.routine_builder import Profile, build_routine
 from ml_logic.routine_validator import validate_routine
-from .models import RoutineSnapshot
-
+from roadmap_app.step_presentation import get_roadmap_step_presentation
 from transactions.models import OwnedProduct
+from users_app.models import CustomerProfile
 
+from .models import RoutineSnapshot
+from .serializers import RoutineGenerateRequestSerializer, RoutineValidateRequestSerializer
 
-ROUTINE_STEP_META = {
+ROUTINE_STEP_META: dict[str, dict[AppLanguage, dict[str, str]]] = {
     "cleanser": {
-        "display_step": "Очищение",
-        "duration_label": "1-2 мин",
+        "ru": {"duration_label": "1-2 мин"},
+        "kk": {"duration_label": "1-2 мин"},
+        "en": {"duration_label": "1-2 min"},
     },
     "toner": {
-        "display_step": "Тонизирование",
-        "duration_label": "30 сек",
+        "ru": {"duration_label": "30 сек"},
+        "kk": {"duration_label": "30 сек"},
+        "en": {"duration_label": "30 sec"},
     },
     "serum": {
-        "display_step": "Сыворотка",
-        "duration_label": "1 мин",
+        "ru": {"duration_label": "1 мин"},
+        "kk": {"duration_label": "1 мин"},
+        "en": {"duration_label": "1 min"},
     },
     "moisturizer": {
-        "display_step": "Увлажнение",
-        "duration_label": "1 мин",
+        "ru": {"duration_label": "1 мин"},
+        "kk": {"duration_label": "1 мин"},
+        "en": {"duration_label": "1 min"},
     },
     "spf": {
-        "display_step": "SPF защита",
-        "duration_label": "1 мин",
-        "note": "Наносите каждый день как завершающий утренний шаг.",
+        "ru": {
+            "duration_label": "1 мин",
+            "note": "Наносите каждый день как завершающий утренний шаг.",
+        },
+        "kk": {
+            "duration_label": "1 мин",
+            "note": "Күн сайын таңертеңгі соңғы қадам ретінде жағыңыз.",
+        },
+        "en": {
+            "duration_label": "1 min",
+            "note": "Apply every day as the final morning step.",
+        },
     },
 }
 
+ROUTINE_FALLBACK_TITLE: dict[AppLanguage, str] = {
+    "ru": "Шаг ухода",
+    "kk": "Күтім қадамы",
+    "en": "Care step",
+}
 
-def _format_step_label(step: str) -> str:
-    prepared = str(step or "").replace("_", " ").strip()
+ROUTINE_NOTE_TRANSLATIONS: dict[str, dict[AppLanguage, str]] = {
+    "Consider SPF in the morning when using active ingredients.": {
+        "ru": "Используйте SPF утром, если в рутине есть активные ингредиенты.",
+        "kk": "Егер рутинада белсенді ингредиенттер болса, таңертең SPF қолданыңыз.",
+        "en": "Use SPF in the morning when your routine includes active ingredients.",
+    }
+}
+
+
+def _format_step_label(step: str, language: AppLanguage) -> str:
+    normalized = str(step or "").strip()
+    if not normalized:
+        return ROUTINE_FALLBACK_TITLE[language]
+
+    presentation = get_roadmap_step_presentation(normalized, language)
+    if presentation["title"]:
+        return presentation["title"]
+
+    prepared = normalized.replace("_", " ").strip()
     if not prepared:
-        return "Шаг ухода"
-
+        return ROUTINE_FALLBACK_TITLE[language]
+    if language == "en":
+        return prepared.title()
     return prepared[:1].upper() + prepared[1:]
 
 
@@ -78,7 +116,16 @@ def _serialize_products_by_id(product_ids: set[int]) -> dict[int, dict]:
     }
 
 
-def _enrich_routine_payload(routine: dict) -> dict:
+def _localize_routine_notes(notes: list, language: AppLanguage) -> list[str]:
+    localized_notes: list[str] = []
+    for value in notes:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        localized_notes.append(ROUTINE_NOTE_TRANSLATIONS.get(value, {}).get(language, value.strip()))
+    return localized_notes
+
+
+def _enrich_routine_payload(routine: dict, language: AppLanguage) -> dict:
     items = []
     product_ids = set()
 
@@ -104,8 +151,8 @@ def _enrich_routine_payload(routine: dict) -> dict:
 
     for item in items:
         step_key = str(item.get("step") or "")
-        step_meta = ROUTINE_STEP_META.get(step_key, {})
-        item["display_step"] = step_meta.get("display_step") or _format_step_label(step_key)
+        step_meta = ROUTINE_STEP_META.get(step_key, {}).get(language, {})
+        item["display_step"] = _format_step_label(step_key, language)
 
         duration_label = step_meta.get("duration_label")
         if duration_label:
@@ -127,10 +174,12 @@ def _enrich_routine_payload(routine: dict) -> dict:
         if serialized_product is not None:
             item["product"] = serialized_product
 
+    routine["notes"] = _localize_routine_notes(list(routine.get("notes") or []), language)
+
     return routine
 
 
-def _enrich_routine_validation_payload(result: dict) -> dict:
+def _enrich_routine_validation_payload(result: dict, language: AppLanguage) -> dict:
     suggestions = result.get("suggestions")
     if not isinstance(suggestions, list):
         return result
@@ -161,8 +210,7 @@ def _enrich_routine_validation_payload(result: dict) -> dict:
 
     for item in suggestion_items:
         step_key = str(item.get("step") or "")
-        step_meta = ROUTINE_STEP_META.get(step_key, {})
-        item["display_step"] = step_meta.get("display_step") or _format_step_label(step_key)
+        item["display_step"] = _format_step_label(step_key, language)
 
         current_product_id = _normalize_product_id(item.get("current_product_id"))
         if current_product_id is not None:
@@ -184,6 +232,7 @@ def _enrich_routine_validation_payload(result: dict) -> dict:
 
     return result
 
+
 class RoutineGenerateView(APIView):
     permission_classes = [IsAuthenticated]
 
@@ -196,6 +245,7 @@ class RoutineGenerateView(APIView):
         },
     )
     def post(self, request):
+        language = get_request_language(request)
         req = RoutineGenerateRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)
 
@@ -236,7 +286,7 @@ class RoutineGenerateView(APIView):
             top_k=3,
             owned_product_ids=owned_ids,
         )
-        routine = _enrich_routine_payload(routine)
+        routine = _enrich_routine_payload(routine, language)
 
         missing_steps = []
         for item in routine["am"] + routine["pm"]:
@@ -264,6 +314,7 @@ class RoutineValidateView(APIView):
         },
     )
     def post(self, request):
+        language = get_request_language(request)
         req = RoutineValidateRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)
 
@@ -300,5 +351,5 @@ class RoutineValidateView(APIView):
             routine={"am": req.validated_data["am"], "pm": req.validated_data["pm"]},
             top_k=3,
         )
-        result = _enrich_routine_validation_payload(result)
+        result = _enrich_routine_validation_payload(result, language)
         return Response(result)

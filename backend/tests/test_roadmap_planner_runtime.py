@@ -50,6 +50,7 @@ class RoadmapPlannerRuntimeTests(TestCase):
             )
 
     @override_settings(
+        ROADMAP_RUNTIME_FREEZE_ML=False,
         ROADMAP_NEXTSTEP_V4_ENABLED=False,
         ROADMAP_NEXTSTEP_V3_ENABLED=False,
         ROADMAP_PLANNER_V1_MODE="shadow",
@@ -71,6 +72,7 @@ class RoadmapPlannerRuntimeTests(TestCase):
         self.assertEqual((plan.meta.get("planner") or {}).get("chain")[:3], ["mascara", "foundation", "blush"])
 
     @override_settings(
+        ROADMAP_RUNTIME_FREEZE_ML=False,
         ROADMAP_NEXTSTEP_V4_ENABLED=False,
         ROADMAP_NEXTSTEP_V3_ENABLED=False,
         ROADMAP_PLANNER_V1_MODE="serve",
@@ -111,6 +113,7 @@ class RoadmapPlannerRuntimeTests(TestCase):
         self.assertEqual(str((generated.context or {}).get("source")), "planner")
 
     @override_settings(
+        ROADMAP_RUNTIME_FREEZE_ML=False,
         ROADMAP_PLANNER_V1_MODE="serve",
         ROADMAP_PLANNER_V1_ENABLED_CATEGORIES=["makeup"],
         ROADMAP_PLANNER_V1_MODEL_PATH="C:/tmp/planner.pkl",

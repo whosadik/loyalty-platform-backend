@@ -31,6 +31,7 @@ from checkout_app.pricing import Line, apply_offer_to_totals
 from drf_spectacular.utils import extend_schema, OpenApiExample, inline_serializer
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import serializers
+from backend.request_language import get_request_language
 from backend.throttles import NextOfferRateThrottle
 
 from backend.api_serializers import ApiErrorSerializer
@@ -163,6 +164,7 @@ def _list_active_offer_assignments(user, *, now, limit=None):
 
 def _serialize_offer_assignments(request, assignments, *, endpoint, include_assigned_at=False):
     request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+    language = get_request_language(request)
     product_cache = build_offer_product_cache(assignments)
     out = []
     for assignment in assignments:
@@ -178,6 +180,7 @@ def _serialize_offer_assignments(request, assignments, *, endpoint, include_assi
         out.append(
             build_offer_assignment_payload(
                 assignment,
+                language=language,
                 include_assigned_at=include_assigned_at,
                 product_cache=product_cache,
             )
@@ -253,9 +256,17 @@ class MeNextOfferView(APIView):
                 },
             )
 
+        language = get_request_language(request)
 
         if not a:
-            return Response({"offer": None, "reason": {"message": "No eligible offers"}})
+            message = (
+                "Қолайлы офферлер жоқ"
+                if language == "kk"
+                else "No eligible offers"
+                if language == "en"
+                else "Нет подходящих офферов"
+            )
+            return Response({"offer": None, "reason": {"message": message}})
 
         request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
         _, created = record_offer_event(
@@ -268,7 +279,13 @@ class MeNextOfferView(APIView):
         if created:
             record_exposed_from_offer_assignment(assignment=a, request_id=request_id)
 
-        return Response(build_offer_assignment_payload(a, include_estimated_cost=True))
+        return Response(
+            build_offer_assignment_payload(
+                a,
+                language=language,
+                include_estimated_cost=True,
+            )
+        )
 
 
 class HomePromotionsView(APIView):

@@ -4,6 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 
 from backend.api_serializers import ApiErrorSerializer
+from backend.request_language import get_request_language
 from .models import CustomerProfile
 from .profile_taxonomy import get_profile_taxonomy_payload
 from .serializers import (
@@ -91,6 +92,6 @@ class MeProfileTaxonomyView(APIView):
         return Response(
             {
                 "ok": True,
-                "taxonomy": get_profile_taxonomy_payload(),
+                "taxonomy": get_profile_taxonomy_payload(get_request_language(request)),
             }
         )

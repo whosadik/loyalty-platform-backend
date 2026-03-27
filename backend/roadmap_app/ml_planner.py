@@ -61,6 +61,8 @@ def _unique(values: list[str]) -> list[str]:
 
 
 def planner_runtime_mode() -> str:
+    if bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)):
+        return "off"
     raw = str(getattr(settings, "ROADMAP_PLANNER_V1_MODE", "off") or "off").strip().lower()
     if raw in {"off", "shadow", "serve"}:
         return raw

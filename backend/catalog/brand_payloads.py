@@ -6,15 +6,32 @@ from django.db.models import Count
 from django.utils import timezone
 from django.utils.text import slugify
 
+from backend.request_language import AppLanguage, normalize_language
+from roadmap_app.step_presentation import get_roadmap_step_presentation
+
 from .models import Product
 from .sale_fields import product_has_discount
 
 
-CATEGORY_LABELS = {
-    Product.Category.SKINCARE: "skincare",
-    Product.Category.HAIRCARE: "haircare",
-    Product.Category.MAKEUP: "makeup",
-    Product.Category.FRAGRANCE: "fragrance",
+CATEGORY_LABELS: dict[AppLanguage, dict[str, str]] = {
+    "ru": {
+        Product.Category.SKINCARE: "уход за кожей",
+        Product.Category.HAIRCARE: "уход за волосами",
+        Product.Category.MAKEUP: "макияж",
+        Product.Category.FRAGRANCE: "ароматы",
+    },
+    "kk": {
+        Product.Category.SKINCARE: "тері күтімі",
+        Product.Category.HAIRCARE: "шаш күтімі",
+        Product.Category.MAKEUP: "макияж",
+        Product.Category.FRAGRANCE: "хош иістер",
+    },
+    "en": {
+        Product.Category.SKINCARE: "skincare",
+        Product.Category.HAIRCARE: "haircare",
+        Product.Category.MAKEUP: "makeup",
+        Product.Category.FRAGRANCE: "fragrance",
+    },
 }
 
 
@@ -68,28 +85,65 @@ def resolve_brand_name_from_slug(brand_slug: str) -> str | None:
     return None
 
 
+def _localize_category(category: str, language: AppLanguage) -> str:
+    return CATEGORY_LABELS[language].get(category, category)
+
+
+def _localize_product_type(product_type: str, language: AppLanguage) -> str:
+    presentation = get_roadmap_step_presentation(product_type, language)
+    title = str(presentation.get("title") or "").strip()
+    if title:
+        return title
+
+    prepared = product_type.replace("_", " ").strip()
+    return prepared.title() if prepared else product_type
+
+
 def _build_brand_description(
     brand_name: str,
     product_count: int,
     categories: list[str],
     top_product_types: list[str],
+    language: AppLanguage,
 ) -> str:
-    category_labels = [CATEGORY_LABELS.get(category, category) for category in categories[:2]]
-    top_types = [product_type.replace("_", " ") for product_type in top_product_types[:3]]
+    localized_categories = [_localize_category(category, language) for category in categories[:2]]
+    localized_types = [_localize_product_type(product_type, language) for product_type in top_product_types[:3]]
 
-    if category_labels and top_types:
+    if language == "kk":
+        if localized_categories and localized_types:
+            return (
+                f"{brand_name} каталогында {product_count} тауар бар. Негізгі санаттар: "
+                f"{', '.join(localized_categories)}. Ең жиі кездесетін түрлер: {', '.join(localized_types)}."
+            )
+        if localized_categories:
+            return f"{brand_name} каталогында {product_count} тауар бар. Негізгі санаттар: {', '.join(localized_categories)}."
+        return f"{brand_name} каталогында {product_count} тауар бар."
+
+    if language == "en":
+        if localized_categories and localized_types:
+            return (
+                f"{brand_name} in the catalog: {product_count} items across {', '.join(localized_categories)}. "
+                f"Most common product types: {', '.join(localized_types)}."
+            )
+        if localized_categories:
+            return f"{brand_name} in the catalog: {product_count} items across {', '.join(localized_categories)}."
+        return f"{brand_name} in the catalog: {product_count} items."
+
+    if localized_categories and localized_types:
         return (
-            f"{brand_name} в каталоге: {product_count} товаров в категориях "
-            f"{', '.join(category_labels)}. Чаще всего встречаются {', '.join(top_types)}."
+            f"{brand_name} в каталоге: {product_count} товаров в категориях {', '.join(localized_categories)}. "
+            f"Чаще всего встречаются {', '.join(localized_types)}."
         )
-
-    if category_labels:
-        return f"{brand_name} в каталоге: {product_count} товаров в категориях {', '.join(category_labels)}."
-
+    if localized_categories:
+        return f"{brand_name} в каталоге: {product_count} товаров в категориях {', '.join(localized_categories)}."
     return f"{brand_name} в каталоге: {product_count} товаров."
 
 
-def get_brand_detail_payload(brand_slug: str) -> dict[str, object] | None:
+def get_brand_detail_payload(
+    brand_slug: str,
+    language: AppLanguage = "ru",
+) -> dict[str, object] | None:
+    normalized_language = normalize_language(language)
     brand_name = resolve_brand_name_from_slug(brand_slug)
     if not brand_name:
         return None
@@ -125,7 +179,13 @@ def get_brand_detail_payload(brand_slug: str) -> dict[str, object] | None:
     payload = build_brand_summary_payload(brand_name, product_count)
     payload.update(
         {
-            "description": _build_brand_description(brand_name, product_count, categories, top_product_types),
+            "description": _build_brand_description(
+                brand_name,
+                product_count,
+                categories,
+                top_product_types,
+                normalized_language,
+            ),
             "categories": categories,
             "top_product_types": top_product_types,
             "new_products_count": new_products_count,

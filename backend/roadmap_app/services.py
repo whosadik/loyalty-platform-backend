@@ -110,6 +110,15 @@ ROADMAP_OWNED_FRESHNESS_DEFAULTS: dict[str, dict[str, int]] = {
 }
 
 FRAGRANCE_DEFAULT_CHAIN = ["warm_day", "warm_evening", "cold_day", "cold_evening"]
+CONTINUATION_PATCH_CATEGORIES = {"haircare", "skincare"}
+HAIRCARE_CONTINUATION_CORE_PREDECESSOR = {
+    "conditioner": "shampoo",
+    "hair_mask": "conditioner",
+}
+HAIRCARE_OPTIONAL_TAIL = {"hair_oil", "scalp_serum", "leave_in"}
+SKINCARE_OPTIONAL_TAIL = {"toner", "mask", "eye_cream", "essence"}
+SKINCARE_STRICT_CONTINUATION = {"serum", "moisturizer", "spf"} | SKINCARE_OPTIONAL_TAIL
+STOP_TOKEN = "__stop__"
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -418,7 +427,8 @@ def _partial_active_model_product_types(category: str | None = None) -> set[str]
 
 
 def _default_ml_mode_and_path() -> tuple[str, str]:
-    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
+    runtime_frozen = bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True))
+    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False)) and not runtime_frozen
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
     if use_v4:
         return "v4_ranking", str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or "")
@@ -924,6 +934,280 @@ def _contiguous_rule_progress_prefix(
     return prefix
 
 
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return 0
+
+
+def _roadmap_anchor_signal_summary(*, category: str, context_product_ids: list[int]) -> dict[str, Any]:
+    rows = list(
+        Product.objects.filter(id__in=[int(x) for x in context_product_ids if _to_int_or_none(x) is not None], category=category)
+        .values(
+            "category",
+            "product_type",
+            "concerns",
+            "actives",
+            "flags",
+            "supported_skin_types",
+            "attrs",
+            "raw_meta",
+            "ingredients_inci",
+        )[:8]
+    )
+    if not rows:
+        return {
+            "anchor_actives_count": 0,
+            "anchor_concerns_count": 0,
+            "anchor_has_scalp_focus": False,
+        }
+    signatures = [product_signature(row) for row in rows]
+    scalp_focus_tokens = {"oiliness", "flakes", "itchiness", "scalp_balance", "scalp_health", "build_up"}
+    return {
+        "anchor_actives_count": max((len(sig.get("actives") or []) for sig in signatures), default=0),
+        "anchor_concerns_count": max((len(sig.get("concerns") or []) for sig in signatures), default=0),
+        "anchor_has_scalp_focus": any(
+            str(sig.get("scalp_type") or "__none__") in {"oily", "sensitive"}
+            or bool(set(sig.get("concerns") or []) & scalp_focus_tokens)
+            for sig in signatures
+        ),
+    }
+
+
+def _continuation_append_why(why: list[Any] | None, markers: list[str]) -> list[str]:
+    out = [str(item) for item in (why or []) if str(item or "").strip()]
+    for marker in markers:
+        token = str(marker or "").strip()
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def _runtime_continuation_candidate_decision_from_signals(
+    *,
+    category: str,
+    candidate_type: str,
+    trigger: str,
+    purchased_types: set[str],
+    owned_types: set[str],
+    plan_product_types: list[str],
+    profile_skin_type: str,
+    profile_goals_count: int,
+    profile_avoid_flags_count: int,
+    profile_hair_type: str,
+    profile_scalp_type: str,
+    profile_hair_thickness: str,
+    profile_hair_concerns_count: int,
+    profile_has_scalp_objective: bool,
+    anchor_actives_count: int,
+    anchor_concerns_count: int,
+    anchor_has_scalp_focus: bool,
+) -> dict[str, Any]:
+    category = str(category or "").strip().lower()
+    candidate_type = str(candidate_type or "").strip().lower()
+    trigger = str(trigger or "").strip().lower()
+    purchased_or_owned = set(purchased_types) | set(owned_types)
+    default_stop_reason = (
+        "stopped_after_optional_tail"
+        if (
+            (category == "haircare" and candidate_type in HAIRCARE_OPTIONAL_TAIL)
+            or (category == "skincare" and candidate_type in SKINCARE_STRICT_CONTINUATION)
+        )
+        else "stopped_due_to_weak_tail_signal"
+    )
+    if category not in CONTINUATION_PATCH_CATEGORIES:
+        return {"continue": True, "markers": [], "reason": "out_of_scope"}
+    if candidate_type in {"", "__none__", STOP_TOKEN}:
+        return {"continue": False, "markers": ["stopped_due_to_weak_tail_signal"], "reason": "stopped_due_to_weak_tail_signal"}
+
+    if category == "haircare":
+        predecessor = HAIRCARE_CONTINUATION_CORE_PREDECESSOR.get(candidate_type)
+        if predecessor:
+            if predecessor in purchased_or_owned and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_core_gap", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_core_gap",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if trigger != "post_skipped":
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "hair_oil":
+            need = (
+                profile_hair_type in {"wavy", "curly", "coily"}
+                or profile_hair_thickness == "thick"
+                or profile_hair_concerns_count > 0
+            )
+            if need and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_profile_need",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "scalp_serum":
+            need = (
+                profile_scalp_type in {"oily", "sensitive"}
+                or bool(profile_has_scalp_objective)
+                or bool(anchor_has_scalp_focus)
+            )
+            if need and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_profile_need",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "leave_in":
+            need = (
+                profile_hair_type in {"wavy", "curly", "coily"}
+                or profile_hair_thickness == "fine"
+                or profile_hair_concerns_count > 0
+            )
+            if need and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_profile_need",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+    if trigger != "post_skipped":
+        return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+    if candidate_type == "toner":
+        need = profile_skin_type in {"oily", "combination"} and (anchor_concerns_count >= 1 or profile_goals_count >= 2)
+    elif candidate_type == "mask":
+        need = profile_goals_count >= 3 and anchor_concerns_count >= 2
+    elif candidate_type == "eye_cream":
+        need = profile_goals_count >= 3 or anchor_concerns_count >= 2
+    elif candidate_type == "essence":
+        need = profile_skin_type in {"dry", "sensitive"} or profile_goals_count >= 2 or anchor_actives_count >= 2
+    elif candidate_type == "moisturizer":
+        need = profile_skin_type in {"dry", "sensitive"} or profile_goals_count >= 2 or anchor_actives_count >= 2
+    elif candidate_type == "spf":
+        need = profile_avoid_flags_count <= 0 and (
+            profile_skin_type in {"dry", "sensitive"} or profile_goals_count >= 2 or anchor_actives_count >= 2
+        )
+    elif candidate_type == "serum":
+        need = (
+            profile_goals_count >= 3
+            and anchor_actives_count >= 2
+            and profile_skin_type in {"dry", "oily", "combination", "sensitive"}
+        )
+    else:
+        need = False
+
+    if need and candidate_type not in owned_types:
+        return {
+            "continue": True,
+            "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
+            "reason": "continued_due_to_profile_need",
+        }
+    return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+
+def _runtime_continuation_action_from_signal_state(
+    *,
+    category: str,
+    trigger: str,
+    current_next_product_type: str,
+    plan_product_types: list[str],
+    purchased_types: set[str],
+    owned_types: set[str],
+    profile_skin_type: str = "",
+    profile_goals_count: int = 0,
+    profile_avoid_flags_count: int = 0,
+    profile_hair_type: str = "",
+    profile_scalp_type: str = "",
+    profile_hair_thickness: str = "",
+    profile_hair_concerns_count: int = 0,
+    profile_has_scalp_objective: bool = False,
+    anchor_actives_count: int = 0,
+    anchor_concerns_count: int = 0,
+    anchor_has_scalp_focus: bool = False,
+) -> dict[str, Any]:
+    category = str(category or "").strip().lower()
+    current_next_product_type = str(current_next_product_type or "").strip().lower()
+    if current_next_product_type in {"", "__none__", STOP_TOKEN}:
+        return {
+            "action": STOP_TOKEN,
+            "reason": "stopped_due_to_weak_tail_signal",
+            "markers": ["stopped_due_to_weak_tail_signal"],
+            "suppressed_product_types": [],
+        }
+    if category not in CONTINUATION_PATCH_CATEGORIES:
+        return {
+            "action": current_next_product_type,
+            "reason": "out_of_scope",
+            "markers": [],
+            "suppressed_product_types": [],
+        }
+
+    normalized_plan = [str(token or "").strip().lower() for token in (plan_product_types or []) if str(token or "").strip()]
+    if current_next_product_type not in normalized_plan:
+        normalized_plan = _unique(normalized_plan + [current_next_product_type])
+    start_index = normalized_plan.index(current_next_product_type)
+    remaining = normalized_plan[start_index:]
+    suppressed: list[str] = []
+
+    for idx, candidate_type in enumerate(remaining):
+        decision = _runtime_continuation_candidate_decision_from_signals(
+            category=category,
+            candidate_type=candidate_type,
+            trigger=trigger,
+            purchased_types=purchased_types,
+            owned_types=owned_types,
+            plan_product_types=normalized_plan,
+            profile_skin_type=str(profile_skin_type or "").strip().lower(),
+            profile_goals_count=_safe_int(profile_goals_count),
+            profile_avoid_flags_count=_safe_int(profile_avoid_flags_count),
+            profile_hair_type=str(profile_hair_type or "").strip().lower(),
+            profile_scalp_type=str(profile_scalp_type or "").strip().lower(),
+            profile_hair_thickness=str(profile_hair_thickness or "").strip().lower(),
+            profile_hair_concerns_count=_safe_int(profile_hair_concerns_count),
+            profile_has_scalp_objective=bool(profile_has_scalp_objective),
+            anchor_actives_count=_safe_int(anchor_actives_count),
+            anchor_concerns_count=_safe_int(anchor_concerns_count),
+            anchor_has_scalp_focus=bool(anchor_has_scalp_focus),
+        )
+        if bool(decision.get("continue")):
+            return {
+                "action": candidate_type,
+                "reason": str(decision.get("reason") or ""),
+                "markers": list(decision.get("markers") or []),
+                "suppressed_product_types": suppressed,
+                "selected_next_product_type": candidate_type,
+                "trigger": trigger,
+            }
+        if trigger != "post_skipped" or idx == 0:
+            return {
+                "action": STOP_TOKEN,
+                "reason": str(decision.get("reason") or "stopped_due_to_weak_tail_signal"),
+                "markers": list(decision.get("markers") or ["stopped_due_to_weak_tail_signal"]),
+                "suppressed_product_types": suppressed + [candidate_type],
+                "selected_next_product_type": None,
+                "trigger": trigger,
+            }
+        suppressed.append(candidate_type)
+
+    return {
+        "action": STOP_TOKEN,
+        "reason": "stopped_due_to_weak_tail_signal",
+        "markers": ["stopped_due_to_weak_tail_signal"],
+        "suppressed_product_types": suppressed,
+        "selected_next_product_type": None,
+        "trigger": trigger,
+    }
+
+
 def _build_chain(
     *,
     user,
@@ -932,11 +1216,13 @@ def _build_chain(
     owned_types_ordered: list[str],
     context_product_ids: list[int],
     refresh_caller: str = "refresh_roadmap",
+    prior_next_product_type: str = "",
 ) -> tuple[list[str], dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     rules = CATEGORY_RULES[category]
     min_steps = int(rules["min_steps"])
     max_steps = int(rules["max_steps"])
 
+    continuation_rule: dict[str, Any] | None = None
     if category == "fragrance":
         purchased_slots = [x for x in purchased_types if x in FRAGRANCE_SLOTS]
         owned_slots = [x for x in owned_types_ordered if x in FRAGRANCE_SLOTS]
@@ -971,7 +1257,62 @@ def _build_chain(
             chain = _unique(chain + _distinct_catalog_types(category, exclude=set(chain), limit=40))
         chain = chain[: min(max_steps, target_len)]
 
+        prior_next_norm = str(prior_next_product_type or "").strip().lower()
+        purchased_types_set = {str(x or "").strip().lower() for x in purchased_types if str(x or "").strip()}
+        if (
+            purchase_context
+            and category in CONTINUATION_PATCH_CATEGORIES
+            and prior_next_norm
+            and prior_next_norm in purchased_types_set
+        ):
+            cp = CustomerProfile.objects.filter(user=user).first()
+            profile_sig = profile_signature(cp)
+            anchor_sig = _roadmap_anchor_signal_summary(category=category, context_product_ids=context_product_ids)
+            owned_types_norm = {str(x or "").strip().lower() for x in owned_types_ordered if str(x or "").strip()}
+            status_owned = {str(x) for x in owned_types_norm}
+            status_purchased = {str(x) for x in purchased_types_set}
+            current_next_product_type = ""
+            for product_type in chain:
+                status = _status_for_type(str(product_type), status_owned, status_purchased)
+                if status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}:
+                    current_next_product_type = str(product_type)
+                    break
+            if current_next_product_type:
+                continuation_rule = _runtime_continuation_action_from_signal_state(
+                    category=category,
+                    trigger="post_completed",
+                    current_next_product_type=current_next_product_type,
+                    plan_product_types=chain,
+                    purchased_types=purchased_types_set,
+                    owned_types=owned_types_norm,
+                    profile_skin_type=str(profile_sig.get("skin_type") or ""),
+                    profile_goals_count=len(profile_sig.get("goals") or []),
+                    profile_avoid_flags_count=len(profile_sig.get("avoid_flags") or []),
+                    profile_hair_type=str(profile_sig.get("hair_type") or ""),
+                    profile_scalp_type=str(profile_sig.get("scalp_type") or ""),
+                    profile_hair_thickness=str(profile_sig.get("hair_thickness") or ""),
+                    profile_hair_concerns_count=len(profile_sig.get("hair_concerns") or []),
+                    profile_has_scalp_objective=bool(
+                        str(profile_sig.get("scalp_type") or "") in {"oily", "sensitive"}
+                    ),
+                    anchor_actives_count=int(anchor_sig.get("anchor_actives_count") or 0),
+                    anchor_concerns_count=int(anchor_sig.get("anchor_concerns_count") or 0),
+                    anchor_has_scalp_focus=bool(anchor_sig.get("anchor_has_scalp_focus")),
+                )
+                selected = str(continuation_rule.get("action") or STOP_TOKEN)
+                if selected == STOP_TOKEN:
+                    cut_index = chain.index(current_next_product_type)
+                    chain = chain[:cut_index]
+                elif selected in chain and selected != current_next_product_type:
+                    cut_index = chain.index(selected)
+                    chain = chain[: cut_index + 1]
+
     source_by_type: dict[str, dict[str, Any]] = {pt: {"source": "rules", "score": None} for pt in chain}
+    if continuation_rule and str(continuation_rule.get("action") or STOP_TOKEN) != STOP_TOKEN:
+        selected_next = str(continuation_rule.get("selected_next_product_type") or continuation_rule.get("action") or "")
+        if selected_next in source_by_type:
+            source_by_type[selected_next]["continuation_markers"] = list(continuation_rule.get("markers") or [])
+            source_by_type[selected_next]["continuation_reason"] = str(continuation_rule.get("reason") or "")
     ml_predictions: list[dict[str, Any]] = []
     default_rollout_meta = _default_rollout_meta()
     if not chain:
@@ -981,6 +1322,7 @@ def _build_chain(
             "disabled_reason": "no_candidate_types",
             "guard": None,
             "category_guard": None,
+            "continuation_rule": continuation_rule,
             **default_rollout_meta,
         }
 
@@ -995,14 +1337,16 @@ def _build_chain(
             planned_target_step_index = int(idx)
             break
 
-    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
+    runtime_frozen = bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True))
+    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False)) and not runtime_frozen
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
     ml_runtime: dict[str, Any] = {
         "decision": "disabled",
         "fallback_reason": None,
-        "disabled_reason": "ml_disabled",
+        "disabled_reason": "roadmap_ml_frozen" if runtime_frozen else "ml_disabled",
         "guard": None,
         "category_guard": None,
+        "continuation_rule": continuation_rule,
         "planned_target_product_type": planned_target_product_type,
         "planned_target_step_index": planned_target_step_index,
         **default_rollout_meta,
@@ -1493,6 +1837,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         purchased_types = _unique(_purchased_fragrance_slots(post_ctx))
     purchased_types_set = set(purchased_types)
     context_product_ids = _context_product_ids(user, post_ctx, limit=50)
+    prior_active_plan = get_active_plan(user, category=category)
+    prior_next_step = get_next_missing_step(prior_active_plan)
     refresh_caller = (
         "update_roadmap_from_purchase"
         if (post_ctx and ((post_ctx.get("product_ids") or []) or (post_ctx.get("categories") or [])))
@@ -1540,6 +1886,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             owned_types_ordered=owned_types_ordered,
             context_product_ids=context_product_ids,
             refresh_caller=refresh_caller,
+            prior_next_product_type=str(getattr(prior_next_step, "product_type", "") or ""),
         )
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
@@ -1559,6 +1906,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     used_recommended_ids: set[int] = set()
 
     step_payloads: list[dict[str, Any]] = []
+    continuation_rule = ml_runtime.get("continuation_rule") if isinstance(ml_runtime, dict) else None
     for product_type in chain:
         source_meta = source_by_type.get(product_type, {"source": "rules", "score": None})
         source_key = str(source_meta.get("source") or "")
@@ -1651,6 +1999,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             why.append("picked via user state")
         else:
             why.append("picked via ML next_step" if source_is_ml else "picked via rules")
+        for marker in source_meta.get("continuation_markers") or []:
+            why.append(str(marker))
         if status in {RoadmapStep.Status.OWNED, RoadmapStep.Status.COMPLETED}:
             why.append("already owned")
         elif recommended_product_id:
@@ -1676,8 +2026,9 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             }
         )
 
-    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False))
-    use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False))
+    runtime_frozen = bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True))
+    use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False)) and not runtime_frozen
+    use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not runtime_frozen
     threshold = float(
         getattr(
             settings,
@@ -1854,6 +2205,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "owned_product_types_count": len(owned_types_set),
             "purchased_types_count": len(purchased_types_set),
         },
+        "continuation": continuation_rule or {},
     }
 
     plan = _upsert_plan_with_steps(user=user, category=category, meta=meta, step_payloads=step_payloads)
@@ -2065,4 +2417,78 @@ def patch_step_status(*, user, step_id: int, status: str) -> RoadmapStep:
     )
     step.status = status
     step.save(update_fields=["status", "updated_at"])
+
+    plan = step.plan
+    category = str(getattr(plan, "category", "") or "").strip().lower()
+    if status == RoadmapStep.Status.SKIPPED and category in CONTINUATION_PATCH_CATEGORIES:
+        next_step = get_next_missing_step(plan)
+        continuation_meta: dict[str, Any] = {}
+        if next_step:
+            cp = CustomerProfile.objects.filter(user=user).first()
+            profile_sig = profile_signature(cp)
+            _, _, owned_types_ordered, owned_types_set = _category_owned(user, category)
+            ordered_steps = list(plan.steps.order_by("step_index"))
+            plan_product_types = [str(item.product_type or "") for item in ordered_steps if str(item.product_type or "").strip()]
+            continuation_meta = _runtime_continuation_action_from_signal_state(
+                category=category,
+                trigger="post_skipped",
+                current_next_product_type=str(next_step.product_type or ""),
+                plan_product_types=plan_product_types,
+                purchased_types=set(),
+                owned_types={str(x) for x in owned_types_set},
+                profile_skin_type=str(profile_sig.get("skin_type") or ""),
+                profile_goals_count=len(profile_sig.get("goals") or []),
+                profile_avoid_flags_count=len(profile_sig.get("avoid_flags") or []),
+                profile_hair_type=str(profile_sig.get("hair_type") or ""),
+                profile_scalp_type=str(profile_sig.get("scalp_type") or ""),
+                profile_hair_thickness=str(profile_sig.get("hair_thickness") or ""),
+                profile_hair_concerns_count=len(profile_sig.get("hair_concerns") or []),
+                profile_has_scalp_objective=bool(
+                    str(profile_sig.get("scalp_type") or "") in {"oily", "sensitive"}
+                ),
+                anchor_actives_count=0,
+                anchor_concerns_count=0,
+                anchor_has_scalp_focus=False,
+            )
+            selected_action = str(continuation_meta.get("action") or STOP_TOKEN)
+            if selected_action == STOP_TOKEN:
+                RoadmapStep.objects.filter(
+                    plan=plan,
+                    status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED],
+                    step_index__gte=next_step.step_index,
+                ).delete()
+            elif selected_action != str(next_step.product_type or ""):
+                chosen_step = (
+                    RoadmapStep.objects.filter(
+                        plan=plan,
+                        status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED],
+                        product_type=selected_action,
+                    )
+                    .order_by("step_index")
+                    .first()
+                )
+                if chosen_step:
+                    RoadmapStep.objects.filter(
+                        plan=plan,
+                        status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED],
+                        step_index__gte=next_step.step_index,
+                        step_index__lt=chosen_step.step_index,
+                    ).delete()
+                    chosen_step.why = _continuation_append_why(chosen_step.why, list(continuation_meta.get("markers") or []))
+                    chosen_step.save(update_fields=["why", "updated_at"])
+            else:
+                next_step.why = _continuation_append_why(next_step.why, list(continuation_meta.get("markers") or []))
+                next_step.save(update_fields=["why", "updated_at"])
+
+        plan.meta = {
+            **(plan.meta or {}),
+            "continuation": continuation_meta
+            or {
+                "action": STOP_TOKEN,
+                "reason": "stopped_due_to_weak_tail_signal",
+                "markers": ["stopped_due_to_weak_tail_signal"],
+                "trigger": "post_skipped",
+            },
+        }
+        plan.save(update_fields=["meta", "updated_at"])
     return step

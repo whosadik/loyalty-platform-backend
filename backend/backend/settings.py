@@ -275,6 +275,7 @@ ROADMAP_NEXTSTEP_MODEL_PATH = os.getenv(
     "ROADMAP_NEXTSTEP_MODEL_PATH",
     str((BASE_DIR.parent / "models" / "roadmap_next_step" / "model.pkl").resolve()),
 )
+ROADMAP_RUNTIME_FREEZE_ML = env_bool("ROADMAP_RUNTIME_FREEZE_ML", True)
 ROADMAP_NEXTSTEP_V3_ENABLED = env_bool("ROADMAP_NEXTSTEP_V3_ENABLED", False)
 ROADMAP_NEXTSTEP_V3_MODEL_PATH = os.getenv(
     "ROADMAP_NEXTSTEP_V3_MODEL_PATH",

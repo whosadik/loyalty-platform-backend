@@ -23,6 +23,7 @@ from ml_logic.recommender import UserProfile, bundle
 from drf_spectacular.utils import extend_schema, OpenApiExample, OpenApiParameter
 from drf_spectacular.types import OpenApiTypes
 
+from backend.request_language import get_request_language
 from ml_logic.recommender import bundle as rec_bundle
 from recs_analytics.experiment import build_event_experiment_context
 from recs_analytics.models import RecommendationEvent
@@ -35,6 +36,24 @@ from recs_app.reranker import (
 
 # Use existing offer helpers for profile/products loading.
 from offers.services import _build_rec_profile, _load_products_for_recs
+
+HOME_SECTION_TITLES = {
+    "ru": {
+        "for_you": "Для вас",
+        "because_you_bought": "Потому что вы купили",
+        "trending": "Популярное",
+    },
+    "kk": {
+        "for_you": "Сізге арналған",
+        "because_you_bought": "Сатып алғаныңызға байланысты",
+        "trending": "Танымал",
+    },
+    "en": {
+        "for_you": "For you",
+        "because_you_bought": "Because you bought",
+        "trending": "Trending",
+    },
+}
 
 
 class RecommendationsQuerySerializer(serializers.Serializer):
@@ -157,6 +176,8 @@ class MeRecommendationsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        language = get_request_language(request)
+        section_titles = HOME_SECTION_TITLES[language]
         q = RecommendationsQuerySerializer(data=request.query_params)
         q.is_valid(raise_exception=True)
 
@@ -483,6 +504,8 @@ class HomeRecommendationsView(APIView):
     throttle_classes = [RecsRateThrottle]
 
     def get(self, request):
+        language = get_request_language(request)
+        section_titles = HOME_SECTION_TITLES[language]
         qp = request.query_params
         limit = _to_int(qp.get("limit"), 10) or 10
         limit = max(1, min(limit, 50))
@@ -692,14 +715,14 @@ class HomeRecommendationsView(APIView):
                 "reranker_model_available": bool(get_reranker_model_version()),
             },
             "sections": [
-                {"key": "for_you", "title": "For you", "results": for_you_enriched},
+                {"key": "for_you", "title": section_titles["for_you"], "results": for_you_enriched},
                 {
                     "key": "because_you_bought",
-                    "title": "Because you bought",
+                    "title": section_titles["because_you_bought"],
                     "base_product_id": base_product_ids[0] if base_product_ids else None,
                     "results": because_enriched,
                 },
-                {"key": "trending", "title": "Trending", "results": trending_enriched},
+                {"key": "trending", "title": section_titles["trending"], "results": trending_enriched},
             ],
         })
 

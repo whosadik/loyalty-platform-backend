@@ -37,6 +37,7 @@ from rest_framework import serializers
 
 from django.db import IntegrityError
 from backend.api_serializers import ApiErrorSerializer
+from backend.request_language import get_request_language
 from backend.throttles import CheckoutPreviewRateThrottle
 
 from audit.logging import log_event
@@ -139,6 +140,7 @@ class CheckoutView(APIView):
         },
     )
     def post(self, request):
+        language = get_request_language(request)
         req = CheckoutRequestSerializer(data=request.data)
         req.is_valid(raise_exception=True)
         data = req.validated_data
@@ -429,6 +431,7 @@ class CheckoutView(APIView):
                     (roadmap_result or {}).get("next_missing_step"),
                     category=(roadmap_result or {}).get("category"),
                     plan_id=getattr((roadmap_result or {}).get("plan"), "id", None),
+                    language=language,
                 )
             except Exception:
                 roadmap_ctx = None
@@ -560,6 +563,7 @@ class CheckoutLastView(APIView):
         responses={200: CheckoutLastResponseSerializer},
     )
     def get(self, request):
+        language = get_request_language(request)
         txn = (
             Transaction.objects.filter(user=request.user)
             .filter(items__isnull=False)
@@ -570,7 +574,15 @@ class CheckoutLastView(APIView):
         )
         if not txn:
             return Response({"ok": True, "checkout": None})
-        return Response({"ok": True, "checkout": TransactionSerializer(txn).data})
+        return Response(
+            {
+                "ok": True,
+                "checkout": TransactionSerializer(
+                    txn,
+                    context={"request": request, "language": language},
+                ).data,
+            }
+        )
 
 class CheckoutPreviewView(APIView):
     permission_classes = [IsAuthenticated]

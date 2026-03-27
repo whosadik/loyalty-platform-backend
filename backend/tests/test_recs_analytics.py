@@ -36,6 +36,18 @@ class RecsAnalyticsTests(APITestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(RecommendationEvent.objects.filter(user=self.user, action="impression").exists())
 
+    def test_home_titles_follow_language_header(self):
+        r = self.client.get(
+            "/api/me/recommendations/home?limit=5",
+            HTTP_X_APP_LANGUAGE="en",
+            HTTP_ACCEPT_LANGUAGE="en",
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            [section["title"] for section in r.data["sections"]],
+            ["For you", "Because you bought", "Trending"],
+        )
+
     def test_click_inherits_experiment_context_from_impression(self):
         imp = RecommendationEvent.objects.create(
             user=self.user,

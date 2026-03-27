@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
+from django.test.utils import override_settings
 from django.utils import timezone
 
 from catalog.models import Product
@@ -13,8 +14,9 @@ from offers.models import CampaignBudget, Offer, OfferAssignment
 from offers.services import get_or_assign_next_offer
 from roadmap_app.events import record_exposed_from_offer_assignment
 from roadmap_app.models import RoadmapPlan, RoadmapStep
-from roadmap_app.services import refresh_roadmap, update_roadmap_from_purchase
+from roadmap_app.services import get_active_plan, patch_step_status, refresh_roadmap, update_roadmap_from_purchase
 from transactions.models import OwnedProduct
+from users_app.models import CustomerProfile
 
 
 class RoadmapRuntimeIntegrityTests(TestCase):
@@ -80,6 +82,49 @@ class RoadmapRuntimeIntegrityTests(TestCase):
             allowed_product_types=["serum", "cleanser", "moisturizer", "spf"],
             campaign=campaign,
         )
+
+    def _set_hair_profile(self, *, hair_type: str, scalp_type: str, hair_thickness: str, concerns: list[str] | None = None) -> None:
+        profile, _ = CustomerProfile.objects.get_or_create(user=self.user)
+        profile.hair_profile = {
+            "hair_type": hair_type,
+            "scalp_type": scalp_type,
+            "hair_thickness": hair_thickness,
+            "concerns": list(concerns or []),
+        }
+        profile.save(update_fields=["hair_profile", "updated_at"])
+
+    def _set_skin_profile(self, *, skin_type: str, goals: list[str] | None = None, avoid_flags: list[str] | None = None) -> None:
+        profile, _ = CustomerProfile.objects.get_or_create(user=self.user)
+        profile.skin_type = skin_type
+        profile.goals = list(goals or [])
+        profile.avoid_flags = list(avoid_flags or [])
+        profile.save(update_fields=["skin_type", "goals", "avoid_flags", "updated_at"])
+
+    def _create_haircare_products(self) -> dict[str, Product]:
+        products: dict[str, Product] = {}
+        for product_type in ["shampoo", "conditioner", "hair_mask", "hair_oil", "scalp_serum", "leave_in"]:
+            products[product_type] = Product.objects.create(
+                name=f"Integrity {product_type}",
+                brand="B",
+                price=Decimal("12.00"),
+                category="haircare",
+                product_type=product_type,
+                in_stock=True,
+            )
+        return products
+
+    def _create_skincare_tail_products(self) -> dict[str, Product]:
+        products: dict[str, Product] = {}
+        for product_type in ["cleanser", "serum", "moisturizer", "spf", "toner", "mask", "eye_cream", "essence"]:
+            products[product_type] = Product.objects.create(
+                name=f"Integrity {product_type}",
+                brand="B",
+                price=Decimal("13.00"),
+                category="skincare",
+                product_type=product_type,
+                in_stock=True,
+            )
+        return products
 
     def test_update_roadmap_from_purchase_includes_next_step_identity(self):
         serum = self._create_skincare_products()
@@ -325,3 +370,165 @@ class RoadmapRuntimeIntegrityTests(TestCase):
         self.assertEqual(int(event.plan_id), int(plan.id))
         self.assertEqual(int((event.context or {}).get("step_index")), 2)
         self.assertNotEqual(int(event.step_id), int(step_1.id))
+
+    @override_settings(ROADMAP_NEXTSTEP_V4_ENABLED=False, ROADMAP_NEXTSTEP_V3_ENABLED=False)
+    def test_haircare_optional_tail_can_stop_after_skip(self):
+        products = self._create_haircare_products()
+        self._set_hair_profile(
+            hair_type="straight",
+            scalp_type="normal",
+            hair_thickness="medium",
+            concerns=[],
+        )
+
+        now = timezone.now()
+        for product_type in ["shampoo", "conditioner", "hair_mask", "hair_oil"]:
+            OwnedProduct.objects.create(
+                user=self.user,
+                product=products[product_type],
+                quantity_total=1,
+                is_active=True,
+                last_acquired_at=now,
+            )
+
+        plan = refresh_roadmap(self.user, category="haircare", post_ctx=None)
+        next_step = next(
+            step for step in plan.steps.all()
+            if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+        )
+        self.assertEqual(str(next_step.product_type), "scalp_serum")
+
+        patch_step_status(user=self.user, step_id=int(next_step.id), status=RoadmapStep.Status.SKIPPED)
+
+        updated_plan = get_active_plan(self.user, category="haircare")
+        self.assertIsNotNone(updated_plan)
+        self.assertIsNone(
+            next(
+                (
+                    step
+                    for step in updated_plan.steps.all()
+                    if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+                ),
+                None,
+            )
+        )
+        continuation = (updated_plan.meta or {}).get("continuation") or {}
+        self.assertEqual(str(continuation.get("action") or ""), "__stop__")
+        self.assertIn(
+            str(continuation.get("reason") or ""),
+            {"stopped_due_to_weak_tail_signal", "stopped_after_optional_tail"},
+        )
+
+    @override_settings(ROADMAP_NEXTSTEP_V4_ENABLED=False, ROADMAP_NEXTSTEP_V3_ENABLED=False)
+    def test_skincare_optional_tail_can_stop_after_skip(self):
+        products = self._create_skincare_tail_products()
+        self._set_skin_profile(skin_type="normal", goals=["hydration"], avoid_flags=[])
+
+        now = timezone.now()
+        for product_type in ["cleanser", "serum", "moisturizer", "spf"]:
+            OwnedProduct.objects.create(
+                user=self.user,
+                product=products[product_type],
+                quantity_total=1,
+                is_active=True,
+                last_acquired_at=now,
+            )
+
+        plan = refresh_roadmap(self.user, category="skincare", post_ctx=None)
+        next_step = next(
+            step for step in plan.steps.all()
+            if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+        )
+        self.assertEqual(str(next_step.product_type), "toner")
+
+        patch_step_status(user=self.user, step_id=int(next_step.id), status=RoadmapStep.Status.SKIPPED)
+
+        updated_plan = get_active_plan(self.user, category="skincare")
+        self.assertIsNotNone(updated_plan)
+        self.assertIsNone(
+            next(
+                (
+                    step
+                    for step in updated_plan.steps.all()
+                    if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+                ),
+                None,
+            )
+        )
+        continuation = (updated_plan.meta or {}).get("continuation") or {}
+        self.assertEqual(str(continuation.get("action") or ""), "__stop__")
+        self.assertIn(
+            str(continuation.get("reason") or ""),
+            {"stopped_due_to_weak_tail_signal", "stopped_after_optional_tail"},
+        )
+
+    @override_settings(ROADMAP_NEXTSTEP_V4_ENABLED=False, ROADMAP_NEXTSTEP_V3_ENABLED=False)
+    def test_haircare_core_gap_still_continues_after_completed_purchase(self):
+        products = self._create_haircare_products()
+        self._set_hair_profile(
+            hair_type="straight",
+            scalp_type="normal",
+            hair_thickness="medium",
+            concerns=["repair"],
+        )
+
+        now = timezone.now()
+        OwnedProduct.objects.create(
+            user=self.user,
+            product=products["shampoo"],
+            quantity_total=1,
+            is_active=True,
+            last_acquired_at=now - timedelta(days=5),
+        )
+        initial_plan = refresh_roadmap(self.user, category="haircare", post_ctx=None)
+        initial_next = next(
+            step for step in initial_plan.steps.all()
+            if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+        )
+        self.assertEqual(str(initial_next.product_type), "conditioner")
+
+        updated = update_roadmap_from_purchase(
+            self.user,
+            {"categories": ["haircare"], "product_ids": [int(products["conditioner"].id)]},
+        )
+
+        self.assertIsNotNone(updated)
+        next_step = updated["next_missing_step"]
+        self.assertIsNotNone(next_step)
+        self.assertEqual(str(next_step.product_type), "hair_mask")
+        self.assertIn("continued_due_to_core_gap", list(next_step.why or []))
+
+    @override_settings(ROADMAP_NEXTSTEP_V4_ENABLED=False, ROADMAP_NEXTSTEP_V3_ENABLED=False)
+    def test_fragrance_runtime_patch_scope_is_unchanged(self):
+        warm_day = Product.objects.create(
+            name="Runtime Warm Day",
+            brand="B",
+            price=Decimal("20.00"),
+            category="fragrance",
+            product_type="edp",
+            in_stock=True,
+            attrs={"scent_family": "citrus", "notes": ["bergamot"], "intensity": "soft"},
+            raw_meta={"notes": ["bergamot"], "scent_family": "citrus", "intensity": "soft"},
+        )
+        Product.objects.create(
+            name="Runtime Warm Evening",
+            brand="B",
+            price=Decimal("22.00"),
+            category="fragrance",
+            product_type="edp",
+            in_stock=True,
+            attrs={"scent_family": "amber", "notes": ["amber", "vanilla"], "intensity": "strong"},
+            raw_meta={"notes": ["amber", "vanilla"], "scent_family": "amber", "intensity": "strong"},
+        )
+
+        updated = update_roadmap_from_purchase(
+            self.user,
+            {"categories": ["fragrance"], "product_ids": [int(warm_day.id)]},
+        )
+
+        self.assertIsNotNone(updated)
+        next_step = updated["next_missing_step"]
+        self.assertIsNotNone(next_step)
+        self.assertEqual(str(next_step.product_type), "warm_evening")
+        continuation = ((updated["plan"].meta or {}).get("continuation") or {})
+        self.assertEqual(continuation, {})

@@ -1,0 +1,4466 @@
+{
+  "dataset_view": {
+    "dataset_dir": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\tmp\\roadmap_planner_live_initial_v1",
+    "categories": [
+      "haircare",
+      "skincare",
+      "fragrance"
+    ],
+    "split_schemes": {
+      "time": {
+        "rows_total": 712,
+        "decision_points_total": 712,
+        "users_total": 149,
+        "stop_share": 0.217697,
+        "split_counts": {
+          "test": 119,
+          "train": 475,
+          "val": 118
+        },
+        "split_user_counts": {
+          "train": 134,
+          "val": 104,
+          "test": 119
+        },
+        "categories": {
+          "haircare": {
+            "rows_total": 171,
+            "users_total": 32,
+            "stop_share": 0.187135,
+            "positive_labels": {
+              "conditioner": 22,
+              "hair_mask": 32,
+              "hair_oil": 21,
+              "leave_in": 32,
+              "scalp_serum": 21,
+              "shampoo": 11
+            },
+            "class_balance": {
+              "__stop__": {
+                "count": 32,
+                "share": 0.187135
+              },
+              "conditioner": {
+                "count": 22,
+                "share": 0.128655
+              },
+              "hair_mask": {
+                "count": 32,
+                "share": 0.187135
+              },
+              "hair_oil": {
+                "count": 21,
+                "share": 0.122807
+              },
+              "leave_in": {
+                "count": 32,
+                "share": 0.187135
+              },
+              "scalp_serum": {
+                "count": 21,
+                "share": 0.122807
+              },
+              "shampoo": {
+                "count": 11,
+                "share": 0.064327
+              }
+            },
+            "label_support_by_split": {
+              "train": {
+                "conditioner": 22,
+                "hair_mask": 21,
+                "hair_oil": 1,
+                "leave_in": 32,
+                "scalp_serum": 21,
+                "shampoo": 11
+              },
+              "val": {
+                "hair_mask": 11,
+                "hair_oil": 20
+              },
+              "test": {
+                "__stop__": 32
+              }
+            }
+          },
+          "skincare": {
+            "rows_total": 451,
+            "users_total": 84,
+            "stop_share": 0.181818,
+            "positive_labels": {
+              "cleanser": 31,
+              "essence": 30,
+              "eye_cream": 30,
+              "mask": 27,
+              "moisturizer": 75,
+              "serum": 73,
+              "spf": 83,
+              "toner": 20
+            },
+            "class_balance": {
+              "__stop__": {
+                "count": 82,
+                "share": 0.181818
+              },
+              "cleanser": {
+                "count": 31,
+                "share": 0.068736
+              },
+              "essence": {
+                "count": 30,
+                "share": 0.066519
+              },
+              "eye_cream": {
+                "count": 30,
+                "share": 0.066519
+              },
+              "mask": {
+                "count": 27,
+                "share": 0.059867
+              },
+              "moisturizer": {
+                "count": 75,
+                "share": 0.166297
+              },
+              "serum": {
+                "count": 73,
+                "share": 0.161863
+              },
+              "spf": {
+                "count": 83,
+                "share": 0.184035
+              },
+              "toner": {
+                "count": 20,
+                "share": 0.044346
+              }
+            },
+            "label_support_by_split": {
+              "train": {
+                "__stop__": 8,
+                "cleanser": 31,
+                "essence": 25,
+                "eye_cream": 13,
+                "mask": 10,
+                "moisturizer": 75,
+                "serum": 73,
+                "spf": 65,
+                "toner": 20
+              },
+              "val": {
+                "essence": 5,
+                "eye_cream": 17,
+                "mask": 17,
+                "spf": 18
+              },
+              "test": {
+                "__stop__": 74
+              }
+            }
+          },
+          "fragrance": {
+            "rows_total": 90,
+            "users_total": 33,
+            "stop_share": 0.455556,
+            "positive_labels": {
+              "cold_day": 10,
+              "cold_evening": 23,
+              "warm_day": 8,
+              "warm_evening": 8
+            },
+            "class_balance": {
+              "__stop__": {
+                "count": 41,
+                "share": 0.455556
+              },
+              "cold_day": {
+                "count": 10,
+                "share": 0.111111
+              },
+              "cold_evening": {
+                "count": 23,
+                "share": 0.255556
+              },
+              "warm_day": {
+                "count": 8,
+                "share": 0.088889
+              },
+              "warm_evening": {
+                "count": 8,
+                "share": 0.088889
+              }
+            },
+            "label_support_by_split": {
+              "train": {
+                "__stop__": 14,
+                "cold_day": 10,
+                "cold_evening": 7,
+                "warm_day": 8,
+                "warm_evening": 8
+              },
+              "val": {
+                "__stop__": 14,
+                "cold_evening": 16
+              },
+              "test": {
+                "__stop__": 13
+              }
+            }
+          }
+        }
+      },
+      "user": {
+        "rows_total": 712,
+        "decision_points_total": 712,
+        "users_total": 149,
+        "stop_share": 0.217697,
+        "split_counts": {
+          "test": 129,
+          "train": 484,
+          "val": 99
+        },
+        "split_user_counts": {
+          "train": 97,
+          "val": 23,
+          "test": 29
+        },
+        "categories": {
+          "haircare": {
+            "rows_total": 171,
+            "users_total": 32,
+            "stop_share": 0.187135,
+            "positive_labels": {
+              "conditioner": 22,
+              "hair_mask": 32,
+              "hair_oil": 21,
+              "leave_in": 32,
+              "scalp_serum": 21,
+              "shampoo": 11
+            },
+            "class_balance": {
+              "__stop__": {
+                "count": 32,
+                "share": 0.187135
+              },
+              "conditioner": {
+                "count": 22,
+                "share": 0.128655
+              },
+              "hair_mask": {
+                "count": 32,
+                "share": 0.187135
+              },
+              "hair_oil": {
+                "count": 21,
+                "share": 0.122807
+              },
+              "leave_in": {
+                "count": 32,
+                "share": 0.187135
+              },
+              "scalp_serum": {
+                "count": 21,
+                "share": 0.122807
+              },
+              "shampoo": {
+                "count": 11,
+                "share": 0.064327
+              }
+            },
+            "label_support_by_split": {
+              "train": {
+                "__stop__": 25,
+                "conditioner": 18,
+                "hair_mask": 25,
+                "hair_oil": 15,
+                "leave_in": 25,
+                "scalp_serum": 17,
+                "shampoo": 10
+              },
+              "val": {
+                "__stop__": 3,
+                "conditioner": 1,
+                "hair_mask": 3,
+                "hair_oil": 3,
+                "leave_in": 3,
+                "scalp_serum": 2
+              },
+              "test": {
+                "__stop__": 4,
+                "conditioner": 3,
+                "hair_mask": 4,
+                "hair_oil": 3,
+                "leave_in": 4,
+                "scalp_serum": 2,
+                "shampoo": 1
+              }
+            }
+          },
+          "skincare": {
+            "rows_total": 451,
+            "users_total": 84,
+            "stop_share": 0.181818,
+            "positive_labels": {
+              "cleanser": 31,
+              "essence": 30,
+              "eye_cream": 30,
+              "mask": 27,
+              "moisturizer": 75,
+              "serum": 73,
+              "spf": 83,
+              "toner": 20
+            },
+            "class_balance": {
+              "__stop__": {
+                "count": 82,
+                "share": 0.181818
+              },
+              "cleanser": {
+                "count": 31,
+                "share": 0.068736
+              },
+              "essence": {
+                "count": 30,
+                "share": 0.066519
+              },
+              "eye_cream": {
+                "count": 30,
+                "share": 0.066519
+              },
+              "mask": {
+                "count": 27,
+                "share": 0.059867
+              },
+              "moisturizer": {
+                "count": 75,
+                "share": 0.166297
+              },
+              "serum": {
+                "count": 73,
+                "share": 0.161863
+              },
+              "spf": {
+                "count": 83,
+                "share": 0.184035
+              },
+              "toner": {
+                "count": 20,
+                "share": 0.044346
+              }
+            },
+            "label_support_by_split": {
+              "train": {
+                "__stop__": 53,
+                "cleanser": 21,
+                "essence": 22,
+                "eye_cream": 22,
+                "mask": 21,
+                "moisturizer": 50,
+                "serum": 46,
+                "spf": 55,
+                "toner": 15
+              },
+              "val": {
+                "__stop__": 10,
+                "cleanser": 4,
+                "essence": 4,
+                "eye_cream": 4,
+                "mask": 3,
+                "moisturizer": 11,
+                "serum": 10,
+                "spf": 11,
+                "toner": 3
+              },
+              "test": {
+                "__stop__": 19,
+                "cleanser": 6,
+                "essence": 4,
+                "eye_cream": 4,
+                "mask": 3,
+                "moisturizer": 14,
+                "serum": 17,
+                "spf": 17,
+                "toner": 2
+              }
+            }
+          },
+          "fragrance": {
+            "rows_total": 90,
+            "users_total": 33,
+            "stop_share": 0.455556,
+            "positive_labels": {
+              "cold_day": 10,
+              "cold_evening": 23,
+              "warm_day": 8,
+              "warm_evening": 8
+            },
+            "class_balance": {
+              "__stop__": {
+                "count": 41,
+                "share": 0.455556
+              },
+              "cold_day": {
+                "count": 10,
+                "share": 0.111111
+              },
+              "cold_evening": {
+                "count": 23,
+                "share": 0.255556
+              },
+              "warm_day": {
+                "count": 8,
+                "share": 0.088889
+              },
+              "warm_evening": {
+                "count": 8,
+                "share": 0.088889
+              }
+            },
+            "label_support_by_split": {
+              "train": {
+                "__stop__": 19,
+                "cold_day": 5,
+                "cold_evening": 12,
+                "warm_day": 4,
+                "warm_evening": 4
+              },
+              "val": {
+                "__stop__": 12,
+                "cold_day": 2,
+                "cold_evening": 5,
+                "warm_day": 2,
+                "warm_evening": 3
+              },
+              "test": {
+                "__stop__": 10,
+                "cold_day": 3,
+                "cold_evening": 6,
+                "warm_day": 2,
+                "warm_evening": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    "candidate_space": {
+      "fragrance": [
+        "warm_day",
+        "warm_evening",
+        "cold_day",
+        "cold_evening",
+        "__stop__"
+      ],
+      "haircare": [
+        "shampoo",
+        "conditioner",
+        "hair_mask",
+        "hair_oil",
+        "scalp_serum",
+        "leave_in",
+        "__stop__"
+      ],
+      "makeup": [
+        "foundation",
+        "mascara",
+        "blush",
+        "lipstick",
+        "eyeshadow",
+        "primer",
+        "setting_spray",
+        "__stop__"
+      ],
+      "skincare": [
+        "cleanser",
+        "serum",
+        "moisturizer",
+        "spf",
+        "toner",
+        "mask",
+        "eye_cream",
+        "essence",
+        "__stop__"
+      ]
+    }
+  },
+  "time_split_gap": {
+    "metadata_version": "planner_v1_candidate_ranking",
+    "anchor_month_distribution": {
+      "test:fragrance": {
+        "2026-03": 13
+      },
+      "test:haircare": {
+        "2026-03": 32
+      },
+      "test:skincare": {
+        "2026-03": 74
+      },
+      "train:fragrance": {
+        "2026-03": 47
+      },
+      "train:haircare": {
+        "2026-03": 108
+      },
+      "train:skincare": {
+        "2026-03": 320
+      },
+      "val:fragrance": {
+        "2026-03": 30
+      },
+      "val:haircare": {
+        "2026-03": 31
+      },
+      "val:skincare": {
+        "2026-03": 57
+      }
+    },
+    "action_distribution_over_time": {
+      "fragrance": {
+        "2026-03": {
+          "cold_day": 10,
+          "cold_evening": 23,
+          "warm_day": 8,
+          "warm_evening": 8
+        }
+      },
+      "haircare": {
+        "2026-03": {
+          "conditioner": 22,
+          "hair_mask": 32,
+          "hair_oil": 21,
+          "leave_in": 32,
+          "scalp_serum": 21,
+          "shampoo": 11
+        }
+      },
+      "skincare": {
+        "2026-03": {
+          "cleanser": 31,
+          "essence": 30,
+          "eye_cream": 30,
+          "mask": 27,
+          "moisturizer": 75,
+          "serum": 73,
+          "spf": 83,
+          "toner": 20
+        }
+      }
+    },
+    "late_or_early_only_labels": {
+      "fragrance": [
+        {
+          "label": "cold_day",
+          "train_support": 10,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "warm_day",
+          "train_support": 8,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "warm_evening",
+          "train_support": 8,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        }
+      ],
+      "haircare": [
+        {
+          "label": "conditioner",
+          "train_support": 22,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "leave_in",
+          "train_support": 32,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "scalp_serum",
+          "train_support": 21,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "shampoo",
+          "train_support": 11,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "__stop__",
+          "train_support": 0,
+          "val_support": 0,
+          "test_support": 32,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "late_only"
+        }
+      ],
+      "skincare": [
+        {
+          "label": "cleanser",
+          "train_support": 31,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "moisturizer",
+          "train_support": 75,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "serum",
+          "train_support": 73,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        },
+        {
+          "label": "toner",
+          "train_support": 20,
+          "val_support": 0,
+          "test_support": 0,
+          "first_month": "2026-03",
+          "last_month": "2026-03",
+          "pattern": "early_only"
+        }
+      ]
+    },
+    "scenario_family_over_time": {
+      "months": {},
+      "note": "no demo users found"
+    },
+    "feature_drift": {
+      "haircare": {
+        "train_vs_val": [
+          {
+            "feature": "recommended_steps_count",
+            "drift_score": 3.482018,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_distinct_token_count",
+            "drift_score": 1.951151,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_purchase_total",
+            "drift_score": 1.951151,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_count_90d_category",
+            "drift_score": 1.951151,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_amount_90d_category",
+            "drift_score": 1.438818,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "anchor_product_type",
+            "drift_score": 0.796296,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "last1_product_type",
+            "drift_score": 0.796296,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "steps_total",
+            "drift_score": 0.742307,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "next_step_index_current",
+            "drift_score": 0.69614,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "completed_steps_count",
+            "drift_score": 0.648886,
+            "feature_type": "numeric"
+          }
+        ],
+        "train_vs_test": [
+          {
+            "feature": "recommended_steps_count",
+            "drift_score": 5.548271,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_distinct_token_count",
+            "drift_score": 2.817291,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_purchase_total",
+            "drift_score": 2.817291,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_count_90d_category",
+            "drift_score": 2.817291,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_amount_90d_category",
+            "drift_score": 1.682203,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "next_step_index_current",
+            "drift_score": 1.500053,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "anchor_product_type",
+            "drift_score": 0.990741,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "last1_product_type",
+            "drift_score": 0.990741,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "steps_total",
+            "drift_score": 0.742307,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "completed_steps_count",
+            "drift_score": 0.648886,
+            "feature_type": "numeric"
+          }
+        ]
+      },
+      "skincare": {
+        "train_vs_val": [
+          {
+            "feature": "recommended_steps_count",
+            "drift_score": 2.278137,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_amount_90d_category",
+            "drift_score": 2.008338,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_count_90d_category",
+            "drift_score": 1.700803,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_distinct_token_count",
+            "drift_score": 1.689608,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_purchase_total",
+            "drift_score": 1.689608,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "steps_total",
+            "drift_score": 1.257431,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "next_step_index_current",
+            "drift_score": 1.043792,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "anchor_product_type",
+            "drift_score": 0.740625,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "last1_product_type",
+            "drift_score": 0.740625,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "completed_steps_count",
+            "drift_score": 0.591786,
+            "feature_type": "numeric"
+          }
+        ],
+        "train_vs_test": [
+          {
+            "feature": "tx_amount_90d_category",
+            "drift_score": 1.833258,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_count_90d_category",
+            "drift_score": 1.722854,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_distinct_token_count",
+            "drift_score": 1.695815,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_purchase_total",
+            "drift_score": 1.695815,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "recommended_steps_count",
+            "drift_score": 1.694604,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "steps_total",
+            "drift_score": 1.46683,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "next_step_index_current",
+            "drift_score": 1.106012,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "last1_product_type",
+            "drift_score": 0.81875,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "anchor_product_type",
+            "drift_score": 0.805236,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "completed_steps_count",
+            "drift_score": 0.560954,
+            "feature_type": "numeric"
+          }
+        ]
+      },
+      "fragrance": {
+        "train_vs_val": [
+          {
+            "feature": "days_since_last_purchase_in_category",
+            "drift_score": 0.648661,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "fragrance_slot_coverage_count",
+            "drift_score": 0.547808,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_distinct_token_count",
+            "drift_score": 0.547808,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_purchase_total",
+            "drift_score": 0.547808,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "recommended_steps_count",
+            "drift_score": 0.547808,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "profile_fragrance_intensity_pref",
+            "drift_score": 0.443972,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "next_step_index_current",
+            "drift_score": 0.439539,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "profile_hair_type",
+            "drift_score": 0.424113,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "tx_count_90d_category",
+            "drift_score": 0.383613,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_amount_90d_category",
+            "drift_score": 0.293364,
+            "feature_type": "numeric"
+          }
+        ],
+        "train_vs_test": [
+          {
+            "feature": "tx_count_90d_category",
+            "drift_score": 1.770523,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "fragrance_slot_coverage_count",
+            "drift_score": 1.652002,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_distinct_token_count",
+            "drift_score": 1.652002,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "prior_category_purchase_total",
+            "drift_score": 1.652002,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "recommended_steps_count",
+            "drift_score": 1.652002,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "tx_amount_90d_category",
+            "drift_score": 1.395661,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "next_step_index_current",
+            "drift_score": 1.126196,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "completed_steps_count",
+            "drift_score": 0.823754,
+            "feature_type": "numeric"
+          },
+          {
+            "feature": "anchor_product_type",
+            "drift_score": 0.476268,
+            "feature_type": "categorical"
+          },
+          {
+            "feature": "last1_product_type",
+            "drift_score": 0.476268,
+            "feature_type": "categorical"
+          }
+        ]
+      }
+    },
+    "label_drift": {
+      "haircare": {
+        "train_distribution": {
+          "conditioner": 22,
+          "hair_mask": 21,
+          "hair_oil": 1,
+          "leave_in": 32,
+          "scalp_serum": 21,
+          "shampoo": 11
+        },
+        "val_distribution": {
+          "hair_mask": 11,
+          "hair_oil": 20
+        },
+        "test_distribution": {
+          "__stop__": 32
+        },
+        "train_val_tv": 0.796296,
+        "train_test_tv": 1.0
+      },
+      "skincare": {
+        "train_distribution": {
+          "__stop__": 8,
+          "cleanser": 31,
+          "essence": 25,
+          "eye_cream": 13,
+          "mask": 10,
+          "moisturizer": 75,
+          "serum": 73,
+          "spf": 65,
+          "toner": 20
+        },
+        "val_distribution": {
+          "essence": 5,
+          "eye_cream": 17,
+          "mask": 17,
+          "spf": 18
+        },
+        "test_distribution": {
+          "__stop__": 74
+        },
+        "train_val_tv": 0.646875,
+        "train_test_tv": 0.975
+      },
+      "fragrance": {
+        "train_distribution": {
+          "__stop__": 14,
+          "cold_day": 10,
+          "cold_evening": 7,
+          "warm_day": 8,
+          "warm_evening": 8
+        },
+        "val_distribution": {
+          "__stop__": 14,
+          "cold_evening": 16
+        },
+        "test_distribution": {
+          "__stop__": 13
+        },
+        "train_val_tv": 0.553191,
+        "train_test_tv": 0.702128
+      }
+    }
+  },
+  "runtime_shadow_time_reference": {
+    "initial_dataset_dir": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\tmp\\roadmap_planner_live_initial_v1",
+    "transitions_dataset_dir": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\tmp\\roadmap_planner_live_transitions_v1",
+    "initial_model_root": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\models\\roadmap_live_initial_planner_v1\\time",
+    "transition_model_root": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\models\\roadmap_live_transition_planner_v1\\time",
+    "split_scheme": "time",
+    "initial_shadow": {
+      "haircare": {
+        "anchors": 20,
+        "exact_match_rate": 0.0,
+        "first_step_match_rate": 0.0,
+        "prefix_match_rate": 0.0,
+        "top_divergence_reason": "first_step_diff",
+        "divergence_reasons": {
+          "first_step_diff": 20
+        },
+        "sample_cases": [
+          {
+            "decision_id": 97,
+            "user_id": 63275,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "scalp_serum",
+              "leave_in",
+              "conditioner",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 102,
+            "user_id": 63276,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 107,
+            "user_id": 63277,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 113,
+            "user_id": 63278,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "scalp_serum",
+              "leave_in",
+              "conditioner",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 118,
+            "user_id": 63279,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 123,
+            "user_id": 63280,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 129,
+            "user_id": 63281,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "scalp_serum",
+              "leave_in",
+              "conditioner",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 134,
+            "user_id": 63282,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 139,
+            "user_id": 63283,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 145,
+            "user_id": 63284,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "scalp_serum",
+              "leave_in",
+              "conditioner",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 150,
+            "user_id": 63285,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 155,
+            "user_id": 63286,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 161,
+            "user_id": 63287,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "scalp_serum",
+              "leave_in",
+              "conditioner",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 166,
+            "user_id": 63288,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 171,
+            "user_id": 63289,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 177,
+            "user_id": 63290,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "scalp_serum",
+              "leave_in",
+              "conditioner",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 182,
+            "user_id": 63291,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 187,
+            "user_id": 63292,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 193,
+            "user_id": 63293,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "scalp_serum",
+              "leave_in",
+              "conditioner",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 198,
+            "user_id": 63294,
+            "label": "__stop__",
+            "ml_chain": [
+              "hair_oil",
+              "leave_in",
+              "conditioner",
+              "scalp_serum",
+              "hair_mask",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          }
+        ]
+      },
+      "skincare": {
+        "anchors": 20,
+        "exact_match_rate": 0.0,
+        "first_step_match_rate": 0.0,
+        "prefix_match_rate": 0.0,
+        "top_divergence_reason": "first_step_diff",
+        "divergence_reasons": {
+          "first_step_diff": 20
+        },
+        "sample_cases": [
+          {
+            "decision_id": 341,
+            "user_id": 63339,
+            "label": "__stop__",
+            "ml_chain": [
+              "toner",
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 346,
+            "user_id": 63340,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 350,
+            "user_id": 63341,
+            "label": "__stop__",
+            "ml_chain": [
+              "toner",
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 355,
+            "user_id": 63342,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 359,
+            "user_id": 63343,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 364,
+            "user_id": 63344,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 368,
+            "user_id": 63345,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 373,
+            "user_id": 63346,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 377,
+            "user_id": 63347,
+            "label": "__stop__",
+            "ml_chain": [
+              "toner",
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 382,
+            "user_id": 63348,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 386,
+            "user_id": 63349,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 391,
+            "user_id": 63350,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 395,
+            "user_id": 63351,
+            "label": "__stop__",
+            "ml_chain": [
+              "toner",
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 400,
+            "user_id": 63352,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 404,
+            "user_id": 63353,
+            "label": "__stop__",
+            "ml_chain": [
+              "toner",
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 409,
+            "user_id": 63354,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 413,
+            "user_id": 63355,
+            "label": "__stop__",
+            "ml_chain": [
+              "toner",
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 418,
+            "user_id": 63356,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 422,
+            "user_id": 63357,
+            "label": "__stop__",
+            "ml_chain": [
+              "toner",
+              "essence",
+              "mask",
+              "moisturizer",
+              "spf",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 427,
+            "user_id": 63358,
+            "label": "__stop__",
+            "ml_chain": [
+              "essence",
+              "eye_cream",
+              "mask",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          }
+        ]
+      },
+      "fragrance": {
+        "anchors": 13,
+        "exact_match_rate": 0.0,
+        "first_step_match_rate": 0.0,
+        "prefix_match_rate": 0.0,
+        "top_divergence_reason": "first_step_diff",
+        "divergence_reasons": {
+          "first_step_diff": 13
+        },
+        "sample_cases": [
+          {
+            "decision_id": 5,
+            "user_id": 63242,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 16,
+            "user_id": 63246,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 19,
+            "user_id": 63247,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 30,
+            "user_id": 63251,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 37,
+            "user_id": 63254,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 45,
+            "user_id": 63257,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 48,
+            "user_id": 63258,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 55,
+            "user_id": 63261,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 59,
+            "user_id": 63262,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 70,
+            "user_id": 63266,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 73,
+            "user_id": 63267,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 84,
+            "user_id": 63271,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 91,
+            "user_id": 63274,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          }
+        ]
+      }
+    },
+    "transition_shadow": {
+      "haircare": {
+        "decision_points": 20,
+        "exact_match_rate": 0.0,
+        "stop_match_rate": 0.0,
+        "continue_match_rate": 0.0,
+        "top_divergence_reason": "ml_stop_runtime_continue",
+        "divergence_reasons": {
+          "ml_stop_runtime_continue": 20
+        },
+        "sample_cases": [
+          {
+            "decision_id": 216,
+            "user_id": 63275,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_oil",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 228,
+            "user_id": 63276,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "scalp_serum",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 245,
+            "user_id": 63277,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 260,
+            "user_id": 63278,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_oil",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 272,
+            "user_id": 63279,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "scalp_serum",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 289,
+            "user_id": 63280,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 304,
+            "user_id": 63281,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_oil",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 316,
+            "user_id": 63282,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "scalp_serum",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 333,
+            "user_id": 63283,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 348,
+            "user_id": 63284,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_oil",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 360,
+            "user_id": 63285,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "scalp_serum",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 377,
+            "user_id": 63286,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 392,
+            "user_id": 63287,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_oil",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 404,
+            "user_id": 63288,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "scalp_serum",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 421,
+            "user_id": 63289,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 436,
+            "user_id": 63290,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_oil",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 448,
+            "user_id": 63291,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "scalp_serum",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 465,
+            "user_id": 63292,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 480,
+            "user_id": 63293,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_oil",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 492,
+            "user_id": 63294,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "scalp_serum",
+            "reason": "ml_stop_runtime_continue"
+          }
+        ]
+      },
+      "skincare": {
+        "decision_points": 20,
+        "exact_match_rate": 0.5,
+        "stop_match_rate": 0.0,
+        "continue_match_rate": 0.5,
+        "top_divergence_reason": "action_diff",
+        "divergence_reasons": {
+          "action_diff": 10,
+          "exact": 10
+        },
+        "sample_cases": [
+          {
+            "decision_id": 1242,
+            "user_id": 63384,
+            "decision_type": "post_skipped",
+            "label": "mask",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1305,
+            "user_id": 63388,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1350,
+            "user_id": 63391,
+            "decision_type": "post_skipped",
+            "label": "eye_cream",
+            "ml_action": "eye_cream",
+            "runtime_action": "eye_cream",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1366,
+            "user_id": 63392,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1411,
+            "user_id": 63395,
+            "decision_type": "post_skipped",
+            "label": "eye_cream",
+            "ml_action": "eye_cream",
+            "runtime_action": "eye_cream",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1432,
+            "user_id": 63396,
+            "decision_type": "post_skipped",
+            "label": "mask",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1495,
+            "user_id": 63400,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1540,
+            "user_id": 63403,
+            "decision_type": "post_skipped",
+            "label": "eye_cream",
+            "ml_action": "eye_cream",
+            "runtime_action": "eye_cream",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1556,
+            "user_id": 63404,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1601,
+            "user_id": 63407,
+            "decision_type": "post_skipped",
+            "label": "eye_cream",
+            "ml_action": "eye_cream",
+            "runtime_action": "eye_cream",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1622,
+            "user_id": 63408,
+            "decision_type": "post_skipped",
+            "label": "mask",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1685,
+            "user_id": 63412,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1730,
+            "user_id": 63415,
+            "decision_type": "post_skipped",
+            "label": "eye_cream",
+            "ml_action": "eye_cream",
+            "runtime_action": "eye_cream",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1746,
+            "user_id": 63416,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1791,
+            "user_id": 63419,
+            "decision_type": "post_skipped",
+            "label": "eye_cream",
+            "ml_action": "eye_cream",
+            "runtime_action": "eye_cream",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1812,
+            "user_id": 63420,
+            "decision_type": "post_skipped",
+            "label": "mask",
+            "ml_action": "essence",
+            "runtime_action": "mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 1306,
+            "user_id": 63388,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "essence",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1367,
+            "user_id": 63392,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "essence",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1496,
+            "user_id": 63400,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "essence",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1557,
+            "user_id": 63404,
+            "decision_type": "post_skipped",
+            "label": "essence",
+            "ml_action": "essence",
+            "runtime_action": "essence",
+            "reason": "exact"
+          }
+        ]
+      },
+      "fragrance": {
+        "decision_points": 20,
+        "exact_match_rate": 0.0,
+        "stop_match_rate": 0.0,
+        "continue_match_rate": 0.0,
+        "top_divergence_reason": "ml_stop_runtime_continue",
+        "divergence_reasons": {
+          "ml_stop_runtime_continue": 19,
+          "action_diff": 1
+        },
+        "sample_cases": [
+          {
+            "decision_id": 9,
+            "user_id": 63242,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 26,
+            "user_id": 63245,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 33,
+            "user_id": 63246,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 40,
+            "user_id": 63247,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 59,
+            "user_id": 63250,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 64,
+            "user_id": 63251,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 80,
+            "user_id": 63254,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 87,
+            "user_id": 63255,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 97,
+            "user_id": 63257,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 106,
+            "user_id": 63258,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 116,
+            "user_id": 63260,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 121,
+            "user_id": 63261,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 130,
+            "user_id": 63262,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 147,
+            "user_id": 63265,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 154,
+            "user_id": 63266,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 161,
+            "user_id": 63267,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 180,
+            "user_id": 63270,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 185,
+            "user_id": 63271,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 201,
+            "user_id": 63274,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 10,
+            "user_id": 63242,
+            "decision_type": "post_refresh_rebuild",
+            "label": "__stop__",
+            "ml_action": "cold_evening",
+            "runtime_action": "warm_evening",
+            "reason": "action_diff"
+          }
+        ]
+      }
+    }
+  },
+  "runtime_shadow_user_reference": {
+    "initial_dataset_dir": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\tmp\\roadmap_planner_live_initial_v1",
+    "transitions_dataset_dir": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\tmp\\roadmap_planner_live_transitions_v1",
+    "initial_model_root": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\models\\roadmap_live_initial_planner_v1\\user",
+    "transition_model_root": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\models\\roadmap_live_transition_planner_v1\\user",
+    "split_scheme": "user",
+    "initial_shadow": {
+      "haircare": {
+        "anchors": 20,
+        "exact_match_rate": 0.0,
+        "first_step_match_rate": 0.05,
+        "prefix_match_rate": 0.025,
+        "top_divergence_reason": "first_step_diff",
+        "divergence_reasons": {
+          "mid_plan_diff": 1,
+          "first_step_diff": 19
+        },
+        "sample_cases": [
+          {
+            "decision_id": 252,
+            "user_id": 63305,
+            "label": "shampoo",
+            "ml_chain": [
+              "shampoo",
+              "conditioner",
+              "leave_in",
+              "hair_mask",
+              "scalp_serum"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil"
+            ],
+            "reason": "mid_plan_diff"
+          },
+          {
+            "decision_id": 253,
+            "user_id": 63305,
+            "label": "conditioner",
+            "ml_chain": [
+              "conditioner",
+              "leave_in",
+              "shampoo",
+              "hair_mask",
+              "scalp_serum"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 103,
+            "user_id": 63277,
+            "label": "scalp_serum",
+            "ml_chain": [
+              "scalp_serum",
+              "leave_in",
+              "conditioner",
+              "hair_mask",
+              "hair_oil"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 162,
+            "user_id": 63288,
+            "label": "conditioner",
+            "ml_chain": [
+              "conditioner",
+              "leave_in",
+              "hair_mask",
+              "hair_oil",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 104,
+            "user_id": 63277,
+            "label": "leave_in",
+            "ml_chain": [
+              "leave_in",
+              "scalp_serum",
+              "hair_mask",
+              "hair_oil"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 163,
+            "user_id": 63288,
+            "label": "leave_in",
+            "ml_chain": [
+              "leave_in",
+              "hair_mask",
+              "hair_oil"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 258,
+            "user_id": 63306,
+            "label": "conditioner",
+            "ml_chain": [
+              "conditioner",
+              "leave_in",
+              "hair_mask",
+              "hair_oil",
+              "shampoo"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 259,
+            "user_id": 63306,
+            "label": "leave_in",
+            "ml_chain": [
+              "leave_in",
+              "hair_mask",
+              "hair_oil"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 254,
+            "user_id": 63305,
+            "label": "scalp_serum",
+            "ml_chain": [
+              "scalp_serum",
+              "leave_in",
+              "hair_mask"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 164,
+            "user_id": 63288,
+            "label": "hair_mask",
+            "ml_chain": [
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 260,
+            "user_id": 63306,
+            "label": "hair_mask",
+            "ml_chain": [
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 105,
+            "user_id": 63277,
+            "label": "hair_mask",
+            "ml_chain": [
+              "hair_mask"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 255,
+            "user_id": 63305,
+            "label": "leave_in",
+            "ml_chain": [
+              "leave_in",
+              "scalp_serum",
+              "hair_mask"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 165,
+            "user_id": 63288,
+            "label": "hair_oil",
+            "ml_chain": [
+              "hair_oil",
+              "hair_mask",
+              "scalp_serum"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 261,
+            "user_id": 63306,
+            "label": "hair_oil",
+            "ml_chain": [
+              "hair_oil",
+              "hair_mask",
+              "scalp_serum"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 106,
+            "user_id": 63277,
+            "label": "hair_oil",
+            "ml_chain": [
+              "hair_oil"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 256,
+            "user_id": 63305,
+            "label": "hair_mask",
+            "ml_chain": [
+              "hair_mask",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 107,
+            "user_id": 63277,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 166,
+            "user_id": 63288,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 257,
+            "user_id": 63305,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "shampoo",
+              "conditioner",
+              "hair_mask",
+              "hair_oil",
+              "scalp_serum",
+              "leave_in"
+            ],
+            "reason": "first_step_diff"
+          }
+        ]
+      },
+      "skincare": {
+        "anchors": 20,
+        "exact_match_rate": 0.05,
+        "first_step_match_rate": 0.2,
+        "prefix_match_rate": 0.2,
+        "top_divergence_reason": "first_step_diff",
+        "divergence_reasons": {
+          "first_step_diff": 16,
+          "tail_length_diff": 3,
+          "exact": 1
+        },
+        "sample_cases": [
+          {
+            "decision_id": 781,
+            "user_id": 63421,
+            "label": "serum",
+            "ml_chain": [
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 782,
+            "user_id": 63421,
+            "label": "moisturizer",
+            "ml_chain": [
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "essence",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 634,
+            "user_id": 63398,
+            "label": "cleanser",
+            "ml_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf"
+            ],
+            "reason": "tail_length_diff"
+          },
+          {
+            "decision_id": 641,
+            "user_id": 63399,
+            "label": "serum",
+            "ml_chain": [
+              "serum",
+              "moisturizer",
+              "spf",
+              "essence",
+              "eye_cream",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 635,
+            "user_id": 63398,
+            "label": "serum",
+            "ml_chain": [
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 642,
+            "user_id": 63399,
+            "label": "moisturizer",
+            "ml_chain": [
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "essence",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 783,
+            "user_id": 63421,
+            "label": "spf",
+            "ml_chain": [
+              "spf",
+              "toner",
+              "mask",
+              "essence",
+              "eye_cream"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 667,
+            "user_id": 63403,
+            "label": "serum",
+            "ml_chain": [
+              "serum",
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "essence",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 668,
+            "user_id": 63403,
+            "label": "moisturizer",
+            "ml_chain": [
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "essence",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 744,
+            "user_id": 63415,
+            "label": "serum",
+            "ml_chain": [
+              "serum",
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "essence",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 745,
+            "user_id": 63415,
+            "label": "moisturizer",
+            "ml_chain": [
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "essence",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 643,
+            "user_id": 63399,
+            "label": "spf",
+            "ml_chain": [
+              "spf",
+              "essence",
+              "eye_cream",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 636,
+            "user_id": 63398,
+            "label": "moisturizer",
+            "ml_chain": [
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 784,
+            "user_id": 63421,
+            "label": "toner",
+            "ml_chain": [
+              "toner",
+              "essence"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner",
+              "mask",
+              "eye_cream",
+              "essence"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 504,
+            "user_id": 63376,
+            "label": "cleanser",
+            "ml_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf"
+            ],
+            "reason": "tail_length_diff"
+          },
+          {
+            "decision_id": 505,
+            "user_id": 63376,
+            "label": "serum",
+            "ml_chain": [
+              "serum",
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 450,
+            "user_id": 63364,
+            "label": "cleanser",
+            "ml_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf"
+            ],
+            "reason": "exact"
+          },
+          {
+            "decision_id": 414,
+            "user_id": 63356,
+            "label": "cleanser",
+            "ml_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf"
+            ],
+            "reason": "tail_length_diff"
+          },
+          {
+            "decision_id": 451,
+            "user_id": 63364,
+            "label": "serum",
+            "ml_chain": [
+              "serum",
+              "moisturizer",
+              "spf"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 415,
+            "user_id": 63356,
+            "label": "serum",
+            "ml_chain": [
+              "serum",
+              "moisturizer",
+              "spf",
+              "eye_cream",
+              "mask"
+            ],
+            "runtime_chain": [
+              "cleanser",
+              "serum",
+              "moisturizer",
+              "spf",
+              "toner"
+            ],
+            "reason": "first_step_diff"
+          }
+        ]
+      },
+      "fragrance": {
+        "anchors": 20,
+        "exact_match_rate": 0.0,
+        "first_step_match_rate": 0.0,
+        "prefix_match_rate": 0.0,
+        "top_divergence_reason": "first_step_diff",
+        "divergence_reasons": {
+          "first_step_diff": 20
+        },
+        "sample_cases": [
+          {
+            "decision_id": 2,
+            "user_id": 63242,
+            "label": "warm_day",
+            "ml_chain": [
+              "cold_evening",
+              "warm_day"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 67,
+            "user_id": 63266,
+            "label": "warm_day",
+            "ml_chain": [
+              "cold_evening",
+              "warm_day"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 3,
+            "user_id": 63242,
+            "label": "cold_day",
+            "ml_chain": [
+              "cold_evening"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 68,
+            "user_id": 63266,
+            "label": "__stop__",
+            "ml_chain": [
+              "cold_evening"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 10,
+            "user_id": 63245,
+            "label": "warm_evening",
+            "ml_chain": [
+              "cold_evening"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 11,
+            "user_id": 63245,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "warm_evening",
+              "warm_day",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 46,
+            "user_id": 63258,
+            "label": "cold_day",
+            "ml_chain": [
+              "cold_evening",
+              "warm_day"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 51,
+            "user_id": 63260,
+            "label": "cold_day",
+            "ml_chain": [
+              "cold_evening",
+              "cold_day"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 47,
+            "user_id": 63258,
+            "label": "__stop__",
+            "ml_chain": [
+              "cold_evening",
+              "warm_day"
+            ],
+            "runtime_chain": [
+              "cold_day",
+              "warm_day",
+              "warm_evening",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 52,
+            "user_id": 63260,
+            "label": "__stop__",
+            "ml_chain": [
+              "cold_evening"
+            ],
+            "runtime_chain": [
+              "cold_day",
+              "warm_day",
+              "warm_evening",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 4,
+            "user_id": 63242,
+            "label": "cold_evening",
+            "ml_chain": [
+              "cold_evening"
+            ],
+            "runtime_chain": [
+              "cold_day",
+              "warm_day",
+              "warm_evening",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 69,
+            "user_id": 63266,
+            "label": "cold_evening",
+            "ml_chain": [
+              "cold_evening"
+            ],
+            "runtime_chain": [
+              "warm_evening",
+              "warm_day",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 12,
+            "user_id": 63245,
+            "label": "cold_evening",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_day",
+              "warm_day",
+              "warm_evening",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 85,
+            "user_id": 63272,
+            "label": "cold_evening",
+            "ml_chain": [
+              "cold_evening",
+              "warm_day"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 86,
+            "user_id": 63272,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 41,
+            "user_id": 63256,
+            "label": "cold_evening",
+            "ml_chain": [
+              "cold_evening",
+              "cold_day"
+            ],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 42,
+            "user_id": 63256,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 6,
+            "user_id": 63243,
+            "label": "cold_evening",
+            "ml_chain": [],
+            "runtime_chain": [
+              "warm_day",
+              "warm_evening",
+              "cold_day",
+              "cold_evening"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 7,
+            "user_id": 63243,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          },
+          {
+            "decision_id": 5,
+            "user_id": 63242,
+            "label": "__stop__",
+            "ml_chain": [],
+            "runtime_chain": [
+              "cold_evening",
+              "warm_day",
+              "warm_evening",
+              "cold_day"
+            ],
+            "reason": "first_step_diff"
+          }
+        ]
+      }
+    },
+    "transition_shadow": {
+      "haircare": {
+        "decision_points": 20,
+        "exact_match_rate": 0.2,
+        "stop_match_rate": 0.0,
+        "continue_match_rate": 0.2,
+        "top_divergence_reason": "action_diff",
+        "divergence_reasons": {
+          "ml_stop_runtime_continue": 6,
+          "exact": 4,
+          "action_diff": 10
+        },
+        "sample_cases": [
+          {
+            "decision_id": 644,
+            "user_id": 63305,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "conditioner",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 645,
+            "user_id": 63305,
+            "decision_type": "post_refresh_rebuild",
+            "label": "conditioner",
+            "ml_action": "conditioner",
+            "runtime_action": "conditioner",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 231,
+            "user_id": 63277,
+            "decision_type": "post_skipped",
+            "label": "scalp_serum",
+            "ml_action": "scalp_serum",
+            "runtime_action": "hair_mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 232,
+            "user_id": 63277,
+            "decision_type": "post_skipped",
+            "label": "scalp_serum",
+            "ml_action": "scalp_serum",
+            "runtime_action": "hair_oil",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 233,
+            "user_id": 63277,
+            "decision_type": "post_skipped",
+            "label": "scalp_serum",
+            "ml_action": "scalp_serum",
+            "runtime_action": "scalp_serum",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 234,
+            "user_id": 63277,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 235,
+            "user_id": 63277,
+            "decision_type": "post_refresh_rebuild",
+            "label": "leave_in",
+            "ml_action": "leave_in",
+            "runtime_action": "shampoo",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 395,
+            "user_id": 63288,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_mask",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 396,
+            "user_id": 63288,
+            "decision_type": "post_refresh_rebuild",
+            "label": "leave_in",
+            "ml_action": "leave_in",
+            "runtime_action": "hair_mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 659,
+            "user_id": 63306,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_mask",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 660,
+            "user_id": 63306,
+            "decision_type": "post_refresh_rebuild",
+            "label": "leave_in",
+            "ml_action": "leave_in",
+            "runtime_action": "hair_mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 646,
+            "user_id": 63305,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "hair_mask",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 647,
+            "user_id": 63305,
+            "decision_type": "post_refresh_rebuild",
+            "label": "scalp_serum",
+            "ml_action": "scalp_serum",
+            "runtime_action": "hair_mask",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 397,
+            "user_id": 63288,
+            "decision_type": "post_skipped",
+            "label": "leave_in",
+            "ml_action": "leave_in",
+            "runtime_action": "hair_oil",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 398,
+            "user_id": 63288,
+            "decision_type": "post_skipped",
+            "label": "leave_in",
+            "ml_action": "leave_in",
+            "runtime_action": "scalp_serum",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 399,
+            "user_id": 63288,
+            "decision_type": "post_skipped",
+            "label": "leave_in",
+            "ml_action": "leave_in",
+            "runtime_action": "leave_in",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 400,
+            "user_id": 63288,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "__none__",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 401,
+            "user_id": 63288,
+            "decision_type": "post_refresh_rebuild",
+            "label": "hair_mask",
+            "ml_action": "hair_mask",
+            "runtime_action": "hair_mask",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 661,
+            "user_id": 63306,
+            "decision_type": "post_skipped",
+            "label": "leave_in",
+            "ml_action": "leave_in",
+            "runtime_action": "hair_oil",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 662,
+            "user_id": 63306,
+            "decision_type": "post_skipped",
+            "label": "leave_in",
+            "ml_action": "leave_in",
+            "runtime_action": "scalp_serum",
+            "reason": "action_diff"
+          }
+        ]
+      },
+      "skincare": {
+        "decision_points": 20,
+        "exact_match_rate": 0.5,
+        "stop_match_rate": 0.0,
+        "continue_match_rate": 0.5,
+        "top_divergence_reason": "ml_stop_runtime_continue",
+        "divergence_reasons": {
+          "ml_stop_runtime_continue": 10,
+          "exact": 10
+        },
+        "sample_cases": [
+          {
+            "decision_id": 1816,
+            "user_id": 63421,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "moisturizer",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1817,
+            "user_id": 63421,
+            "decision_type": "post_refresh_rebuild",
+            "label": "moisturizer",
+            "ml_action": "moisturizer",
+            "runtime_action": "moisturizer",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1451,
+            "user_id": 63398,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "serum",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1452,
+            "user_id": 63398,
+            "decision_type": "post_refresh_rebuild",
+            "label": "serum",
+            "ml_action": "serum",
+            "runtime_action": "serum",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1464,
+            "user_id": 63399,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "moisturizer",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1465,
+            "user_id": 63399,
+            "decision_type": "post_refresh_rebuild",
+            "label": "moisturizer",
+            "ml_action": "moisturizer",
+            "runtime_action": "moisturizer",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1818,
+            "user_id": 63421,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "spf",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1819,
+            "user_id": 63421,
+            "decision_type": "post_refresh_rebuild",
+            "label": "spf",
+            "ml_action": "spf",
+            "runtime_action": "spf",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1528,
+            "user_id": 63403,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "moisturizer",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1529,
+            "user_id": 63403,
+            "decision_type": "post_refresh_rebuild",
+            "label": "moisturizer",
+            "ml_action": "moisturizer",
+            "runtime_action": "moisturizer",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1718,
+            "user_id": 63415,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "moisturizer",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1719,
+            "user_id": 63415,
+            "decision_type": "post_refresh_rebuild",
+            "label": "moisturizer",
+            "ml_action": "moisturizer",
+            "runtime_action": "moisturizer",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1466,
+            "user_id": 63399,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "spf",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1467,
+            "user_id": 63399,
+            "decision_type": "post_refresh_rebuild",
+            "label": "spf",
+            "ml_action": "spf",
+            "runtime_action": "spf",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1453,
+            "user_id": 63398,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "moisturizer",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1454,
+            "user_id": 63398,
+            "decision_type": "post_refresh_rebuild",
+            "label": "moisturizer",
+            "ml_action": "moisturizer",
+            "runtime_action": "moisturizer",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1820,
+            "user_id": 63421,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "toner",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1821,
+            "user_id": 63421,
+            "decision_type": "post_refresh_rebuild",
+            "label": "toner",
+            "ml_action": "toner",
+            "runtime_action": "toner",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 1148,
+            "user_id": 63376,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "serum",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 1149,
+            "user_id": 63376,
+            "decision_type": "post_refresh_rebuild",
+            "label": "serum",
+            "ml_action": "serum",
+            "runtime_action": "serum",
+            "reason": "exact"
+          }
+        ]
+      },
+      "fragrance": {
+        "decision_points": 20,
+        "exact_match_rate": 0.2,
+        "stop_match_rate": 0.0,
+        "continue_match_rate": 0.2,
+        "top_divergence_reason": "ml_stop_runtime_continue",
+        "divergence_reasons": {
+          "ml_stop_runtime_continue": 12,
+          "action_diff": 4,
+          "exact": 4
+        },
+        "sample_cases": [
+          {
+            "decision_id": 3,
+            "user_id": 63242,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "warm_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 4,
+            "user_id": 63242,
+            "decision_type": "post_refresh_rebuild",
+            "label": "cold_day",
+            "ml_action": "__stop__",
+            "runtime_action": "warm_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 149,
+            "user_id": 63266,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "warm_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 150,
+            "user_id": 63266,
+            "decision_type": "post_refresh_rebuild",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "warm_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 22,
+            "user_id": 63245,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "cold_day",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 23,
+            "user_id": 63245,
+            "decision_type": "post_refresh_rebuild",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "cold_day",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 100,
+            "user_id": 63258,
+            "decision_type": "post_skipped",
+            "label": "cold_day",
+            "ml_action": "__stop__",
+            "runtime_action": "warm_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 101,
+            "user_id": 63258,
+            "decision_type": "post_skipped",
+            "label": "cold_day",
+            "ml_action": "cold_evening",
+            "runtime_action": "cold_day",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 102,
+            "user_id": 63258,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "cold_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 103,
+            "user_id": 63258,
+            "decision_type": "post_refresh_rebuild",
+            "label": "__stop__",
+            "ml_action": "cold_evening",
+            "runtime_action": "warm_day",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 114,
+            "user_id": 63260,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "cold_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 115,
+            "user_id": 63260,
+            "decision_type": "post_refresh_rebuild",
+            "label": "__stop__",
+            "ml_action": "cold_evening",
+            "runtime_action": "cold_evening",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 5,
+            "user_id": 63242,
+            "decision_type": "post_skipped",
+            "label": "cold_day",
+            "ml_action": "cold_day",
+            "runtime_action": "cold_day",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 6,
+            "user_id": 63242,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "cold_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 7,
+            "user_id": 63242,
+            "decision_type": "post_refresh_rebuild",
+            "label": "cold_evening",
+            "ml_action": "cold_evening",
+            "runtime_action": "warm_evening",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 151,
+            "user_id": 63266,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "cold_day",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 152,
+            "user_id": 63266,
+            "decision_type": "post_refresh_rebuild",
+            "label": "cold_evening",
+            "ml_action": "cold_evening",
+            "runtime_action": "cold_day",
+            "reason": "action_diff"
+          },
+          {
+            "decision_id": 24,
+            "user_id": 63245,
+            "decision_type": "post_completed",
+            "label": "__stop__",
+            "ml_action": "__stop__",
+            "runtime_action": "cold_evening",
+            "reason": "ml_stop_runtime_continue"
+          },
+          {
+            "decision_id": 25,
+            "user_id": 63245,
+            "decision_type": "post_refresh_rebuild",
+            "label": "cold_evening",
+            "ml_action": "cold_evening",
+            "runtime_action": "cold_evening",
+            "reason": "exact"
+          },
+          {
+            "decision_id": 188,
+            "user_id": 63272,
+            "decision_type": "post_skipped",
+            "label": "cold_evening",
+            "ml_action": "cold_evening",
+            "runtime_action": "cold_evening",
+            "reason": "exact"
+          }
+        ]
+      }
+    }
+  },
+  "notes": [
+    "first-step view uses the current live initial dataset positives only; one row equals one initial decision point",
+    "time-gap diagnostics are computed on the time split because that is where the performance collapse was observed",
+    "scenario family over time is reconstructed from deterministic seeding plans plus stored transaction metadata; live-tail checkout transactions inherit planned role by ordinal alignment"
+  ]
+}

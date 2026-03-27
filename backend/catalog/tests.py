@@ -465,5 +465,5 @@ class HomeHeroApiTests(APITestCase):
 
         main_slide = slides[0]
         self.assertEqual(main_slide["button_to"], "/promotions")
-        self.assertEqual(main_slide["button_text"], "Узнать подробнее")
+        self.assertEqual(main_slide["button_text"], "Узнать больше")
         self.assertTrue(main_slide["title"])

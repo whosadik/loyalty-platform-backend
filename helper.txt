@@ -5,6 +5,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 # ----RUN SERVER----- #
 python manage.py runserver
 
+# ----STOP SERVER----- #
+Get-Process | Where-Object { $_.Path -like "*loyalty-platform-backend\.venv\Scripts\python.exe" } | Stop-Process -Force
+
 # ----MIGRATIONS----- #
 python manage.py makemigrations 
 python manage.py migrate
