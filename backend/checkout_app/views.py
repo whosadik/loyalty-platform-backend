@@ -24,7 +24,7 @@ from offers.models import OfferAssignment, OfferEvent
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate
 from catalog.models import Product
-from offers.services import get_or_assign_next_offer
+from offers.services import expire_assignment_if_needed, get_or_assign_next_offer
 from offers.events import record_offer_event
 from roadmap_app.events import build_step_event_context, record_roadmap_event
 from roadmap_app.models import RoadmapEvent
@@ -89,6 +89,8 @@ def _raise_validation(message: str) -> None:
 
 
 def _product_unit_price_or_raise(prod: Product) -> Decimal:
+    if not bool(getattr(prod, "in_stock", False)):
+        _raise_validation(f"Product {int(prod.id)} is out of stock")
     raw_price = getattr(prod, "price", None)
     if raw_price in (None, ""):
         _raise_validation(f"Product {int(prod.id)} has no valid price")
@@ -263,9 +265,16 @@ class CheckoutView(APIView):
 
                 if assignment.is_redeemed:
                     _raise_validation("Offer already redeemed")
-
-                if assignment.expires_at and assignment.expires_at <= now:
+                request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+                if expire_assignment_if_needed(
+                    assignment,
+                    now=now,
+                    source="checkout_offer_validation",
+                    request_id=request_id,
+                ):
                     _raise_validation("Offer expired")
+                if not assignment.is_active:
+                    _raise_validation("Offer is no longer active")
 
                 offer_type = assignment.offer.offer_type
                 offer_value = Decimal(str(assignment.offer.value))
@@ -305,8 +314,9 @@ class CheckoutView(APIView):
 
             if assignment is not None:
                 assignment.is_redeemed = True
+                assignment.is_active = False
                 assignment.redeemed_transaction_id = txn.id
-                assignment.save(update_fields=["is_redeemed", "redeemed_transaction_id"])
+                assignment.save(update_fields=["is_redeemed", "is_active", "redeemed_transaction_id"])
                 request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
                 record_offer_event(
                     assignment,
@@ -696,8 +706,16 @@ class CheckoutPreviewView(APIView):
             a = OfferAssignment.objects.select_related("offer").get(id=apply_id, user=request.user)
             if a.is_redeemed:
                 return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
-            if a.expires_at and a.expires_at <= timezone.now():
+            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+            if expire_assignment_if_needed(
+                a,
+                now=timezone.now(),
+                source="checkout_preview_offer_validation",
+                request_id=request_id,
+            ):
                 return Response({"ok": False, "message": "Offer expired"}, status=400)
+            if not a.is_active:
+                return Response({"ok": False, "message": "Offer is no longer active"}, status=400)
 
             target = a.target or {"scope": "cart"}
             offer_type = a.offer.offer_type

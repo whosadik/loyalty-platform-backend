@@ -1024,6 +1024,144 @@ def _roadmap_values(roadmap_ctx: dict | None) -> tuple[str, str, int | None]:
     return cat, next_pt, next_pid
 
 
+def _roadmap_reason_reference(
+    *,
+    roadmap_ctx: dict | None = None,
+    reason: dict | None = None,
+) -> dict[str, Any]:
+    if isinstance(roadmap_ctx, dict) and roadmap_ctx:
+        return dict(roadmap_ctx)
+
+    src = reason if isinstance(reason, dict) else {}
+    for key in ("roadmap", "roadmap_influence", "roadmap_ctx"):
+        value = src.get(key)
+        if isinstance(value, dict) and value:
+            return dict(value)
+    return {}
+
+
+def _roadmap_reason_payload(roadmap_ctx: dict | None) -> dict[str, Any]:
+    ctx = roadmap_ctx if isinstance(roadmap_ctx, dict) else {}
+    payload: dict[str, Any] = {}
+
+    category = str(ctx.get("category") or "").strip()
+    if category:
+        payload["category"] = category
+
+    next_product_type = str(ctx.get("next_product_type") or "").strip()
+    if next_product_type:
+        payload["next_product_type"] = next_product_type
+
+    plan_id = _to_int(ctx.get("plan_id"))
+    if plan_id is not None:
+        payload["plan_id"] = plan_id
+
+    step_id = _to_int(ctx.get("step_id"))
+    if step_id is not None:
+        payload["step_id"] = step_id
+
+    step_index = _to_int(ctx.get("step_index"))
+    if step_index is not None:
+        payload["step_index"] = step_index
+
+    next_product_id = _to_int(ctx.get("next_product_id"))
+    if next_product_id is not None:
+        payload["next_product_id"] = next_product_id
+
+    return payload
+
+
+def _target_has_roadmap_shortcut(target: dict | None) -> bool:
+    if not isinstance(target, dict):
+        return False
+    picked_via = str(target.get("picked_via") or "").strip()
+    return picked_via.startswith("roadmap_shortcut")
+
+
+def _roadmap_influence_payload(
+    *,
+    roadmap_ctx: dict | None,
+    target: dict | None,
+    target_matches_step: bool,
+) -> dict[str, Any]:
+    payload = _roadmap_reason_payload(roadmap_ctx)
+    if not payload.get("next_product_type"):
+        return {}
+
+    tgt = target if isinstance(target, dict) else {}
+    scope = str(tgt.get("scope") or "").strip()
+    picked_via = str(tgt.get("picked_via") or "").strip()
+    final_category = str(tgt.get("category") or "").strip()
+    if not final_category and scope == "category":
+        final_category = str(tgt.get("value") or "").strip()
+    final_product_type = str(tgt.get("product_type") or "").strip()
+    if not final_product_type and scope == "product_type":
+        final_product_type = str(tgt.get("value") or "").strip()
+
+    payload.update(
+        {
+            "link_type": "routing_only",
+            "final_target_matches_step": bool(target_matches_step),
+        }
+    )
+    if scope:
+        payload["final_scope"] = scope
+    if picked_via:
+        payload["final_picked_via"] = picked_via
+    if final_category:
+        payload["final_category"] = final_category
+    if final_product_type:
+        payload["final_product_type"] = final_product_type
+    payload["reason_code"] = (
+        "matches_step_without_roadmap_shortcut"
+        if target_matches_step
+        else "campaign_or_fallback_target"
+    )
+    return payload
+
+
+def enforce_assignment_roadmap_reason_contract(
+    assignment: OfferAssignment,
+    *,
+    roadmap_ctx: dict | None = None,
+    save: bool = True,
+) -> bool:
+    if not assignment:
+        return False
+
+    reason = assignment.reason if isinstance(getattr(assignment, "reason", None), dict) else {}
+    target = assignment.target if isinstance(getattr(assignment, "target", None), dict) else {}
+    reference = _roadmap_reason_reference(roadmap_ctx=roadmap_ctx, reason=reason)
+    reference_payload = _roadmap_reason_payload(reference)
+
+    new_reason = dict(reason)
+    new_reason.pop("roadmap", None)
+    new_reason.pop("roadmap_influence", None)
+
+    if reference_payload.get("next_product_type"):
+        target_matches_step = _target_matches_roadmap_step(target, reference)
+        if _target_has_roadmap_shortcut(target) and target_matches_step:
+            new_reason["roadmap"] = {
+                **reference_payload,
+                "link_type": "direct_target",
+            }
+        else:
+            influence = _roadmap_influence_payload(
+                roadmap_ctx=reference,
+                target=target,
+                target_matches_step=target_matches_step,
+            )
+            if influence:
+                new_reason["roadmap_influence"] = influence
+
+    changed = new_reason != reason
+    if changed:
+        assignment.reason = new_reason
+        if save:
+            assignment.save(update_fields=["reason"])
+    return changed
+
+
 def _target_matches_roadmap_step(target: dict | None, roadmap_ctx: dict | None) -> bool:
     if not isinstance(target, dict):
         return False
@@ -1093,6 +1231,94 @@ def _target_matches_roadmap_step(target: dict | None, roadmap_ctx: dict | None) 
         return True
 
     return False
+
+
+def _assignment_has_roadmap_shortcut_target(assignment: OfferAssignment) -> bool:
+    target = assignment.target if isinstance(getattr(assignment, "target", None), dict) else {}
+    return _target_has_roadmap_shortcut(target)
+
+
+def expire_assignment_if_needed(
+    assignment: OfferAssignment | None,
+    *,
+    now: datetime,
+    source: str,
+    request_id: str | None = None,
+    save: bool = True,
+) -> bool:
+    if not assignment:
+        return False
+
+    expires_at = getattr(assignment, "expires_at", None)
+    if not expires_at or expires_at > now:
+        return False
+
+    was_active = bool(getattr(assignment, "is_active", False))
+    if was_active:
+        assignment.is_active = False
+        if save:
+            assignment.save(update_fields=["is_active"])
+
+    if was_active and not getattr(assignment, "is_redeemed", False):
+        record_offer_event(
+            assignment,
+            OfferEvent.Type.EXPIRED,
+            request_id=request_id,
+            context={"source": source},
+        )
+
+    return True
+
+
+def deactivate_stale_roadmap_assignment(
+    assignment: OfferAssignment,
+    *,
+    now: datetime,
+    save: bool = True,
+) -> bool:
+    del now
+    if not assignment or not getattr(assignment, "is_active", False) or getattr(assignment, "is_redeemed", False):
+        return False
+    if not _assignment_has_roadmap_shortcut_target(assignment):
+        return False
+
+    reason = assignment.reason if isinstance(getattr(assignment, "reason", None), dict) else {}
+    roadmap_reason = reason.get("roadmap") if isinstance(reason.get("roadmap"), dict) else {}
+    target = assignment.target if isinstance(getattr(assignment, "target", None), dict) else {}
+    roadmap_category = str(roadmap_reason.get("category") or target.get("category") or "").strip()
+    if not roadmap_category:
+        assignment.is_active = False
+        if save:
+            assignment.save(update_fields=["is_active"])
+        return True
+
+    from roadmap_app.services import get_active_plan, get_next_missing_step
+
+    plan = get_active_plan(assignment.user, category=roadmap_category)
+    step = get_next_missing_step(plan)
+    if not plan or not step:
+        assignment.is_active = False
+        if save:
+            assignment.save(update_fields=["is_active"])
+        return True
+
+    current_roadmap_ctx = {
+        "category": roadmap_category,
+        "plan_id": int(plan.id),
+        "step_id": int(step.id),
+        "step_index": int(step.step_index),
+        "next_product_type": str(step.product_type or ""),
+    }
+    if step.recommended_product_id:
+        current_roadmap_ctx["next_product_id"] = int(step.recommended_product_id)
+
+    if _target_matches_roadmap_step(target, current_roadmap_ctx):
+        return False
+
+    assignment.is_active = False
+    if save:
+        assignment.save(update_fields=["is_active"])
+    return True
 
 
 def _can_supersede_existing(existing: OfferAssignment, roadmap_ctx: dict | None, now: datetime) -> bool:
@@ -1170,35 +1396,32 @@ def get_or_assign_next_offer(
         supersede_candidate: OfferAssignment | None = None
         if existing:
             existing_campaign = getattr(existing.offer, "campaign", None)
+            if expire_assignment_if_needed(
+                existing,
+                now=now,
+                source="get_or_assign_next_offer",
+            ):
+                existing.refresh_from_db(fields=["is_active"])
             if _is_onboarding_first_order_campaign(existing_campaign) and _user_has_any_transactions(user):
-                existing.is_redeemed = True
                 existing.is_active = False
-                existing.save(update_fields=["is_redeemed", "is_active"])
+                existing.save(update_fields=["is_active"])
             if _is_winback_30d_campaign(existing_campaign) and not _is_winback_eligible(user, now):
-                existing.is_redeemed = True
                 existing.is_active = False
-                existing.save(update_fields=["is_redeemed", "is_active"])
+                existing.save(update_fields=["is_active"])
             if _is_favorite_category_campaign(existing_campaign) and not _favorite_category(user, now):
-                existing.is_redeemed = True
                 existing.is_active = False
-                existing.save(update_fields=["is_redeemed", "is_active"])
+                existing.save(update_fields=["is_active"])
 
-            if existing.expires_at and existing.expires_at <= now:
-                existing.is_redeemed = True
-                existing.is_active = False
-                existing.save(update_fields=["is_redeemed", "is_active"])
-                record_offer_event(
-                    existing,
-                    OfferEvent.Type.EXPIRED,
-                    request_id=None,
-                    context={"source": "get_or_assign_next_offer"},
-                )
-            elif existing.is_active and not existing.is_redeemed:
-                if not roadmap_ctx:
-                    return existing
-                if not _can_supersede_existing(existing, roadmap_ctx=roadmap_ctx, now=now):
-                    return existing
-                supersede_candidate = existing
+            if existing.is_active and not existing.is_redeemed:
+                if deactivate_stale_roadmap_assignment(existing, now=now):
+                    existing.refresh_from_db(fields=["is_active"])
+                if existing.is_active and not existing.is_redeemed:
+                    enforce_assignment_roadmap_reason_contract(existing, save=True)
+                    if not roadmap_ctx:
+                        return existing
+                    if not _can_supersede_existing(existing, roadmap_ctx=roadmap_ctx, now=now):
+                        return existing
+                    supersede_candidate = existing
 
         picked, reason = _select_offer(user, now, context_steps, post_ctx)
         if not picked:
@@ -1214,18 +1437,6 @@ def get_or_assign_next_offer(
                 "post_purchase": {
                     "categories": post_ctx.get("categories"),
                     "product_types": post_ctx.get("product_types"),
-                },
-            }
-
-        if roadmap_ctx:
-            reason = {
-                **(reason or {}),
-                "roadmap": {
-                    "category": roadmap_ctx.get("category"),
-                    "next_product_type": roadmap_ctx.get("next_product_type"),
-                    "plan_id": roadmap_ctx.get("plan_id"),
-                    "step_id": roadmap_ctx.get("step_id"),
-                    "step_index": roadmap_ctx.get("step_index"),
                 },
             }
 
@@ -1285,6 +1496,11 @@ def get_or_assign_next_offer(
             reason=reason,
             target=target,
             expires_at=expires_at,
+        )
+        enforce_assignment_roadmap_reason_contract(
+            assignment,
+            roadmap_ctx=roadmap_ctx,
+            save=True,
         )
 
         if supersede_candidate:

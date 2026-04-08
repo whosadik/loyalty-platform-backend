@@ -5,6 +5,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.test import TestCase
 from django.test.utils import override_settings
 from django.utils import timezone
@@ -12,9 +13,16 @@ from django.utils import timezone
 from catalog.models import Product
 from offers.models import CampaignBudget, Offer, OfferAssignment
 from offers.services import get_or_assign_next_offer
-from roadmap_app.events import record_exposed_from_offer_assignment
-from roadmap_app.models import RoadmapPlan, RoadmapStep
-from roadmap_app.services import get_active_plan, patch_step_status, refresh_roadmap, update_roadmap_from_purchase
+from roadmap_app.events import build_step_event_context, record_exposed_from_offer_assignment, record_roadmap_event
+from roadmap_app.integrity import legacy_bad_fragrance_completion_details
+from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
+from roadmap_app.services import (
+    get_active_plan,
+    match_completed_steps_for_purchase,
+    patch_step_status,
+    refresh_roadmap,
+    update_roadmap_from_purchase,
+)
 from transactions.models import OwnedProduct
 from users_app.models import CustomerProfile
 
@@ -320,6 +328,146 @@ class RoadmapRuntimeIntegrityTests(TestCase):
         self.assertEqual(int(roadmap_reason["step_id"]), 77)
         self.assertEqual(int(roadmap_reason["step_index"]), 2)
         self.assertEqual(str(roadmap_reason["next_product_type"]), "serum")
+        self.assertEqual(str(roadmap_reason.get("link_type") or ""), "direct_target")
+        self.assertFalse(bool((assignment.reason or {}).get("roadmap_influence")))
+
+    def test_get_or_assign_next_offer_separates_roadmap_routing_only_reason(self):
+        campaign = self._campaign("integrity_default_routing_only")
+        offer = self._offer(campaign, "Integrity Routing Only Offer")
+        roadmap_ctx = {
+            "category": "skincare",
+            "plan_id": 52,
+            "step_id": 88,
+            "step_index": 3,
+            "next_product_type": "moisturizer",
+        }
+
+        with patch(
+            "offers.services._select_offer",
+            return_value=((offer, campaign), {"source": "patched"}),
+        ), patch(
+            "offers.services._pick_target_for_offer",
+            return_value={
+                "scope": "category",
+                "value": "skincare",
+                "picked_via": "campaign_restriction_fallback",
+            },
+        ):
+            assignment = get_or_assign_next_offer(
+                user=self.user,
+                now=timezone.now(),
+                context_steps=None,
+                post_ctx=None,
+                roadmap_ctx=roadmap_ctx,
+            )
+
+        self.assertIsNotNone(assignment)
+        self.assertFalse(bool((assignment.reason or {}).get("roadmap")))
+        influence = (assignment.reason or {}).get("roadmap_influence") or {}
+        self.assertEqual(str(influence.get("link_type") or ""), "routing_only")
+        self.assertEqual(str(influence.get("category") or ""), "skincare")
+        self.assertEqual(str(influence.get("next_product_type") or ""), "moisturizer")
+        self.assertEqual(str(influence.get("final_scope") or ""), "category")
+        self.assertEqual(str(influence.get("final_picked_via") or ""), "campaign_restriction_fallback")
+        self.assertFalse(bool(influence.get("final_target_matches_step")))
+
+    def test_get_or_assign_next_offer_without_next_step_does_not_persist_roadmap_reason(self):
+        campaign = self._campaign("integrity_default_no_next_step")
+        offer = self._offer(campaign, "Integrity No Next Step Offer")
+        roadmap_ctx = {
+            "category": "skincare",
+            "plan_id": 61,
+        }
+
+        with patch(
+            "offers.services._select_offer",
+            return_value=((offer, campaign), {"source": "patched"}),
+        ), patch(
+            "offers.services._pick_target_for_offer",
+            return_value={
+                "scope": "category",
+                "value": "skincare",
+                "picked_via": "campaign_restriction_fallback",
+            },
+        ):
+            assignment = get_or_assign_next_offer(
+                user=self.user,
+                now=timezone.now(),
+                context_steps=None,
+                post_ctx=None,
+                roadmap_ctx=roadmap_ctx,
+            )
+
+        self.assertIsNotNone(assignment)
+        self.assertFalse(bool((assignment.reason or {}).get("roadmap")))
+        self.assertFalse(bool((assignment.reason or {}).get("roadmap_influence")))
+
+    def test_cleanup_offers_sanitize_roadmap_normalizes_reason_and_deactivates_stale_shortcuts(self):
+        campaign = self._campaign("integrity_cleanup")
+        offer = self._offer(campaign, "Integrity Cleanup Offer")
+
+        stale_plan = RoadmapPlan.objects.create(
+            user=self.user,
+            category="skincare",
+            is_active=True,
+            meta={},
+        )
+        stale_step = RoadmapStep.objects.create(
+            plan=stale_plan,
+            step_index=1,
+            product_type="serum",
+            status=RoadmapStep.Status.COMPLETED,
+            suggestions=[],
+            why=["picked via rules"],
+        )
+        stale_assignment = OfferAssignment.objects.create(
+            user=self.user,
+            offer=offer,
+            reason={
+                "roadmap": {
+                    "plan_id": stale_plan.id,
+                    "step_id": stale_step.id,
+                    "step_index": stale_step.step_index,
+                    "category": "skincare",
+                    "next_product_type": "serum",
+                }
+            },
+            target={
+                "scope": "product_type",
+                "value": "serum",
+                "category": "skincare",
+                "picked_via": "roadmap_shortcut",
+            },
+        )
+        misleading_assignment = OfferAssignment.objects.create(
+            user=self.user,
+            offer=offer,
+            reason={
+                "roadmap": {
+                    "plan_id": 75,
+                    "step_id": 91,
+                    "step_index": 2,
+                    "category": "skincare",
+                    "next_product_type": "moisturizer",
+                }
+            },
+            target={
+                "scope": "category",
+                "value": "skincare",
+                "picked_via": "campaign_restriction_fallback",
+            },
+        )
+
+        call_command("cleanup_offers", sanitize_roadmap=True)
+
+        stale_assignment.refresh_from_db()
+        misleading_assignment.refresh_from_db()
+
+        self.assertFalse(stale_assignment.is_active)
+        self.assertFalse(bool((misleading_assignment.reason or {}).get("roadmap")))
+        influence = (misleading_assignment.reason or {}).get("roadmap_influence") or {}
+        self.assertEqual(str(influence.get("link_type") or ""), "routing_only")
+        self.assertEqual(str(influence.get("reason_code") or ""), "campaign_or_fallback_target")
 
     def test_record_exposed_from_offer_assignment_prefers_explicit_step_index(self):
         plan = RoadmapPlan.objects.create(
@@ -532,3 +680,57 @@ class RoadmapRuntimeIntegrityTests(TestCase):
         self.assertEqual(str(next_step.product_type), "warm_evening")
         continuation = ((updated["plan"].meta or {}).get("continuation") or {})
         self.assertEqual(continuation, {})
+
+    def test_current_fragrance_runtime_completion_does_not_create_bad_legacy_exact_artifact(self):
+        warm_day = Product.objects.create(
+            name="Integrity Fresh Warm Day",
+            brand="B",
+            price=Decimal("24.00"),
+            category="fragrance",
+            product_type="edp",
+            in_stock=True,
+            attrs={"scent_family": "citrus", "notes": ["bergamot"], "intensity": "soft"},
+            raw_meta={"notes": ["bergamot"], "scent_family": "citrus", "intensity": "soft"},
+        )
+        plan = RoadmapPlan.objects.create(
+            user=self.user,
+            category="fragrance",
+            is_active=True,
+            meta={},
+        )
+        step = RoadmapStep.objects.create(
+            plan=plan,
+            step_index=1,
+            product_type="warm_day",
+            status=RoadmapStep.Status.RECOMMENDED,
+            recommended_product=warm_day,
+            suggestions=[warm_day.id],
+            why=["picked via rules"],
+        )
+
+        matches = match_completed_steps_for_purchase(
+            self.user,
+            {"categories": ["fragrance"], "product_ids": [int(warm_day.id)]},
+        )
+
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(str(matches[0]["matched_by"]), "recommended_product_id")
+
+        record_roadmap_event(
+            user=self.user,
+            event_type=RoadmapEvent.Type.STEP_COMPLETED,
+            plan=plan,
+            step=step,
+            context=build_step_event_context(
+                category="fragrance",
+                step=step,
+                extra={
+                    "matched_by": matches[0]["matched_by"],
+                    "match_meta": matches[0]["match_meta"],
+                },
+            ),
+        )
+
+        counts = legacy_bad_fragrance_completion_details(recent_days=30)
+        self.assertEqual(int(counts["bad_fragrance_completed_exact_match_count"]), 0)
+        self.assertEqual(int(counts["step_state_drift_count"]), 0)

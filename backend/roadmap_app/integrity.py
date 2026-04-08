@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import timedelta
 from typing import Any
 
@@ -37,6 +38,16 @@ def _slot_from_product_like(product_like: Any) -> str | None:
         return None
     slot = slot_of_fragrance(attrs, raw_meta=raw_meta)
     return str(slot or "").strip().lower() or None
+
+
+def _completion_product_id_from_context(context: dict[str, Any]) -> int | None:
+    match_meta = context.get("match_meta") if isinstance(context.get("match_meta"), dict) else {}
+    return (
+        _to_int(match_meta.get("purchased_product_id"))
+        or _to_int(context.get("purchased_product_id"))
+        or _to_int(match_meta.get("recommended_product_id"))
+        or _to_int(context.get("recommended_product_id"))
+    )
 
 
 def is_fragrance_slot_mismatch_step(step: RoadmapStep) -> bool:
@@ -124,7 +135,7 @@ def active_fragrance_runtime_integrity_counts(
     }
 
 
-def legacy_bad_fragrance_completion_counts(*, recent_days: int = 30) -> dict[str, int]:
+def legacy_bad_fragrance_completion_details(*, recent_days: int = 30) -> dict[str, Any]:
     rows = list(
         RoadmapEvent.objects.filter(
             event_type=RoadmapEvent.Type.STEP_COMPLETED,
@@ -143,7 +154,7 @@ def legacy_bad_fragrance_completion_counts(*, recent_days: int = 30) -> dict[str
     product_ids: set[int] = set()
     for row in rows:
         context = row.get("context") or {}
-        pid = _to_int(context.get("purchased_product_id")) or _to_int(context.get("recommended_product_id"))
+        pid = _completion_product_id_from_context(context)
         if pid:
             product_ids.add(pid)
 
@@ -157,19 +168,30 @@ def legacy_bad_fragrance_completion_counts(*, recent_days: int = 30) -> dict[str
     bad_recent = 0
     affected_users: set[int] = set()
     affected_plans: set[int] = set()
+    step_state_drift_total = 0
+    step_state_drift_recent = 0
+    unresolved_missing_event_product_type = 0
+    mismatch_pairs: Counter[str] = Counter()
 
     for row in rows:
-        expected_slot = str(row.get("step__product_type") or "").strip().lower()
-        if expected_slot not in FRAGRANCE_SLOTS:
-            continue
         context = row.get("context") or {}
-        pid = _to_int(context.get("purchased_product_id")) or _to_int(context.get("recommended_product_id"))
+        expected_slot = str(context.get("product_type") or "").strip().lower()
+        current_step_slot = str(row.get("step__product_type") or "").strip().lower()
+        if expected_slot and current_step_slot and expected_slot != current_step_slot:
+            step_state_drift_total += 1
+            if row.get("created_at") and row["created_at"] >= cutoff:
+                step_state_drift_recent += 1
+        if expected_slot not in FRAGRANCE_SLOTS:
+            unresolved_missing_event_product_type += 1
+            continue
+        pid = _completion_product_id_from_context(context)
         if pid is None:
             continue
         actual_slot = str(product_slots_by_id.get(pid) or "").strip().lower()
         if actual_slot == expected_slot:
             continue
         bad_total += 1
+        mismatch_pairs[f"{expected_slot}->{actual_slot or '__none__'}"] += 1
         if row.get("created_at") and row["created_at"] >= cutoff:
             bad_recent += 1
         user_id = _to_int(row.get("user_id"))
@@ -179,9 +201,33 @@ def legacy_bad_fragrance_completion_counts(*, recent_days: int = 30) -> dict[str
         if plan_id:
             affected_plans.add(plan_id)
 
+    if bad_total > 0:
+        legacy_bucket = "true_bad_exact_match"
+    elif step_state_drift_total > 0:
+        legacy_bucket = "historical_step_state_drift"
+    else:
+        legacy_bucket = "clean"
+
     return {
+        "legacy_bucket": legacy_bucket,
         "bad_fragrance_completed_exact_match_count": int(bad_total),
         f"bad_fragrance_completed_exact_match_recent_{int(recent_days)}d": int(bad_recent),
         "affected_users_count": int(len(affected_users)),
         "affected_plans_count": int(len(affected_plans)),
+        "step_state_drift_count": int(step_state_drift_total),
+        f"step_state_drift_recent_{int(recent_days)}d": int(step_state_drift_recent),
+        "unresolved_missing_event_product_type_count": int(unresolved_missing_event_product_type),
+        "mismatch_pairs": dict(sorted(mismatch_pairs.items(), key=lambda item: item[0])),
+    }
+
+
+def legacy_bad_fragrance_completion_counts(*, recent_days: int = 30) -> dict[str, int]:
+    details = legacy_bad_fragrance_completion_details(recent_days=recent_days)
+    return {
+        "bad_fragrance_completed_exact_match_count": int(details["bad_fragrance_completed_exact_match_count"]),
+        f"bad_fragrance_completed_exact_match_recent_{int(recent_days)}d": int(
+            details[f"bad_fragrance_completed_exact_match_recent_{int(recent_days)}d"]
+        ),
+        "affected_users_count": int(details["affected_users_count"]),
+        "affected_plans_count": int(details["affected_plans_count"]),
     }

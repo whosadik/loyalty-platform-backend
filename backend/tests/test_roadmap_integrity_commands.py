@@ -134,8 +134,14 @@ class RoadmapIntegrityCommandTests(TestCase):
             event_type=RoadmapEvent.Type.STEP_COMPLETED,
             context={
                 "matched_by": "recommended_product_id",
+                "product_type": "warm_evening",
                 "recommended_product_id": self.warm_day.id,
                 "purchased_product_id": self.warm_day.id,
+                "match_meta": {
+                    "recommended_product_id": self.warm_day.id,
+                    "purchased_product_id": self.warm_day.id,
+                    "purchased_product_type": "warm_day",
+                },
             },
         )
 
@@ -147,3 +153,36 @@ class RoadmapIntegrityCommandTests(TestCase):
         self.assertEqual(parsed["bad_fragrance_completed_exact_match_recent_30d"], "1")
         self.assertEqual(parsed["affected_users_count"], "1")
         self.assertEqual(parsed["affected_plans_count"], "1")
+        self.assertEqual(parsed["step_state_drift_count"], "0")
+        self.assertEqual(parsed["legacy_bucket"], "true_bad_exact_match")
+
+    def test_runtime_integrity_report_distinguishes_step_state_drift_from_true_bad_exact_match(self):
+        plan, step = self._create_mismatched_plan()
+        RoadmapEvent.objects.create(
+            user=self.user,
+            plan=plan,
+            step=step,
+            event_type=RoadmapEvent.Type.STEP_COMPLETED,
+            context={
+                "matched_by": "recommended_product_id",
+                "product_type": "warm_day",
+                "recommended_product_id": self.warm_day.id,
+                "match_meta": {
+                    "recommended_product_id": self.warm_day.id,
+                    "purchased_product_id": self.warm_day.id,
+                    "purchased_product_type": "warm_day",
+                },
+            },
+        )
+        plan.is_active = False
+        plan.save(update_fields=["is_active"])
+
+        out = StringIO()
+        call_command("report_roadmap_runtime_integrity", stdout=out)
+
+        parsed = self._parse_output(out)
+        self.assertEqual(parsed["fragrance_runtime_status"], "pass")
+        self.assertEqual(parsed["bad_fragrance_completed_exact_match_count"], "0")
+        self.assertEqual(parsed["bad_fragrance_completed_exact_match_recent_30d"], "0")
+        self.assertEqual(parsed["fragrance_completed_step_state_drift_count"], "1")
+        self.assertEqual(parsed["fragrance_completed_step_state_drift_recent_30d"], "1")

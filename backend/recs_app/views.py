@@ -215,6 +215,25 @@ class MeRecommendationsView(APIView):
         )
         algo_routing = dict(algo_routing or {})
         algo_routing.update(context_meta)
+        results_enriched = _enrich_results_with_catalog_payload(results)
+        _write_recommendation_impressions(
+            request=request,
+            batches=[
+                {
+                    "page": "recommendations",
+                    "section_key": "results",
+                    "results": results,
+                    "algo_mode_override": "reranker" if str(algo_used).startswith("reranker") else "cooc",
+                    "static_context": _recs_event_context(
+                        algo_requested=algo_requested,
+                        algo_used=algo_used,
+                        model_version=model_version,
+                        routing=algo_routing,
+                        section_key="results",
+                    ),
+                }
+            ],
+        )
 
         return Response(
             {
@@ -231,7 +250,7 @@ class MeRecommendationsView(APIView):
                     "owned_active_count": len(owned_active_ids),
                     **context_meta,
                 },
-                "results": _enrich_results_with_catalog_payload(results),
+                "results": results_enriched,
             }
         )
 
@@ -309,6 +328,27 @@ class MeBundleView(APIView):
             owned_active_ids=owned_active_ids,
             co_source=co_source,
         )
+        results_enriched = _enrich_results_with_catalog_payload(results)
+        bundle_ctx = _recs_event_context(
+            algo_requested=algo_requested,
+            algo_used=algo_used,
+            model_version=model_version,
+            routing=algo_routing,
+            section_key="bundle",
+        )
+        bundle_ctx["base_product_id"] = int(base_product_id)
+        _write_recommendation_impressions(
+            request=request,
+            batches=[
+                {
+                    "page": "bundle",
+                    "section_key": "bundle",
+                    "results": results,
+                    "algo_mode_override": "reranker" if str(algo_used).startswith("reranker") else "cooc",
+                    "static_context": bundle_ctx,
+                }
+            ],
+        )
 
         return Response(
             {
@@ -320,7 +360,7 @@ class MeBundleView(APIView):
                     "model_version": model_version,
                     "algo_routing": algo_routing,
                 },
-                "results": _enrich_results_with_catalog_payload(results),
+                "results": results_enriched,
             }
         )
 
@@ -442,8 +482,106 @@ def _recs_event_context(
         model_version=model_version,
         routing=routing,
     )
+    route = routing if isinstance(routing, dict) else {}
+    if route.get("context_source"):
+        out["context_source"] = route.get("context_source")
+    if route.get("context_len") is not None:
+        out["context_len"] = int(route.get("context_len") or 0)
+    if route.get("context_k_used") is not None:
+        out["context_k_used"] = int(route.get("context_k_used") or 0)
     out["section"] = section_key
     return out
+
+
+def _write_recommendation_impressions(
+    *,
+    request,
+    batches: list[dict[str, Any]],
+) -> int:
+    normalized_batches: list[dict[str, Any]] = []
+    product_ids: set[int] = set()
+
+    for batch in batches:
+        results = list(batch.get("results") or [])
+        if not results:
+            continue
+        normalized_batches.append(
+            {
+                "page": str(batch.get("page") or "home").strip() or "home",
+                "section_key": str(batch.get("section_key") or "").strip() or None,
+                "results": results,
+                "algo_mode_override": batch.get("algo_mode_override"),
+                "static_context": dict(batch.get("static_context") or {}),
+            }
+        )
+        for row in results:
+            product = row.get("product") or {}
+            try:
+                product_ids.add(int(product.get("id")))
+            except Exception:
+                continue
+
+    if not normalized_batches or not product_ids:
+        return 0
+
+    existing_ids = set(Product.objects.filter(id__in=product_ids).values_list("id", flat=True))
+    if not existing_ids:
+        return 0
+
+    rid = getattr(request, "request_id", None)
+    events: list[RecommendationEvent] = []
+    for batch in normalized_batches:
+        page = batch["page"]
+        section_key = batch["section_key"]
+        static_context = dict(batch["static_context"] or {})
+        static_context["page"] = page
+        if section_key:
+            static_context["section"] = section_key
+            static_context["section_key"] = section_key
+        exp_variant = str(static_context.get("experiment_variant") or "").strip()
+        if exp_variant and not static_context.get("variant"):
+            static_context["variant"] = exp_variant
+
+        for rank, row in enumerate(batch["results"], start=1):
+            product = row.get("product") or {}
+            try:
+                product_id = int(product.get("id"))
+            except Exception:
+                continue
+            if product_id not in existing_ids:
+                continue
+
+            components = row.get("components") or {}
+            context = dict(static_context)
+            context["rank"] = rank
+            context["product_id"] = product_id
+            if row.get("why"):
+                context["why"] = list(row.get("why") or [])[:6]
+
+            algo_mode = batch["algo_mode_override"]
+            if not algo_mode:
+                algo_mode = str(components.get("mode") or components.get("source") or "")
+
+            events.append(
+                RecommendationEvent(
+                    user=request.user,
+                    action=RecommendationEvent.Action.IMPRESSION,
+                    page=page,
+                    section_key=section_key,
+                    request_id=rid,
+                    product_id=product_id,
+                    algo_mode=str(algo_mode or ""),
+                    score=float(row.get("score")) if row.get("score") is not None else None,
+                    components=components,
+                    context=context,
+                )
+            )
+
+    if not events:
+        return 0
+
+    RecommendationEvent.objects.bulk_create(events, batch_size=500)
+    return len(events)
 
 
 def _trending_30d(*, now, category=None, product_type=None, price_min=None, price_max=None, limit=10) -> list[dict[str, Any]]:
@@ -618,48 +756,6 @@ class HomeRecommendationsView(APIView):
             trending_filtered.append(r)
         trending = _dedupe_limit(trending_filtered, seen, limit)
 
-        event_product_ids = set()
-        for section in (for_you, because, trending):
-            for row in section:
-                pid = (row.get("product") or {}).get("id")
-                if pid is not None:
-                    event_product_ids.add(int(pid))
-        existing_event_ids = set(Product.objects.filter(id__in=event_product_ids).values_list("id", flat=True))
-
-        events = []
-        rid = getattr(request, "request_id", None)
-
-        def push_impressions(
-            section_key: str,
-            results: list[dict],
-            page: str = "home",
-            algo_mode_override: str | None = None,
-            static_context: dict[str, Any] | None = None,
-        ):
-            for rank, r in enumerate(results, start=1):
-                p = r.get("product") or {}
-                pid = p.get("id")
-                if not pid:
-                    continue
-                if int(pid) not in existing_event_ids:
-                    continue
-                comps = r.get("components") or {}
-                ctx = {"why": (r.get("why") or [])[:6], "rank": rank}
-                if static_context:
-                    ctx.update(static_context)
-                events.append(RecommendationEvent(
-                    user=request.user,
-                    action=RecommendationEvent.Action.IMPRESSION,
-                    page=page,
-                    section_key=section_key,
-                    request_id=rid,
-                    product_id=int(pid),
-                    algo_mode=str(algo_mode_override or comps.get("mode") or comps.get("source") or ""),
-                    score=float(r.get("score")) if r.get("score") is not None else None,
-                    components=comps,
-                    context=ctx,
-                ))
-
         for_you_algo_mode = "reranker" if str(for_you_algo_used).startswith("reranker") else "cooc"
         because_algo_mode = "reranker" if str(because_algo_used).startswith("reranker") else "cooc"
         for_you_ctx = _recs_event_context(
@@ -686,11 +782,31 @@ class HomeRecommendationsView(APIView):
             "section": "trending",
         }
 
-        push_impressions("for_you", for_you, algo_mode_override=for_you_algo_mode, static_context=for_you_ctx)
-        push_impressions("because_you_bought", because, algo_mode_override=because_algo_mode, static_context=because_ctx)
-        push_impressions("trending", trending, static_context=trending_ctx)
-
-        RecommendationEvent.objects.bulk_create(events, batch_size=500)
+        _write_recommendation_impressions(
+            request=request,
+            batches=[
+                {
+                    "page": "home",
+                    "section_key": "for_you",
+                    "results": for_you,
+                    "algo_mode_override": for_you_algo_mode,
+                    "static_context": for_you_ctx,
+                },
+                {
+                    "page": "home",
+                    "section_key": "because_you_bought",
+                    "results": because,
+                    "algo_mode_override": because_algo_mode,
+                    "static_context": because_ctx,
+                },
+                {
+                    "page": "home",
+                    "section_key": "trending",
+                    "results": trending,
+                    "static_context": trending_ctx,
+                },
+            ],
+        )
 
         for_you_enriched = _enrich_results_with_catalog_payload(for_you)
         because_enriched = _enrich_results_with_catalog_payload(because)

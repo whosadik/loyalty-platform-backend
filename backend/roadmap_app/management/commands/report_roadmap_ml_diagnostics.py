@@ -292,6 +292,9 @@ def _is_roadmap_related_assignment(*, reason: dict[str, Any], target: dict[str, 
     roadmap_reason = reason.get("roadmap")
     if isinstance(roadmap_reason, dict) and roadmap_reason:
         return True
+    roadmap_influence = reason.get("roadmap_influence")
+    if isinstance(roadmap_influence, dict) and roadmap_influence:
+        return True
     roadmap_ctx = reason.get("roadmap_ctx")
     if isinstance(roadmap_ctx, dict) and roadmap_ctx:
         return True
@@ -1976,9 +1979,14 @@ class Command(BaseCommand):
                 assigned_at = row["assigned_at"]
 
                 roadmap_reason = _safe_dict(reason.get("roadmap"))
+                roadmap_influence = _safe_dict(reason.get("roadmap_influence"))
                 roadmap_ctx = _safe_dict(reason.get("roadmap_ctx"))
                 attributed_plan_id = _to_int(roadmap_reason.get("plan_id"))
                 attribution_kind = "explicit_plan_id"
+                if attributed_plan_id is None:
+                    attributed_plan_id = _to_int(roadmap_influence.get("plan_id"))
+                    if attributed_plan_id is not None:
+                        attribution_kind = "explicit_influence_plan_id"
                 if attributed_plan_id is None:
                     attributed_plan_id = _to_int(roadmap_ctx.get("plan_id"))
                     if attributed_plan_id is not None:
@@ -1986,12 +1994,14 @@ class Command(BaseCommand):
 
                 category_hint = str(
                     roadmap_reason.get("category")
+                    or roadmap_influence.get("category")
                     or roadmap_ctx.get("category")
                     or target.get("category")
                     or ""
                 ).strip().lower()
                 product_type_hint = str(
                     roadmap_reason.get("next_product_type")
+                    or roadmap_influence.get("next_product_type")
                     or roadmap_ctx.get("next_product_type")
                     or target.get("product_type")
                     or ""
@@ -1999,6 +2009,7 @@ class Command(BaseCommand):
 
                 step_index_hint = _to_int(
                     roadmap_reason.get("step_index")
+                    or roadmap_influence.get("step_index")
                     or roadmap_ctx.get("step_index")
                     or target.get("step_index")
                 )

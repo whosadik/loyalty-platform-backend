@@ -13,7 +13,7 @@ from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate
 from .models import Offer, OfferAssignment, CampaignBudget, OfferEvent
 from .serializers import RedeemOfferRequestSerializer, RedeemOfferResponseSerializer
-from offers.services import get_or_assign_next_offer 
+from offers.services import deactivate_stale_roadmap_assignment, expire_assignment_if_needed, get_or_assign_next_offer 
 from offers.events import record_offer_event
 from offers.presentation import build_offer_assignment_payload, build_offer_product_cache
 from ml_logic.next_best_reward import compute_rfm, segment, pick_next_offer
@@ -146,7 +146,13 @@ def _list_active_offer_assignments(user, *, now, limit=None):
     )
     assignments = []
     for assignment in qs[:50]:
-        if assignment.expires_at and assignment.expires_at <= now:
+        if expire_assignment_if_needed(
+            assignment,
+            now=now,
+            source="_list_active_offer_assignments",
+        ):
+            continue
+        if deactivate_stale_roadmap_assignment(assignment, now=now):
             continue
         assignments.append(assignment)
 
@@ -360,15 +366,23 @@ class RedeemOfferView(APIView):
                 .get(id=assignment_id, user=request.user)
             )
 
+            if assignment.is_redeemed:
+                return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
             if assignment.offer.offer_type == "discount":
                 return Response(
                     {"ok": False, "message": "Use /api/checkout with apply_assignment_id for discount offers"},
                     status=400,
                 )
-            if assignment.expires_at and assignment.expires_at <= now:
+            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+            if expire_assignment_if_needed(
+                assignment,
+                now=now,
+                source="offers_redeem_validation",
+                request_id=request_id,
+            ):
                 return Response({"ok": False, "message": "Offer expired"}, status=400)
-            if assignment.is_redeemed:
-                return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
+            if not assignment.is_active:
+                return Response({"ok": False, "message": "Offer is no longer active"}, status=400)
 
             txn = Transaction.objects.select_for_update().get(id=transaction_id, user=request.user)
             items = list(txn.items.select_related("product").all())
@@ -429,9 +443,9 @@ class RedeemOfferView(APIView):
             account.save(update_fields=["points_balance"])
 
             assignment.is_redeemed = True
+            assignment.is_active = False
             assignment.redeemed_transaction_id = txn.id
-            assignment.save(update_fields=["is_redeemed", "redeemed_transaction_id"])
-            request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+            assignment.save(update_fields=["is_redeemed", "is_active", "redeemed_transaction_id"])
             record_offer_event(
                 assignment,
                 OfferEvent.Type.REDEEMED,
@@ -547,8 +561,16 @@ class OfferPreviewView(APIView):
 
         if assignment.is_redeemed:
             return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
-        if assignment.expires_at and assignment.expires_at <= now:
+        request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+        if expire_assignment_if_needed(
+            assignment,
+            now=now,
+            source="offers_preview_validation",
+            request_id=request_id,
+        ):
             return Response({"ok": False, "message": "Offer expired"}, status=400)
+        if not assignment.is_active:
+            return Response({"ok": False, "message": "Offer is no longer active"}, status=400)
 
         target = assignment.target or {"scope": "cart"}
 
@@ -650,10 +672,16 @@ class OfferClickView(APIView):
 
         if assignment.is_redeemed:
             return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
-        if assignment.expires_at and assignment.expires_at <= now:
-            return Response({"ok": False, "message": "Offer expired"}, status=400)
-
         request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+        if expire_assignment_if_needed(
+            assignment,
+            now=now,
+            source="offers_click_validation",
+            request_id=request_id,
+        ):
+            return Response({"ok": False, "message": "Offer expired"}, status=400)
+        if not assignment.is_active:
+            return Response({"ok": False, "message": "Offer is no longer active"}, status=400)
         base_ctx = {"endpoint": "POST /api/offers/click", "variant": "v1"}
         extra_ctx = data.get("context") if isinstance(data.get("context"), dict) else {}
         base_ctx.update(extra_ctx)

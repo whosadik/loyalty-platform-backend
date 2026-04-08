@@ -159,7 +159,8 @@ class OfferEventsFlowTests(APITestCase):
         call_command("cleanup_offers")
 
         a = OfferAssignment.objects.get(id=aid)
-        self.assertTrue(a.is_redeemed)
+        self.assertFalse(a.is_active)
+        self.assertFalse(a.is_redeemed)
         self.assertEqual(
             OfferEvent.objects.filter(assignment_id=aid, event_type=OfferEvent.Type.EXPIRED).count(),
             1,

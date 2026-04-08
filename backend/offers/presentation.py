@@ -238,8 +238,8 @@ def _build_description(
     scope = _first_string(target.get("scope"))
     category_label = _format_label(_first_string(target.get("category")), language)
     product_type_label = _format_label(_first_string(target.get("product_type")), language)
+    picked_via = _first_string(target.get("picked_via")) or ""
     min_basket_amount = _to_number(target.get("min_basket_amount"))
-    roadmap_reason = reason.get("roadmap") if _is_record(reason.get("roadmap")) else None
 
     if scope == "cart" and min_basket_amount is not None:
         return copy["cart_description"].format(amount=f"{int(min_basket_amount):,}".replace(",", " "))
@@ -253,7 +253,7 @@ def _build_description(
     if scope == "product_id" and product_type_label:
         return copy["product_id_description"].format(label=product_type_label)
 
-    if roadmap_reason:
+    if picked_via.startswith("roadmap_shortcut"):
         return copy["roadmap_description"]
 
     if promo_type == "points" and offer_value is not None:
