@@ -145,6 +145,9 @@ def build_historical_continuation_anchor_records(
             event_category = str(ctx.get("category") or "").strip().lower() or "__unknown__"
             if category_filter != "all" and event_category != category_filter:
                 continue
+            raw_next_step_id = _to_int(ctx.get("next_step_id"))
+            raw_next_step_index = _to_int(ctx.get("next_step_index"))
+            raw_next_product_type = str(ctx.get("next_product_type") or "").strip().lower()
             refreshes_by_plan[int(plan_id)].append(
                 {
                     "anchor_key": f"plan_refresh:{event_id}",
@@ -155,9 +158,12 @@ def build_historical_continuation_anchor_records(
                     "category": event_category,
                     "plan_source": str(ctx.get("source") or "roadmap_v1"),
                     "refresh_caller": str(ctx.get("refresh_caller") or "").strip().lower(),
-                    "next_step_id": _to_int(ctx.get("next_step_id")),
-                    "next_step_index": _to_int(ctx.get("next_step_index")),
-                    "next_product_type": str(ctx.get("next_product_type") or "").strip().lower(),
+                    "next_step_id": raw_next_step_id,
+                    "next_step_index": raw_next_step_index,
+                    "next_product_type": raw_next_product_type,
+                    "anchor_next_step_id": raw_next_step_id,
+                    "anchor_next_step_index": raw_next_step_index,
+                    "anchor_next_product_type": raw_next_product_type,
                     "ml_decision": str(_safe_dict(ctx.get("ml")).get("decision") or "").strip().lower(),
                 }
             )
@@ -232,6 +238,28 @@ def build_historical_continuation_anchor_records(
             next_step_id = _to_int(refresh.get("next_step_id"))
             next_step_index = _to_int(refresh.get("next_step_index"))
             next_product_type = str(refresh.get("next_product_type") or "").strip().lower()
+            anchor_next_step_id = _to_int(refresh.get("anchor_next_step_id"))
+            anchor_next_step_index = _to_int(refresh.get("anchor_next_step_index"))
+            anchor_next_product_type = str(refresh.get("anchor_next_product_type") or "").strip().lower()
+            generated_candidates = [
+                {
+                    "event_id": int(row.get("event_id") or 0),
+                    "step_id": int(row.get("step_id") or 0),
+                    "step_index": _to_int(row.get("step_index")),
+                    "product_type": str(row.get("product_type") or "").strip().lower(),
+                    "created_at": row.get("created_at"),
+                    "recommended_product_id": _to_int(row.get("recommended_product_id")),
+                    "has_recommendation": bool(row.get("has_recommendation")),
+                    "is_generated": True,
+                }
+                for row in generated_in_window
+                if _to_int(row.get("step_id")) is not None
+            ]
+            anchor_has_actionable_step = bool(
+                anchor_next_step_id is not None
+                or anchor_next_step_index is not None
+                or anchor_next_product_type
+            )
 
             next_generated: dict[str, Any] | None = None
             if next_step_id is not None:
@@ -349,11 +377,16 @@ def build_historical_continuation_anchor_records(
                     "plan_source": str(refresh.get("plan_source") or "roadmap_v1"),
                     "refresh_caller": str(refresh.get("refresh_caller") or "").strip().lower(),
                     "ml_decision": str(refresh.get("ml_decision") or "").strip().lower(),
+                    "anchor_next_step_id": anchor_next_step_id,
+                    "anchor_next_step_index": anchor_next_step_index,
+                    "anchor_next_product_type": anchor_next_product_type,
+                    "anchor_has_actionable_step": bool(anchor_has_actionable_step),
                     "next_step_id": resolved_step_id,
                     "next_step_index": resolved_step_index,
                     "planned_target_product_type": resolved_product_type,
                     "planned_target_step_index": int(resolved_step_index or 0),
                     "candidate_types": candidate_types,
+                    "generated_candidates": generated_candidates,
                     "generated_step_ids": [
                         int(row.get("step_id") or 0)
                         for row in generated_in_window

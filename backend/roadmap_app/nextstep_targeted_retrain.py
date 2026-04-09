@@ -22,6 +22,9 @@ POLICY_VERSION = "roadmap_nextstep_v4_targeted_retrain_v1"
 DEFAULT_TARGETED_DATA_DIR = Path("data") / "ml" / "roadmap_nextstep_v4_targeted_retrain_v1"
 DEFAULT_TARGETED_MODEL_DIR = Path("models") / "roadmap_next_step_v4_targeted_retrain_v1"
 DEFAULT_COMPARE_REPORT_STEM = Path("reports") / "roadmap_nextstep_targeted_retrain_comparison"
+DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_STEM = (
+    Path("reports") / "roadmap_nextstep_v5_historical_anchor_targeted_v1_comparison"
+)
 
 
 TARGETED_TRUTH_SLICES = [
@@ -352,8 +355,58 @@ def _delta(new_value: Any, old_value: Any) -> float | None:
         return None
 
 
+def _float_value(value: Any, default: float) -> float:
+    try:
+        if value is None:
+            return float(default)
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _int_value(value: Any, default: int) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(value)
+    except Exception:
+        return int(default)
+
+
 def _slice_lookup(payload: dict[str, Any], *, kind: str, key: str) -> dict[str, Any]:
-    return _safe_dict(_safe_dict(_safe_dict(payload.get("slice_analysis")).get(kind)).get(key))
+    direct = _safe_dict(_safe_dict(_safe_dict(payload.get("slice_analysis")).get(kind)).get(key))
+    if direct:
+        return direct
+
+    category_key, _, remainder = str(key).partition(":")
+    per_category = _safe_dict(payload.get("per_category"))
+    category_payload = _safe_dict(per_category.get(category_key))
+
+    if kind == "truth_slice_lookup":
+        target_truth = remainder
+        candidate_rows = _safe_list(category_payload.get("worst_slices")) + _safe_list(
+            category_payload.get("promising_slices")
+        )
+        for row in candidate_rows:
+            if str(_safe_dict(row).get("truth_product_type") or "") == target_truth:
+                return _safe_dict(row)
+        return {}
+
+    if kind == "disagreement_pair_lookup":
+        baseline_product_type, _, model_product_type = remainder.partition(":")
+        candidate_rows = _safe_list(category_payload.get("worst_disagreement_pairs")) + _safe_list(
+            category_payload.get("promising_disagreement_pairs")
+        )
+        for row in candidate_rows:
+            safe_row = _safe_dict(row)
+            if (
+                str(safe_row.get("baseline_product_type") or "") == baseline_product_type
+                and str(safe_row.get("model_product_type") or "") == model_product_type
+            ):
+                return safe_row
+        return {}
+
+    return {}
 
 
 def build_targeted_retrain_comparison_payload(
@@ -541,4 +594,325 @@ def render_targeted_retrain_comparison_markdown(payload: dict[str, Any]) -> str:
     lines.append(
         "- If skincare remains B-like and haircare still carries large both-wrong mass, continuation should stay frozen after this retrain."
     )
+    return "\n".join(lines).strip() + "\n"
+
+
+def _artifact_comparison_entry(*, label: str, model_path: str | Path, days: int) -> dict[str, Any]:
+    resolved_model_path = str(Path(str(model_path)).expanduser().resolve())
+    decision_quality = build_nextstep_v4_decision_quality_payload(
+        model_path=resolved_model_path,
+        days=days,
+        category="all",
+        include_ga=False,
+        min_slice_size=10,
+    )
+    return {
+        "label": label,
+        "model_path": resolved_model_path,
+        "eval": _load_eval_report(resolved_model_path),
+        "proof_bundle": candidate_proof_bundle_summary(resolved_model_path),
+        "decision_quality": decision_quality,
+    }
+
+
+def _comparison_slice_rows(
+    *,
+    artifacts: dict[str, dict[str, Any]],
+    kind: str,
+    key_builder: Any,
+    specs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for spec in specs:
+        key = key_builder(spec)
+        row = dict(spec)
+        for label, artifact in artifacts.items():
+            row[label] = _slice_lookup(_safe_dict(artifact.get("decision_quality")), kind=kind, key=key)
+        out.append(row)
+    return out
+
+
+def _compare_category_rows(artifacts: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for category in ["haircare", "skincare", "makeup", "fragrance"]:
+        row = {"category": category}
+        for label, artifact in artifacts.items():
+            category_payload = _safe_dict(_safe_dict(artifact.get("decision_quality")).get("per_category")).get(category) or {}
+            row[label] = {
+                "rollout_reason": str(category_payload.get("rollout_reason") or ""),
+                "diagnosis": _safe_dict(category_payload.get("diagnosis")),
+                "model_win_rate": category_payload.get("model_win_rate_vs_truth"),
+                "baseline_win_rate": category_payload.get("baseline_win_rate_vs_truth"),
+                "both_wrong_rate": category_payload.get("both_wrong_rate"),
+                "resolved_truth": int(category_payload.get("resolved_truth_anchors_total", 0) or 0),
+            }
+        rows.append(row)
+    return rows
+
+
+def _gate_status(name: str, passed: bool, reason: str, details: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": name,
+        "passed": bool(passed),
+        "reason": str(reason),
+        "details": details,
+    }
+
+
+def _acceptance_gates(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    active = artifacts["active"]
+    candidate = artifacts["v5_historical_anchor"]
+    active_dq = _safe_dict(active.get("decision_quality"))
+    candidate_dq = _safe_dict(candidate.get("decision_quality"))
+    active_eval = _safe_dict(active.get("eval"))
+    candidate_eval = _safe_dict(candidate.get("eval"))
+
+    active_skincare = _safe_dict(_safe_dict(active_dq.get("per_category")).get("skincare"))
+    candidate_skincare = _safe_dict(_safe_dict(candidate_dq.get("per_category")).get("skincare"))
+    gate_skincare = not (
+        str(candidate_skincare.get("rollout_reason") or "") == "low_uplift"
+        and str(_safe_dict(candidate_skincare.get("diagnosis")).get("code") or "") == "B"
+    )
+
+    shampoo_key = "haircare:shampoo"
+    pair_key = "haircare:shampoo:conditioner"
+    active_shampoo = _slice_lookup(active_dq, kind="truth_slice_lookup", key=shampoo_key)
+    candidate_shampoo = _slice_lookup(candidate_dq, kind="truth_slice_lookup", key=shampoo_key)
+    active_pair = _slice_lookup(active_dq, kind="disagreement_pair_lookup", key=pair_key)
+    candidate_pair = _slice_lookup(candidate_dq, kind="disagreement_pair_lookup", key=pair_key)
+    gate_haircare = (
+        _int_value(candidate_shampoo.get("net_wins_model_minus_baseline"), -10**9)
+        > _int_value(active_shampoo.get("net_wins_model_minus_baseline"), -10**9)
+        and _int_value(candidate_pair.get("net_wins_model_minus_baseline"), 0)
+        >= _int_value(active_pair.get("net_wins_model_minus_baseline"), 0)
+    )
+
+    protected_results = []
+    protected_passed = True
+    for spec in PROTECTED_TRUTH_SLICES[:3]:
+        key = f"{spec['category']}:{spec['truth_product_type']}"
+        active_row = _slice_lookup(active_dq, kind="truth_slice_lookup", key=key)
+        candidate_row = _slice_lookup(candidate_dq, kind="truth_slice_lookup", key=key)
+        row_passed = (
+            _float_value(candidate_row.get("model_win_rate_vs_truth"), 0.0)
+            >= _float_value(active_row.get("model_win_rate_vs_truth"), 0.0)
+            and _int_value(candidate_row.get("net_wins_model_minus_baseline"), 0)
+            >= _int_value(active_row.get("net_wins_model_minus_baseline"), 0)
+        )
+        protected_results.append(
+            {
+                "slice": key,
+                "passed": bool(row_passed),
+                "active_model_win_rate": active_row.get("model_win_rate_vs_truth"),
+                "candidate_model_win_rate": candidate_row.get("model_win_rate_vs_truth"),
+                "active_net": active_row.get("net_wins_model_minus_baseline"),
+                "candidate_net": candidate_row.get("net_wins_model_minus_baseline"),
+            }
+        )
+        protected_passed = protected_passed and bool(row_passed)
+
+    active_overall = _safe_dict(active_dq.get("overall_enabled_categories"))
+    candidate_overall = _safe_dict(candidate_dq.get("overall_enabled_categories"))
+    gate_overall = (
+        _float_value(candidate_overall.get("net_win_rate_model_minus_baseline"), -1.0)
+        >= _float_value(active_overall.get("net_win_rate_model_minus_baseline"), -1.0)
+        and _float_value(candidate_overall.get("both_wrong_rate"), 1.0)
+        <= _float_value(active_overall.get("both_wrong_rate"), 1.0)
+    )
+
+    active_metrics = _safe_dict(active_eval.get("metrics_test"))
+    candidate_metrics = _safe_dict(candidate_eval.get("metrics_test"))
+    ndcg_delta = _delta(candidate_metrics.get("ndcg_at_5"), active_metrics.get("ndcg_at_5"))
+    recall_delta = _delta(candidate_metrics.get("recall_at_1"), active_metrics.get("recall_at_1"))
+    gate_offline = (
+        (ndcg_delta is not None and float(ndcg_delta) >= -0.005)
+        and (recall_delta is not None and float(recall_delta) >= -0.01)
+    )
+
+    gates = [
+        _gate_status(
+            "skincare_not_clearly_B_low_uplift",
+            gate_skincare,
+            "candidate_skincare_still_B_low_uplift" if not gate_skincare else "passed",
+            {
+                "active": {
+                    "rollout_reason": active_skincare.get("rollout_reason"),
+                    "diagnosis": _safe_dict(active_skincare.get("diagnosis")),
+                },
+                "candidate": {
+                    "rollout_reason": candidate_skincare.get("rollout_reason"),
+                    "diagnosis": _safe_dict(candidate_skincare.get("diagnosis")),
+                },
+            },
+        ),
+        _gate_status(
+            "haircare_shampoo_and_pair_improve",
+            gate_haircare,
+            "haircare_targeted_slice_not_improved" if not gate_haircare else "passed",
+            {
+                "active_shampoo": active_shampoo,
+                "candidate_shampoo": candidate_shampoo,
+                "active_pair": active_pair,
+                "candidate_pair": candidate_pair,
+            },
+        ),
+        _gate_status(
+            "protected_slices_non_regression",
+            protected_passed,
+            "protected_slice_regression" if not protected_passed else "passed",
+            {"protected_results": protected_results},
+        ),
+        _gate_status(
+            "overall_decision_quality_not_worse_than_active",
+            gate_overall,
+            "overall_decision_quality_regressed" if not gate_overall else "passed",
+            {"active": active_overall, "candidate": candidate_overall},
+        ),
+        _gate_status(
+            "offline_eval_not_materially_worse_than_active",
+            gate_offline,
+            "offline_eval_regressed" if not gate_offline else "passed",
+            {
+                "active_metrics_test": active_metrics,
+                "candidate_metrics_test": candidate_metrics,
+                "thresholds": {"min_ndcg_delta": -0.005, "min_recall_at_1_delta": -0.01},
+                "delta_ndcg_at_5": ndcg_delta,
+                "delta_recall_at_1": recall_delta,
+            },
+        ),
+    ]
+    return {
+        "overall_passed": all(bool(gate["passed"]) for gate in gates),
+        "gates": gates,
+    }
+
+
+def build_historical_anchor_candidate_comparison_payload(
+    *,
+    active_model_path: str | Path,
+    retrain_v1_model_path: str | Path,
+    candidate_model_path: str | Path,
+    days: int = 30,
+) -> dict[str, Any]:
+    artifacts = {
+        "active": _artifact_comparison_entry(label="active", model_path=active_model_path, days=days),
+        "retrain_v1": _artifact_comparison_entry(
+            label="retrain_v1", model_path=retrain_v1_model_path, days=days
+        ),
+        "v5_historical_anchor": _artifact_comparison_entry(
+            label="v5_historical_anchor", model_path=candidate_model_path, days=days
+        ),
+    }
+    targeted_truth_rows = _comparison_slice_rows(
+        artifacts=artifacts,
+        kind="truth_slice_lookup",
+        key_builder=lambda spec: f"{spec['category']}:{spec['truth_product_type']}",
+        specs=TARGETED_TRUTH_SLICES,
+    )
+    targeted_pair_rows = _comparison_slice_rows(
+        artifacts=artifacts,
+        kind="disagreement_pair_lookup",
+        key_builder=lambda spec: f"{spec['category']}:{spec['baseline_product_type']}:{spec['model_product_type']}",
+        specs=TARGETED_DISAGREEMENT_PAIRS,
+    )
+    protected_rows = _comparison_slice_rows(
+        artifacts=artifacts,
+        kind="truth_slice_lookup",
+        key_builder=lambda spec: f"{spec['category']}:{spec['truth_product_type']}",
+        specs=PROTECTED_TRUTH_SLICES,
+    )
+    return {
+        "policy": targeted_retrain_policy_payload(),
+        "artifacts": artifacts,
+        "category_comparison": _compare_category_rows(artifacts),
+        "targeted_truth_slices": targeted_truth_rows,
+        "targeted_disagreement_pairs": targeted_pair_rows,
+        "protected_truth_slices": protected_rows,
+        "acceptance_gates": _acceptance_gates(artifacts),
+    }
+
+
+def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, Any]) -> str:
+    artifacts = _safe_dict(payload.get("artifacts"))
+    lines = [
+        "# Roadmap Nextstep v5 Historical Anchor Targeted Comparison",
+        "",
+        "## Why These Slices Were Targeted",
+    ]
+    for spec in _safe_list(_safe_dict(payload.get("policy")).get("targeted_truth_slices")):
+        causes = ", ".join(_safe_list(spec.get("probable_causes")))
+        lines.append(
+            f"- `{spec.get('category')}/{spec.get('truth_product_type')}`: {spec.get('diagnosis')} "
+            f"Likely causes: {causes}."
+        )
+
+    lines.extend(["", "## Artifacts"])
+    for key in ["active", "retrain_v1", "v5_historical_anchor"]:
+        artifact = _safe_dict(artifacts.get(key))
+        proof = _safe_dict(artifact.get("proof_bundle"))
+        lines.append(
+            f"- `{key}` path=`{artifact.get('model_path')}` proof_complete=`{proof.get('required_complete')}` "
+            f"reason=`{proof.get('reason')}`"
+        )
+
+    lines.extend(["", "## Category Comparison"])
+    lines.append("| category | active_reason | retrain_v1_reason | v5_reason | active_model_win | retrain_v1_model_win | v5_model_win |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for row in _safe_list(payload.get("category_comparison")):
+        active_row = _safe_dict(row.get("active"))
+        retrain_row = _safe_dict(row.get("retrain_v1"))
+        candidate_row = _safe_dict(row.get("v5_historical_anchor"))
+        lines.append(
+            f"| {row.get('category')} | {active_row.get('rollout_reason')} | {retrain_row.get('rollout_reason')} "
+            f"| {candidate_row.get('rollout_reason')} | {_pct(active_row.get('model_win_rate'))} "
+            f"| {_pct(retrain_row.get('model_win_rate'))} | {_pct(candidate_row.get('model_win_rate'))} |"
+        )
+
+    lines.extend(["", "## Targeted Slices"])
+    lines.append("| slice | active_net | retrain_v1_net | v5_net | active_model_win | retrain_v1_model_win | v5_model_win |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for row in _safe_list(payload.get("targeted_truth_slices")):
+        active_row = _safe_dict(row.get("active"))
+        retrain_row = _safe_dict(row.get("retrain_v1"))
+        candidate_row = _safe_dict(row.get("v5_historical_anchor"))
+        lines.append(
+            f"| {row.get('category')}/{row.get('truth_product_type')} | {active_row.get('net_wins_model_minus_baseline', 'n/a')} "
+            f"| {retrain_row.get('net_wins_model_minus_baseline', 'n/a')} | {candidate_row.get('net_wins_model_minus_baseline', 'n/a')} "
+            f"| {_pct(active_row.get('model_win_rate_vs_truth'))} | {_pct(retrain_row.get('model_win_rate_vs_truth'))} "
+            f"| {_pct(candidate_row.get('model_win_rate_vs_truth'))} |"
+        )
+
+    lines.extend(["", "## Protected Slices"])
+    lines.append("| slice | active_net | retrain_v1_net | v5_net | active_model_win | retrain_v1_model_win | v5_model_win |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for row in _safe_list(payload.get("protected_truth_slices")):
+        active_row = _safe_dict(row.get("active"))
+        retrain_row = _safe_dict(row.get("retrain_v1"))
+        candidate_row = _safe_dict(row.get("v5_historical_anchor"))
+        lines.append(
+            f"| {row.get('category')}/{row.get('truth_product_type')} | {active_row.get('net_wins_model_minus_baseline', 'n/a')} "
+            f"| {retrain_row.get('net_wins_model_minus_baseline', 'n/a')} | {candidate_row.get('net_wins_model_minus_baseline', 'n/a')} "
+            f"| {_pct(active_row.get('model_win_rate_vs_truth'))} | {_pct(retrain_row.get('model_win_rate_vs_truth'))} "
+            f"| {_pct(candidate_row.get('model_win_rate_vs_truth'))} |"
+        )
+
+    lines.extend(["", "## Acceptance Gates"])
+    for gate in _safe_list(_safe_dict(payload.get("acceptance_gates")).get("gates")):
+        lines.append(
+            f"- `{gate.get('name')}` passed=`{gate.get('passed')}` reason=`{gate.get('reason')}`"
+        )
+
+    lines.extend(["", "## Offline Eval"])
+    lines.append("| artifact | recall@1 | ndcg@5 |")
+    lines.append("| --- | --- | --- |")
+    for key in ["active", "retrain_v1", "v5_historical_anchor"]:
+        eval_payload = _safe_dict(_safe_dict(artifacts.get(key)).get("eval"))
+        metrics = _safe_dict(eval_payload.get("metrics_test"))
+        lines.append(f"| {key} | {_pct(metrics.get('recall_at_1'))} | {_pct(metrics.get('ndcg_at_5'))} |")
+
+    lines.extend(["", "## Verdict"])
+    if bool(_safe_dict(payload.get("acceptance_gates")).get("overall_passed")):
+        lines.append("- v5 historical-anchor artifact satisfies the defined acceptance gates and is a meaningful future qualification candidate.")
+    else:
+        lines.append("- v5 historical-anchor artifact does not satisfy the defined acceptance gates and should not advance runtime qualification.")
     return "\n".join(lines).strip() + "\n"

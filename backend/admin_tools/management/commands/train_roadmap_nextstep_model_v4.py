@@ -1135,6 +1135,11 @@ class Command(BaseCommand):
             "targeted_retrain_policy_version": dataset_meta.get("targeted_retrain_policy_version"),
             "targeted_retrain_policy": dataset_meta.get("targeted_retrain_policy") or {},
             "targeted_retrain_summary": dataset_meta.get("targeted_retrain_summary") or {},
+            "dataset_builder_command": dataset_meta.get("dataset_builder_command"),
+            "source_dataset_dir": dataset_meta.get("source_dataset_dir"),
+            "source_dataset_file": dataset_meta.get("source_dataset_file"),
+            "truth_protocol": dataset_meta.get("truth_protocol") or {},
+            "truth_resolution_summary": dataset_meta.get("truth_resolution_summary") or {},
         }
 
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -1171,6 +1176,11 @@ class Command(BaseCommand):
             "targeted_retrain_policy_version": dataset_meta.get("targeted_retrain_policy_version"),
             "targeted_retrain_policy": dataset_meta.get("targeted_retrain_policy") or {},
             "targeted_retrain_summary": dataset_meta.get("targeted_retrain_summary") or {},
+            "dataset_builder_command": dataset_meta.get("dataset_builder_command"),
+            "source_dataset_dir": dataset_meta.get("source_dataset_dir"),
+            "source_dataset_file": dataset_meta.get("source_dataset_file"),
+            "truth_protocol": dataset_meta.get("truth_protocol") or {},
+            "truth_resolution_summary": dataset_meta.get("truth_resolution_summary") or {},
             "selected_params": selected["params"],
             "candidate_types_by_category": dataset_meta.get("candidate_types_by_category") or {},
             "metrics_train": selected["metrics_train"],
@@ -1246,6 +1256,11 @@ class Command(BaseCommand):
             "targeted_retrain_policy_version": dataset_meta.get("targeted_retrain_policy_version"),
             "targeted_retrain_policy": dataset_meta.get("targeted_retrain_policy") or {},
             "targeted_retrain_summary": dataset_meta.get("targeted_retrain_summary") or {},
+            "dataset_builder_command": dataset_meta.get("dataset_builder_command"),
+            "source_dataset_dir": dataset_meta.get("source_dataset_dir"),
+            "source_dataset_file": dataset_meta.get("source_dataset_file"),
+            "truth_protocol": dataset_meta.get("truth_protocol") or {},
+            "truth_resolution_summary": dataset_meta.get("truth_resolution_summary") or {},
         }
         model_eval_report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         model_eval_report_md_path.write_text(_build_eval_markdown(report), encoding="utf-8")
