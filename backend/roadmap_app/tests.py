@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import joblib
 import pandas as pd
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -28,6 +29,10 @@ from roadmap_app.nextstep_historical_anchor_dataset import (
 from roadmap_app.nextstep_haircare_shampoo_gate import (
     _analyze_single_model_shampoo_gate,
     build_nextstep_haircare_shampoo_gate_payload,
+)
+from roadmap_app.nextstep_haircare_shampoo_truth_design import (
+    build_nextstep_haircare_shampoo_truth_design_payload,
+    evaluate_haircare_shampoo_truth_designs,
 )
 from roadmap_app.nextstep_targeted_retrain import (
     _slice_lookup,
@@ -1989,3 +1994,206 @@ class RoadmapNextstepHaircareShampooGateTests(SimpleTestCase):
             )
 
         self.assertFalse(payload["catalog_safety"]["catalog_writes_performed"])
+
+
+class RoadmapNextstepHaircareShampooTruthDesignTests(SimpleTestCase):
+    def _row(
+        self,
+        *,
+        anchor_key: str = "plan_refresh:1",
+        anchor_truth_type: str = "shampoo",
+        baseline_type: str = "shampoo",
+        model_type: str = "hair_mask",
+        truth_type: str = "hair_mask",
+        truth_resolved: bool = True,
+        truth_reason: str = "ok",
+        structural_reason: str = "",
+        pair_available: bool = True,
+    ) -> dict:
+        family_map = {
+            "shampoo": "repeat_shampoo",
+            "conditioner": "pair_conditioner",
+            "hair_mask": "downstream_treatment",
+            "hair_oil": "downstream_treatment",
+            "leave_in": "downstream_treatment",
+            "scalp_serum": "downstream_treatment",
+        }
+        return {
+            "anchor_key": anchor_key,
+            "anchor_next_product_type": anchor_truth_type,
+            "baseline_selected_product_type": baseline_type,
+            "model_top1_product_type": model_type,
+            "truth_selected_product_type": truth_type if truth_resolved else "",
+            "truth_resolved": truth_resolved,
+            "truth_reason": truth_reason if not truth_resolved else "ok",
+            "truth_transition_family": family_map.get(truth_type, "other") if truth_resolved else "",
+            "baseline_transition_family": family_map.get(baseline_type, "other"),
+            "model_transition_family": family_map.get(model_type, "other"),
+            "pair_available": pair_available,
+            "comparability_exclusion_reason": "" if pair_available else "pair_mapping_unavailable",
+            "structural_exclusion_reason": structural_reason,
+        }
+
+    def _model_meta(self, *, model_path: str, anchor_key: str, model_type: str, baseline_type: str) -> dict:
+        normalized_path = normalized_model_path(model_path)
+        return {
+            "ml": {
+                HISTORICAL_SHADOW_EVIDENCE_KEY: {
+                    normalized_path: {
+                        anchor_key: {
+                            "model_path": normalized_path,
+                            "was_model_selected": True,
+                            "top1_product_type": model_type,
+                        }
+                    }
+                },
+                HISTORICAL_CONTROL_EVIDENCE_KEY: {
+                    normalized_path: {
+                        anchor_key: {
+                            "model_path": normalized_path,
+                            "was_control_selected": True,
+                            "selected_product_type": baseline_type,
+                        }
+                    }
+                },
+            }
+        }
+
+    def _anchor(
+        self,
+        *,
+        anchor_key: str,
+        step_id: int,
+        truth_product_type: str,
+        next_refresh_at: str = "2026-04-09T00:00:00+00:00",
+    ) -> tuple[dict, dict[int, list[dict]]]:
+        anchor = {
+            "anchor_key": anchor_key,
+            "anchor_event_id": 2001,
+            "anchor_created_at": "2026-04-08T00:00:00+00:00",
+            "plan_id": 1,
+            "category": "haircare",
+            "anchor_has_actionable_step": True,
+            "anchor_next_step_id": step_id,
+            "anchor_next_step_index": 1,
+            "anchor_next_product_type": "shampoo",
+            "next_refresh_at": next_refresh_at,
+            "reconstruction_reason": "",
+            "generated_step_ids": [step_id],
+            "generated_candidates": [
+                {
+                    "event_id": 2101,
+                    "step_id": step_id,
+                    "step_index": 1,
+                    "product_type": "shampoo",
+                    "created_at": "2026-04-08T00:01:00+00:00",
+                    "is_generated": True,
+                }
+            ],
+        }
+        completions = {
+            step_id: [
+                {
+                    "id": 2201,
+                    "step_id": step_id,
+                    "created_at": "2026-04-08T00:10:00+00:00",
+                    "context": {
+                        "product_type": truth_product_type,
+                        "matched_by": "recommended_product_id",
+                    },
+                }
+            ]
+        }
+        return anchor, completions
+
+    def test_current_gate_truth_design_reproduces_fail_closed_behavior(self):
+        rows = [
+            self._row(anchor_key="plan_refresh:1", model_type="hair_mask", truth_type="hair_mask"),
+            self._row(anchor_key="plan_refresh:2", model_type="hair_oil", truth_type="hair_oil"),
+        ]
+        payload = evaluate_haircare_shampoo_truth_designs(rows)
+
+        self.assertEqual(payload["current_gate"]["verdict"]["status"], "fail_closed_missing_truth")
+        self.assertEqual(payload["current_gate"]["standalone_shampoo_truth_rows_total"], 0)
+        self.assertEqual(payload["current_gate"]["resolved_shampoo_conditioner_comparable_rows_total"], 0)
+
+    def test_alternative_truth_designs_produce_explicit_resolved_and_unresolved_counts(self):
+        rows = [
+            self._row(anchor_key="plan_refresh:1", model_type="hair_mask", truth_type="hair_mask"),
+            self._row(
+                anchor_key="plan_refresh:2",
+                model_type="hair_mask",
+                truth_type="hair_mask",
+                truth_resolved=False,
+                truth_reason="no_completed_generated_candidate",
+            ),
+        ]
+        payload = evaluate_haircare_shampoo_truth_designs(rows)
+        designs = payload["designs"]
+
+        self.assertEqual(designs["A_anchor_step_correctness"]["resolved_anchors_total"], 2)
+        self.assertEqual(designs["A_anchor_step_correctness"]["unresolved_anchors_total"], 0)
+        self.assertEqual(designs["B_immediate_pair_closure"]["resolved_anchors_total"], 1)
+        self.assertEqual(designs["B_immediate_pair_closure"]["unresolved_anchors_by_reason"]["no_completed_generated_candidate"], 1)
+        self.assertEqual(designs["C_downstream_treatment_truth"]["resolved_anchors_total"], 1)
+        self.assertEqual(designs["D_two_stage_truth"]["resolved_anchors_total"], 1)
+
+    def test_recommended_truth_design_is_measurable_from_immutable_data(self):
+        rows = [
+            self._row(anchor_key="plan_refresh:1", model_type="hair_mask", truth_type="hair_mask"),
+            self._row(anchor_key="plan_refresh:2", model_type="hair_oil", truth_type="hair_oil"),
+        ]
+        payload = evaluate_haircare_shampoo_truth_designs(rows)
+
+        self.assertEqual(payload["recommendation"]["recommended_truth_design"], "D_two_stage_truth")
+        self.assertTrue(payload["recommendation"]["rerun_v5_comparison_under_recommended_truth"])
+
+    @override_settings(ROADMAP_NEXTSTEP_V4_MODEL_PATH="models/original_active.pkl")
+    def test_truth_design_payload_does_not_modify_catalog_or_runtime_config(self):
+        model_path = str(Path("models/test_truth_design_model.pkl").resolve())
+        anchor, completions = self._anchor(
+            anchor_key="plan_refresh:7",
+            step_id=17,
+            truth_product_type="hair_mask",
+        )
+
+        class _ValuesWrapper:
+            def values(self, *args, **kwargs):
+                return [{"id": 1, "meta": self.meta}]
+
+            def __init__(self, meta):
+                self.meta = meta
+
+        before_model_path = settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH
+        with patch(
+            "roadmap_app.nextstep_haircare_shampoo_truth_design.build_historical_continuation_anchor_records",
+            return_value=[anchor],
+        ), patch(
+            "roadmap_app.nextstep_haircare_shampoo_truth_design.completion_events_by_step",
+            return_value=completions,
+        ), patch(
+            "roadmap_app.nextstep_haircare_shampoo_truth_design.RoadmapPlan.objects.filter",
+            return_value=_ValuesWrapper(
+                self._model_meta(
+                    model_path=model_path,
+                    anchor_key="plan_refresh:7",
+                    model_type="hair_mask",
+                    baseline_type="shampoo",
+                )
+            ),
+        ), patch(
+            "catalog.models.Product.save",
+            side_effect=AssertionError("catalog write should not happen"),
+        ), patch(
+            "catalog.models.Product.delete",
+            side_effect=AssertionError("catalog delete should not happen"),
+        ):
+            payload = build_nextstep_haircare_shampoo_truth_design_payload(
+                model_path=model_path,
+                reference_model_path=model_path,
+                days=30,
+                include_ga=False,
+            )
+
+        self.assertFalse(payload["catalog_safety"]["catalog_writes_performed"])
+        self.assertEqual(settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH, before_model_path)
