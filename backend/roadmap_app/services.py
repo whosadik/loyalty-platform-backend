@@ -16,7 +16,11 @@ from offers.services import _build_rec_profile, _cooccurrence_90d, _load_product
 from roadmap_app.content_features import product_signature, profile_signature
 from roadmap_app.events import emit_plan_refresh_events
 from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
-from roadmap_app.ml_planner import generate_planner_chain, planner_runtime_mode
+from roadmap_app.ml_planner import (
+    generate_planner_chain,
+    planner_runtime_guard_status,
+    planner_runtime_mode,
+)
 from roadmap_app.ml_next_step import (
     nextstep_model_artifact_summary,
     predict_next_product_types,
@@ -1392,27 +1396,6 @@ def _build_chain(
                 getattr(settings, "ROADMAP_NEXTSTEP_V4_ALLOW_PRIMARY_WIN_DESPITE_SOFT_CTR_DROP", True)
             ),
         }
-        staged = v4_category_staged_rollout_status(category)
-        rollout = staged.get("rollout") if isinstance(staged.get("rollout"), dict) else {}
-        final_status = str(staged.get("final_status") or "HOLD").upper()
-        category_guard = {
-            "passed": final_status == "ENABLE",
-            "reason": str(staged.get("reason") or ""),
-            "hold_reason": staged.get("hold_reason"),
-            "final_status": final_status,
-            "current_decision": str(staged.get("current_decision") or final_status),
-            "recommendation_7d": str(staged.get("recommendation_7d") or ""),
-            "recommendation_30d": str(staged.get("recommendation_30d") or ""),
-            "stability_gate_failures": list(staged.get("stability_gate_failures") or []),
-            "source_report_path_7d": str(staged.get("source_report_path_7d") or ""),
-            "source_report_path_30d": str(staged.get("source_report_path_30d") or ""),
-            "category": str(category),
-            "cohort_mode": "fresh",
-            "control": "non_model",
-            "thresholds": category_guard_thresholds,
-            "guard_7d": staged.get("guard_7d"),
-            "guard_30d": staged.get("guard_30d"),
-        }
         rollout_meta = _default_rollout_meta()
         rollout_meta = _category_partial_rollout_state(
             user=user,
@@ -1446,6 +1429,28 @@ def _build_chain(
             "selected_feature_set": str((served_artifact or {}).get("selected_feature_set") or ""),
             "model_slot": served_model_slot,
             "partial_model_override_reason": partial_model_override_reason or None,
+        }
+        staged = v4_category_staged_rollout_status(category, model_path=served_model_path)
+        rollout = staged.get("rollout") if isinstance(staged.get("rollout"), dict) else {}
+        final_status = str(staged.get("final_status") or "HOLD").upper()
+        category_guard = {
+            "passed": final_status == "ENABLE",
+            "reason": str(staged.get("reason") or ""),
+            "hold_reason": staged.get("hold_reason"),
+            "final_status": final_status,
+            "current_decision": str(staged.get("current_decision") or final_status),
+            "recommendation_7d": str(staged.get("recommendation_7d") or ""),
+            "recommendation_30d": str(staged.get("recommendation_30d") or ""),
+            "stability_gate_failures": list(staged.get("stability_gate_failures") or []),
+            "source_report_path_7d": str(staged.get("source_report_path_7d") or ""),
+            "source_report_path_30d": str(staged.get("source_report_path_30d") or ""),
+            "category": str(category),
+            "cohort_mode": "fresh",
+            "control": "non_model",
+            "thresholds": category_guard_thresholds,
+            "guard_7d": staged.get("guard_7d"),
+            "guard_30d": staged.get("guard_30d"),
+            "model_path": served_model_path,
         }
 
         if final_status == "DISABLE":
@@ -1511,7 +1516,7 @@ def _build_chain(
             }
             return chain, source_by_type, ml_predictions, ml_runtime
 
-        guard = v4_min_lift_guard_status()
+        guard = v4_min_lift_guard_status(served_model_path)
         ml_runtime = {
             "decision": "fallback",
             "fallback_reason": None,
@@ -1848,22 +1853,42 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     planner_mode = planner_runtime_mode()
     planner_result: dict[str, Any] | None = None
     planner_served = False
+    planner_guard = None
     if planner_mode in {"shadow", "serve"}:
+        planner_guard = planner_runtime_guard_status(
+            category,
+            require_shadow_report=True,
+        )
         rules = CATEGORY_RULES[category]
-        planner_result = generate_planner_chain(
-            user=user,
-            category=category,
-            candidate_types=_planner_candidate_universe(
+        if bool((planner_guard or {}).get("passed")):
+            planner_result = generate_planner_chain(
+                user=user,
                 category=category,
+                candidate_types=_planner_candidate_universe(
+                    category=category,
+                    purchased_types=purchased_types,
+                    owned_types_ordered=owned_types_ordered,
+                ),
                 purchased_types=purchased_types,
                 owned_types_ordered=owned_types_ordered,
-            ),
-            purchased_types=purchased_types,
-            owned_types_ordered=owned_types_ordered,
-            min_steps=int(rules["min_steps"]),
-            max_steps=int(rules["max_steps"]),
-            refresh_caller=refresh_caller,
-        )
+                min_steps=int(rules["min_steps"]),
+                max_steps=int(rules["max_steps"]),
+                refresh_caller=refresh_caller,
+            )
+        else:
+            planner_result = {
+                "category": category,
+                "decision": "disabled",
+                "fallback_reason": None,
+                "disabled_reason": str((planner_guard or {}).get("reason") or "planner_guard_failed"),
+                "chain": [],
+                "source_by_type": {},
+                "trace": [],
+                "model_path": str((planner_guard or {}).get("model_path") or ""),
+                "model_version": None,
+                "selected_feature_set": None,
+                "guard": planner_guard,
+            }
 
     if planner_mode == "serve" and planner_result and planner_result.get("decision") == "model_used":
         chain = list(planner_result.get("chain") or [])
@@ -2090,6 +2115,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         "decision": str((planner_result or {}).get("decision") or "disabled"),
         "fallback_reason": (planner_result or {}).get("fallback_reason"),
         "disabled_reason": (planner_result or {}).get("disabled_reason"),
+        "guard": planner_guard,
         "model_path": str((planner_result or {}).get("model_path") or ""),
         "model_version": str((planner_result or {}).get("model_version") or ""),
         "selected_feature_set": str((planner_result or {}).get("selected_feature_set") or ""),

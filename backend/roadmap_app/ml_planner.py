@@ -26,6 +26,15 @@ from django.conf import settings
 from django.utils import timezone
 
 from catalog.models import Product
+from roadmap_app.ml_artifact_proof import (
+    PROOF_FILE_EVAL,
+    PROOF_FILE_METADATA,
+    PROOF_FILE_SHADOW,
+    artifact_dir_for_model_path,
+    artifact_file_path,
+    load_json_file,
+    proof_bundle_status,
+)
 from roadmap_app.content_features import (
     build_base_content_features,
     build_candidate_catalog_summaries,
@@ -86,15 +95,19 @@ def planner_model_path() -> str:
 
 
 def _artifact_dir_for_model_path(model_path: Path) -> Path:
-    return model_path.parent if model_path.suffix else model_path
+    return artifact_dir_for_model_path(model_path)
 
 
 def _artifact_metadata_path_for_model_path(model_path: Path) -> Path:
-    return (_artifact_dir_for_model_path(model_path) / "metadata.json").expanduser()
+    return artifact_file_path(model_path, PROOF_FILE_METADATA)
 
 
 def _artifact_eval_report_path_for_model_path(model_path: Path) -> Path:
-    return (_artifact_dir_for_model_path(model_path) / "eval_report.json").expanduser()
+    return artifact_file_path(model_path, PROOF_FILE_EVAL)
+
+
+def planner_shadow_report_path_for_model_path(model_path: str | Path | None = None) -> Path:
+    return artifact_file_path(model_path or planner_model_path(), PROOF_FILE_SHADOW)
 
 
 @lru_cache(maxsize=8)
@@ -200,6 +213,131 @@ def planner_model_artifact_summary(model_path: str | Path | None = None) -> dict
         "estimator": str(((metadata or {}).get("estimator") if isinstance(metadata, dict) else None) or ""),
         "metrics_test": metrics_test if isinstance(metrics_test, dict) else {},
         "planner_guard": planner_guard if isinstance(planner_guard, dict) else {},
+    }
+
+
+def _planner_eval_guard_from_report(
+    report: dict[str, Any] | None,
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    metadata_guard = (metadata or {}).get("planner_guard") if isinstance(metadata, dict) else None
+    if isinstance(metadata_guard, dict):
+        passed = bool(metadata_guard.get("passed"))
+        reason = "passed" if passed else "planner_guard_failed"
+        return {
+            "passed": passed,
+            "reason": reason,
+            "metric": str(metadata_guard.get("metric") or "ndcg_at_5"),
+            "required_delta_vs_popularity": float(
+                metadata_guard.get("required_delta_vs_popularity", 0.0) or 0.0
+            ),
+            "model_value": metadata_guard.get("model_value"),
+            "popularity_value": metadata_guard.get("popularity_value"),
+        }
+
+    report_dict = report if isinstance(report, dict) else {}
+    metrics_test = report_dict.get("metrics_test") if isinstance(report_dict.get("metrics_test"), dict) else {}
+    baselines = (
+        (((report_dict.get("dataset_baselines") or {}).get("splits") or {}).get("test") or {})
+        if isinstance(report_dict, dict)
+        else {}
+    )
+    popularity = baselines.get("popularity") if isinstance(baselines.get("popularity"), dict) else {}
+    metric = "ndcg_at_5"
+    try:
+        model_value = float(metrics_test.get(metric))
+        popularity_value = float(popularity.get(metric))
+    except Exception:
+        return {
+            "passed": False,
+            "reason": "missing_eval_metric",
+            "metric": metric,
+            "required_delta_vs_popularity": 0.0,
+            "model_value": None,
+            "popularity_value": None,
+        }
+    delta = float(model_value - popularity_value)
+    return {
+        "passed": bool(delta >= 0.0),
+        "reason": "passed" if delta >= 0.0 else "insufficient_lift",
+        "metric": metric,
+        "required_delta_vs_popularity": 0.0,
+        "model_value": model_value,
+        "popularity_value": popularity_value,
+        "delta": delta,
+    }
+
+
+def planner_proof_bundle_status(
+    model_path: str | Path | None = None,
+    *,
+    require_shadow_report: bool = False,
+) -> dict[str, Any]:
+    raw = str(model_path or planner_model_path()).strip()
+    if not raw:
+        return {
+            "model_path": "",
+            "artifact_dir": "",
+            "required_files": [],
+            "optional_files": [],
+            "files": {},
+            "required_complete": False,
+            "missing_required": ["model.pkl"],
+            "invalid_required": [],
+            "stale_required": [],
+            "reason": "missing_model_path",
+        }
+    metadata = _load_planner_metadata(raw)
+    expected_model_version = str((metadata or {}).get("model_version") or "").strip() or None
+    required_files = [PROOF_FILE_METADATA, PROOF_FILE_EVAL]
+    if require_shadow_report:
+        required_files.append(PROOF_FILE_SHADOW)
+    return proof_bundle_status(
+        model_path=raw,
+        required_files=required_files,
+        expected_model_version=expected_model_version,
+    )
+
+
+def planner_runtime_guard_status(
+    category: str,
+    *,
+    model_path: str | Path | None = None,
+    require_shadow_report: bool = False,
+) -> dict[str, Any]:
+    category_norm = str(category or "").strip().lower()
+    resolved_model_path = str(model_path or planner_model_path()).strip()
+    configured_categories = {
+        str(item or "").strip().lower()
+        for item in (getattr(settings, "ROADMAP_PLANNER_V1_ENABLED_CATEGORIES", []) or [])
+        if str(item or "").strip()
+    }
+    proof = planner_proof_bundle_status(
+        resolved_model_path,
+        require_shadow_report=require_shadow_report,
+    )
+    metadata = _load_planner_metadata(resolved_model_path)
+    eval_report = load_json_file(_artifact_eval_report_path_for_model_path(Path(resolved_model_path).expanduser()))
+    eval_guard = _planner_eval_guard_from_report(eval_report, metadata)
+    enabled_for_category = bool(not configured_categories or category_norm in configured_categories)
+    passed = bool(enabled_for_category and proof.get("required_complete") and eval_guard.get("passed"))
+    reason = "passed"
+    if not enabled_for_category:
+        reason = "category_disabled"
+    elif not bool(proof.get("required_complete")):
+        reason = str(proof.get("reason") or "missing_proof_bundle")
+    elif not bool(eval_guard.get("passed")):
+        reason = str(eval_guard.get("reason") or "planner_guard_failed")
+    return {
+        "category": category_norm,
+        "model_path": resolved_model_path,
+        "enabled_for_category": enabled_for_category,
+        "configured_categories": sorted(configured_categories),
+        "proof_bundle": proof,
+        "eval_guard": eval_guard,
+        "passed": passed,
+        "reason": reason,
+        "shadow_report_path": str(planner_shadow_report_path_for_model_path(resolved_model_path)),
     }
 
 

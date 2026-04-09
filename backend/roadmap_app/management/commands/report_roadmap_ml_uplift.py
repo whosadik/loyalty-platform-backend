@@ -7,18 +7,28 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Count
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from offers.models import OfferAssignment, OfferEvent
+from roadmap_app.historical_anchor_replay import build_historical_continuation_anchor_records
 from roadmap_app.ml_next_step import (
+    nextstep_model_artifact_summary,
     v4_category_rollout_status,
     v4_category_uplift_guard_status_from_report,
     v4_runtime_uplift_report_path,
 )
 from roadmap_app.models import RoadmapEvent, RoadmapPlan, RoadmapStep
+from roadmap_app.shadow_evidence import (
+    get_control_evidence_for_model_path,
+    get_historical_control_evidence_for_model_path,
+    get_historical_shadow_evidence_for_model_path,
+    get_shadow_evidence_for_model_path,
+    normalized_model_path,
+)
 
 
 CATEGORY_CHOICES = ["all", "skincare", "haircare", "makeup", "fragrance"]
@@ -26,6 +36,7 @@ FORMAT_CHOICES = ["md", "json", "both"]
 COHORT_MODE_CHOICES = ["fresh", "all"]
 CONTROL_CHOICES = ["disabled", "fallback", "non_model"]
 VALID_DECISIONS = {"model_used", "fallback", "disabled"}
+EVIDENCE_SOURCE_CHOICES = ["runtime", "shadow_replay", "historical_replay"]
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:
@@ -67,6 +78,16 @@ def _round_or_none(value: float | None, ndigits: int = 6) -> float | None:
     if value is None:
         return None
     return round(float(value), ndigits)
+
+
+def _normalized_path(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        return str(Path(raw).expanduser().resolve())
+    except Exception:
+        return str(Path(raw).expanduser())
 
 
 def _md_table(headers: list[str], rows: list[list[Any]]) -> str:
@@ -124,6 +145,174 @@ def _decision_to_cohort(
     if decision in control_decisions:
         return "control"
     return None
+
+
+def _shadow_replay_plan_state(
+    *,
+    meta: dict[str, Any],
+    model_path_filter: str,
+) -> dict[str, Any]:
+    evidence = _safe_dict(get_shadow_evidence_for_model_path(meta, model_path_filter))
+    control = _safe_dict(get_control_evidence_for_model_path(meta, model_path_filter))
+    if not evidence:
+        return {
+            "decision": "missing_ml_meta",
+            "fallback_reason": "",
+            "disabled_reason": "",
+            "mode": "shadow_replay",
+            "model_path": "__none__",
+            "rollout_mode": "shadow",
+            "rollout_selected": False,
+            "evidence_present": False,
+            "control_evidence_present": bool(control),
+            "control_selected": bool(control.get("was_control_selected")),
+            "control_reason": str(control.get("comparable_reason") or "").strip(),
+            "cohort_memberships": [],
+            "comparability_exclusion_reason": (
+                "missing_shadow_model_evidence"
+                if not control
+                else "missing_shadow_model_evidence"
+            ),
+        }
+
+    decision = str(evidence.get("comparable_decision") or "").strip().lower()
+    if decision not in VALID_DECISIONS:
+        decision = "missing_ml_meta"
+    reason = str(evidence.get("comparable_reason") or evidence.get("reason") or "").strip()
+    cohorts: set[str] = set()
+    comparability_exclusion_reason = ""
+    model_selected = bool(evidence.get("was_model_selected"))
+    control_selected = bool(control.get("was_control_selected"))
+    if not control:
+        comparability_exclusion_reason = "missing_baseline_control_evidence"
+    elif not control_selected:
+        comparability_exclusion_reason = str(control.get("comparable_reason") or "baseline_control_unavailable")
+    elif not model_selected:
+        comparability_exclusion_reason = reason or "model_not_selected"
+    else:
+        cohorts = {"model_used", "control"}
+    return {
+        "decision": decision,
+        "fallback_reason": reason if decision == "fallback" else "",
+        "disabled_reason": reason if decision == "disabled" else "",
+        "mode": "shadow_replay",
+        "model_path": normalized_model_path(evidence.get("model_path")) or "__none__",
+        "rollout_mode": "shadow",
+        "rollout_selected": model_selected,
+        "evidence_present": True,
+        "control_evidence_present": bool(control),
+        "control_selected": control_selected,
+        "control_reason": str(control.get("comparable_reason") or "").strip(),
+        "cohort_memberships": sorted(cohorts),
+        "comparability_exclusion_reason": comparability_exclusion_reason,
+        "baseline_control_product_type": str(control.get("selected_product_type") or "").strip().lower(),
+        "baseline_source": str(control.get("baseline_source") or "").strip().lower(),
+    }
+
+
+def _historical_anchor_state(
+    *,
+    shadow_payload: dict[str, Any],
+    control_payload: dict[str, Any],
+    anchor: dict[str, Any],
+) -> dict[str, Any]:
+    reconstruction_reason = str(anchor.get("reconstruction_reason") or "").strip()
+    if reconstruction_reason:
+        return {
+            "decision": "missing_ml_meta",
+            "fallback_reason": "",
+            "disabled_reason": "",
+            "mode": "historical_replay",
+            "model_path": "__none__",
+            "rollout_mode": "shadow",
+            "rollout_selected": False,
+            "evidence_present": bool(shadow_payload),
+            "control_evidence_present": bool(control_payload),
+            "control_selected": bool(control_payload.get("was_control_selected")),
+            "control_reason": str(control_payload.get("comparable_reason") or "").strip(),
+            "cohort_memberships": [],
+            "comparability_exclusion_reason": reconstruction_reason,
+            "exclusion_origin": "historical_reconstruction",
+        }
+
+    if not shadow_payload:
+        return {
+            "decision": "missing_ml_meta",
+            "fallback_reason": "",
+            "disabled_reason": "",
+            "mode": "historical_replay",
+            "model_path": "__none__",
+            "rollout_mode": "shadow",
+            "rollout_selected": False,
+            "evidence_present": False,
+            "control_evidence_present": bool(control_payload),
+            "control_selected": bool(control_payload.get("was_control_selected")),
+            "control_reason": str(control_payload.get("comparable_reason") or "").strip(),
+            "cohort_memberships": [],
+            "comparability_exclusion_reason": "missing_historical_shadow_evidence",
+            "exclusion_origin": "historical_reconstruction",
+        }
+
+    decision = str(shadow_payload.get("comparable_decision") or "").strip().lower()
+    if decision not in VALID_DECISIONS:
+        decision = "missing_ml_meta"
+    reason = str(shadow_payload.get("comparable_reason") or shadow_payload.get("reason") or "").strip()
+    model_selected = bool(shadow_payload.get("was_model_selected"))
+    control_selected = bool(control_payload.get("was_control_selected"))
+    cohorts: set[str] = set()
+    exclusion_reason = ""
+    if not control_payload:
+        exclusion_reason = "missing_historical_control_evidence"
+    elif not control_selected:
+        exclusion_reason = str(control_payload.get("comparable_reason") or "historical_control_unavailable")
+    elif not model_selected:
+        exclusion_reason = reason or "model_not_selected"
+    else:
+        cohorts = {"model_used", "control"}
+    return {
+        "decision": decision,
+        "fallback_reason": reason if decision == "fallback" else "",
+        "disabled_reason": reason if decision == "disabled" else "",
+        "mode": "historical_replay",
+        "model_path": normalized_model_path(shadow_payload.get("model_path")) or "__none__",
+        "rollout_mode": "shadow",
+        "rollout_selected": model_selected,
+        "evidence_present": True,
+        "control_evidence_present": bool(control_payload),
+        "control_selected": control_selected,
+        "control_reason": str(control_payload.get("comparable_reason") or "").strip(),
+        "cohort_memberships": sorted(cohorts),
+        "comparability_exclusion_reason": exclusion_reason,
+        "exclusion_origin": "historical_reconstruction" if exclusion_reason else "",
+    }
+
+
+def _touch_historical_bucket(
+    bucket: dict[str, Any],
+    *,
+    anchor_event_id: int,
+    user_id: int,
+    category: str,
+    has_exposed: bool,
+    has_clicked_after_exposure: bool,
+    has_completed_after_exposure: bool,
+    has_skipped_after_generated: bool,
+) -> None:
+    bucket["plans_total"] += 1
+    bucket["user_ids"].add(int(user_id))
+    bucket["category_counts"][str(category or "__unknown__")] += 1
+    bucket["steps_total"] += 1
+    bucket["step_status"][RoadmapStep.Status.RECOMMENDED] += 1
+    if has_exposed:
+        bucket["step_events"]["exposed"] += 1
+        bucket["exposed_plan_ids"].add(int(anchor_event_id))
+        bucket["exposed_step_ids"].add(int(anchor_event_id))
+    if has_clicked_after_exposure:
+        bucket["step_events"]["clicked"] += 1
+    if has_completed_after_exposure:
+        bucket["step_events"]["completed"] += 1
+    if has_skipped_after_generated:
+        bucket["step_events"]["skipped"] += 1
 
 
 def _freshness_labels(updated_at, *, now_utc, since):
@@ -434,8 +623,14 @@ def _build_markdown(payload: dict[str, Any]) -> str:
     )
     lines.append(
         f"- Cohort mode: `{params.get('cohort_mode')}` | Control: `{params.get('control')}` | "
-        f"Category: `{params.get('category')}` | include_ga: `{params.get('include_ga')}`"
+        f"Category: `{params.get('category')}` | include_ga: `{params.get('include_ga')}` | "
+        f"evidence_source: `{params.get('evidence_source')}`"
     )
+    if str(params.get("model_path_filter") or "").strip():
+        lines.append(
+            f"- Exact model_path filter: `{params.get('model_path_filter')}` "
+            f"(model_version=`{payload.get('model_version') or ''}`)"
+        )
     lines.append(
         f"- Note: uplift is computed on cohort-mode `{params.get('cohort_mode')}` "
         "(default fresh excludes missing_ml_meta from active comparison)."
@@ -688,6 +883,57 @@ def _build_markdown(payload: dict[str, Any]) -> str:
         )
     )
     lines.append("")
+    comparability = _safe_dict(runtime.get("comparability"))
+    lines.append("### Comparability")
+    lines.append(
+        _md_table(
+            ["metric", "value"],
+            [
+                ["comparable_anchor_plans_total", comparability.get("comparable_anchor_plans_total", 0)],
+                ["model_cohort_plans_total", comparability.get("model_cohort_plans_total", 0)],
+                ["control_cohort_plans_total", comparability.get("control_cohort_plans_total", 0)],
+            ],
+        )
+    )
+    lines.append("")
+    lines.append("### Comparability excluded reasons")
+    lines.append(
+        _md_table(
+            ["reason", "count"],
+            [[k, v] for k, v in sorted(_safe_dict(comparability.get("excluded_reasons")).items(), key=lambda kv: (-kv[1], kv[0]))],
+        )
+    )
+    lines.append("")
+    historical = _safe_dict(runtime.get("historical_reconstruction"))
+    if historical:
+        lines.append("### Historical reconstruction")
+        lines.append(
+            _md_table(
+                ["metric", "value"],
+                [
+                    ["anchors_total_in_scope", historical.get("anchors_total_in_scope", 0)],
+                    ["anchors_total_after_cohort_mode", historical.get("anchors_total_after_cohort_mode", 0)],
+                    ["anchors_recovered_historically", historical.get("anchors_recovered_historically", 0)],
+                ],
+            )
+        )
+        lines.append("")
+        lines.append("### Current snapshot excluded reasons")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [[k, v] for k, v in sorted(_safe_dict(historical.get("current_snapshot_excluded_reasons")).items(), key=lambda kv: (-kv[1], kv[0]))],
+            )
+        )
+        lines.append("")
+        lines.append("### Historical reconstruction excluded reasons")
+        lines.append(
+            _md_table(
+                ["reason", "count"],
+                [[k, v] for k, v in sorted(_safe_dict(historical.get("historical_reconstruction_excluded_reasons")).items(), key=lambda kv: (-kv[1], kv[0]))],
+            )
+        )
+        lines.append("")
     lines.append("### Rollout mode distribution")
     lines.append(
         _md_table(
@@ -803,11 +1049,553 @@ class Command(BaseCommand):
         parser.add_argument("--control", type=str, default="non_model", choices=CONTROL_CHOICES)
         parser.add_argument("--min-plans", type=int, default=30)
         parser.add_argument(
+            "--evidence-source",
+            type=str,
+            default="runtime",
+            choices=EVIDENCE_SOURCE_CHOICES,
+            help="Choose active runtime meta or shadow replay evidence as the cohort source.",
+        )
+        parser.add_argument(
+            "--model-path",
+            type=str,
+            default="",
+            help="Optional exact model_path filter. When set, only model_used plans for that artifact enter the model cohort.",
+        )
+        parser.add_argument(
             "--sync-runtime-artifact",
             action="store_true",
             default=False,
             help="Write JSON payload to the model-owned runtime uplift artifact path for 7d/30d windows.",
         )
+
+    def _emit_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        out_raw: str | None,
+        out_format: str,
+        sync_runtime_artifact: bool,
+        runtime_window: str | None,
+    ) -> None:
+        markdown = _build_markdown(payload)
+        json_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        out_stem = _resolve_out_stem(
+            out=out_raw,
+            days=int(_safe_dict(payload.get("params")).get("days") or 0),
+            category=str(_safe_dict(payload.get("params")).get("category") or "all"),
+        )
+        wrote_paths: list[Path] = []
+
+        if out_format in {"md", "both"}:
+            if out_raw:
+                md_path = out_stem.with_suffix(".md")
+                md_path.parent.mkdir(parents=True, exist_ok=True)
+                md_path.write_text(markdown, encoding="utf-8")
+                wrote_paths.append(md_path)
+            else:
+                self.stdout.write(markdown)
+
+        if out_format in {"json", "both"}:
+            if out_raw:
+                json_path = out_stem.with_suffix(".json")
+                json_path.parent.mkdir(parents=True, exist_ok=True)
+                json_path.write_text(json_text, encoding="utf-8")
+                wrote_paths.append(json_path)
+            else:
+                if out_format == "json":
+                    self.stdout.write(json_text)
+                else:
+                    self.stdout.write("\n---\n")
+                    self.stdout.write(json_text)
+
+        if sync_runtime_artifact and runtime_window is not None:
+            runtime_json_path = v4_runtime_uplift_report_path(runtime_window)
+            runtime_json_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime_json_path.write_text(json_text, encoding="utf-8")
+            self.stderr.write(f"[report_roadmap_ml_uplift] synced runtime artifact: {runtime_json_path}")
+
+        for p in wrote_paths:
+            self.stdout.write(f"[report_roadmap_ml_uplift] wrote: {p}")
+
+    def _build_historical_replay_payload(
+        self,
+        *,
+        now_utc,
+        since,
+        days: int,
+        category: str,
+        include_ga: bool,
+        out_format: str,
+        cohort_mode: str,
+        control: str,
+        min_plans: int,
+        evidence_source: str,
+        model_path_filter: str,
+        sync_runtime_artifact: bool,
+    ) -> dict[str, Any]:
+        anchors = build_historical_continuation_anchor_records(
+            since=since,
+            until=now_utc,
+            category=category,
+            include_ga=include_ga,
+        )
+        plan_ids = sorted({int(anchor["plan_id"]) for anchor in anchors if int(anchor.get("plan_id") or 0) > 0})
+        plan_rows = {
+            int(row["id"]): row
+            for row in RoadmapPlan.objects.filter(id__in=plan_ids).values(
+                "id",
+                "user_id",
+                "category",
+                "meta",
+            )
+        }
+
+        current_snapshot_exclusion_counts: Counter[str] = Counter()
+        current_snapshot_exclusion_by_plan: dict[int, str] = {}
+        for plan_id, row in plan_rows.items():
+            state = _shadow_replay_plan_state(meta=_safe_dict(row.get("meta")), model_path_filter=model_path_filter)
+            reason = str(state.get("comparability_exclusion_reason") or "").strip()
+            current_snapshot_exclusion_by_plan[int(plan_id)] = reason
+
+        overall_buckets = {"model_used": _new_bucket(), "control": _new_bucket()}
+        by_category_buckets: dict[str, dict[str, Any]] = defaultdict(
+            lambda: {"model_used": _new_bucket(), "control": _new_bucket()}
+        )
+        by_freshness_buckets: dict[str, dict[str, Any]] = {
+            "1d": {"model_used": _new_bucket(), "control": _new_bucket()},
+            "3d": {"model_used": _new_bucket(), "control": _new_bucket()},
+            "window": {"model_used": _new_bucket(), "control": _new_bucket()},
+        }
+        by_source_buckets: dict[str, dict[str, Any]] = {
+            "offers": {"model_used": _new_source_bucket(), "control": _new_source_bucket()},
+            "roadmap_api": {"model_used": _new_source_bucket(), "control": _new_source_bucket()},
+        }
+
+        decision_counts: Counter[str] = Counter()
+        fallback_reason_counts: Counter[str] = Counter()
+        disabled_reason_counts: Counter[str] = Counter()
+        mode_counts: Counter[str] = Counter()
+        model_path_counts: Counter[str] = Counter()
+        rollout_mode_counts: Counter[str] = Counter()
+        rollout_selected_counts: Counter[str] = Counter()
+        comparability_exclusion_counts: Counter[str] = Counter()
+        plan_control_reason: dict[str, str] = {}
+        model_anchor_ids: set[str] = set()
+        control_anchor_ids: set[str] = set()
+        all_scope_anchor_ids: set[str] = set()
+        cohort_scope_anchor_ids: set[str] = set()
+        recovered_from_current_snapshot = 0
+
+        for anchor in anchors:
+            anchor_key = str(anchor.get("anchor_key") or "")
+            plan_id = int(anchor.get("plan_id") or 0)
+            anchor_event_id = int(anchor.get("anchor_event_id") or 0)
+            anchor_created_at = anchor.get("anchor_created_at")
+            anchor_category = str(anchor.get("category") or "__unknown__")
+            plan_row = _safe_dict(plan_rows.get(plan_id))
+            meta = _safe_dict(plan_row.get("meta"))
+            all_scope_anchor_ids.add(anchor_key)
+
+            if current_snapshot_exclusion_by_plan.get(plan_id):
+                current_snapshot_exclusion_counts[current_snapshot_exclusion_by_plan[plan_id]] += 1
+
+            shadow_payload = _safe_dict(
+                _safe_dict(get_historical_shadow_evidence_for_model_path(meta, model_path_filter)).get(anchor_key)
+            )
+            control_payload = _safe_dict(
+                _safe_dict(get_historical_control_evidence_for_model_path(meta, model_path_filter)).get(anchor_key)
+            )
+            state = _historical_anchor_state(
+                shadow_payload=shadow_payload,
+                control_payload=control_payload,
+                anchor=anchor,
+            )
+            decision = str(state.get("decision") or "missing_ml_meta")
+            decision_counts[decision] += 1
+            mode = str(state.get("mode") or "historical_replay") or "historical_replay"
+            mode_counts[mode] += 1
+            model_path_counts[str(state.get("model_path") or "__none__")] += 1
+            rollout_mode_counts[str(state.get("rollout_mode") or "shadow")] += 1
+            rollout_selected_counts["selected" if bool(state.get("rollout_selected")) else "not_selected"] += 1
+            if decision == "fallback":
+                fallback_reason_counts[str(state.get("fallback_reason") or "__missing_reason__")] += 1
+            elif decision == "disabled":
+                disabled_reason_counts[str(state.get("disabled_reason") or "__missing_reason__")] += 1
+
+            if cohort_mode == "fresh" and decision == "missing_ml_meta":
+                reason = str(state.get("comparability_exclusion_reason") or "").strip()
+                if reason:
+                    comparability_exclusion_counts[reason] += 1
+                continue
+
+            cohort_scope_anchor_ids.add(anchor_key)
+            cohorts = {
+                str(cohort or "").strip().lower()
+                for cohort in _safe_list(state.get("cohort_memberships"))
+                if str(cohort or "").strip()
+            }
+            exclusion_reason = str(state.get("comparability_exclusion_reason") or "").strip()
+            plan_control_reason[anchor_key] = str(state.get("control_reason") or "").strip()
+            if not cohorts:
+                if exclusion_reason:
+                    comparability_exclusion_counts[exclusion_reason] += 1
+                continue
+
+            if current_snapshot_exclusion_by_plan.get(plan_id):
+                recovered_from_current_snapshot += 1
+
+            labels = _freshness_labels(anchor_created_at, now_utc=now_utc, since=since)
+            has_exposed = bool(anchor.get("has_exposed"))
+            has_clicked_after_exposure = bool(anchor.get("has_clicked_after_exposure"))
+            has_completed_after_exposure = bool(anchor.get("has_completed_after_exposure"))
+            has_skipped_after_generated = bool(anchor.get("has_skipped_after_generated"))
+            expose_source = str(anchor.get("first_expose_source") or "").strip().lower()
+
+            for cohort in sorted(cohorts):
+                if cohort == "model_used":
+                    model_anchor_ids.add(anchor_key)
+                if cohort == "control":
+                    control_anchor_ids.add(anchor_key)
+
+                _touch_historical_bucket(
+                    overall_buckets[cohort],
+                    anchor_event_id=anchor_event_id,
+                    user_id=int(anchor.get("user_id") or 0),
+                    category=anchor_category,
+                    has_exposed=has_exposed,
+                    has_clicked_after_exposure=has_clicked_after_exposure,
+                    has_completed_after_exposure=has_completed_after_exposure,
+                    has_skipped_after_generated=has_skipped_after_generated,
+                )
+                _touch_historical_bucket(
+                    by_category_buckets[anchor_category][cohort],
+                    anchor_event_id=anchor_event_id,
+                    user_id=int(anchor.get("user_id") or 0),
+                    category=anchor_category,
+                    has_exposed=has_exposed,
+                    has_clicked_after_exposure=has_clicked_after_exposure,
+                    has_completed_after_exposure=has_completed_after_exposure,
+                    has_skipped_after_generated=has_skipped_after_generated,
+                )
+                for label in labels:
+                    _touch_historical_bucket(
+                        by_freshness_buckets[label][cohort],
+                        anchor_event_id=anchor_event_id,
+                        user_id=int(anchor.get("user_id") or 0),
+                        category=anchor_category,
+                        has_exposed=has_exposed,
+                        has_clicked_after_exposure=has_clicked_after_exposure,
+                        has_completed_after_exposure=has_completed_after_exposure,
+                        has_skipped_after_generated=has_skipped_after_generated,
+                    )
+                if expose_source in {"offers", "roadmap_api"} and has_exposed:
+                    source_bucket = by_source_buckets[expose_source][cohort]
+                    source_bucket["step_events"]["exposed"] += 1
+                    if has_clicked_after_exposure:
+                        source_bucket["step_events"]["clicked"] += 1
+                    if has_completed_after_exposure:
+                        source_bucket["step_events"]["completed"] += 1
+                    if has_skipped_after_generated:
+                        source_bucket["step_events"]["skipped"] += 1
+                    source_bucket["exposed_plan_ids"].add(anchor_event_id)
+                    source_bucket["exposed_step_ids"].add(anchor_event_id)
+
+        model_final = _finalize_bucket(overall_buckets["model_used"])
+        control_final = _finalize_bucket(overall_buckets["control"])
+        by_category_final = {
+            cat: {
+                "model_used": _finalize_bucket(rows["model_used"]),
+                "control": _finalize_bucket(rows["control"]),
+            }
+            for cat, rows in sorted(by_category_buckets.items())
+        }
+        by_freshness_final = {
+            key: {
+                "model_used": _finalize_bucket(by_freshness_buckets[key]["model_used"]),
+                "control": _finalize_bucket(by_freshness_buckets[key]["control"]),
+            }
+            for key in ["1d", "3d", "window"]
+        }
+        by_source_final = {
+            source: {
+                "model_used": _finalize_source_bucket(by_source_buckets[source]["model_used"]),
+                "control": _finalize_source_bucket(by_source_buckets[source]["control"]),
+            }
+            for source in ["offers", "roadmap_api"]
+        }
+
+        def _uplift_from_pair(model_block: dict[str, Any], control_block: dict[str, Any]) -> dict[str, Any]:
+            model_plans = int(model_block.get("plans_total", 0))
+            control_plans = int(control_block.get("plans_total", 0))
+            return {
+                "step_funnel": {
+                    "step_ctr": _build_uplift_metric(
+                        metric="step_ctr",
+                        model_success=int(model_block.get("roadmap_step_clicked", 0)),
+                        model_total=int(model_block.get("roadmap_step_exposed", 0)),
+                        control_success=int(control_block.get("roadmap_step_clicked", 0)),
+                        control_total=int(control_block.get("roadmap_step_exposed", 0)),
+                        model_plans=model_plans,
+                        control_plans=control_plans,
+                        min_plans=min_plans,
+                    ),
+                    "step_completion_rate": _build_uplift_metric(
+                        metric="step_completion_rate",
+                        model_success=int(model_block.get("roadmap_step_completed", 0)),
+                        model_total=int(model_block.get("roadmap_step_exposed", 0)),
+                        control_success=int(control_block.get("roadmap_step_completed", 0)),
+                        control_total=int(control_block.get("roadmap_step_exposed", 0)),
+                        model_plans=model_plans,
+                        control_plans=control_plans,
+                        min_plans=min_plans,
+                    ),
+                    "skip_rate": _build_uplift_metric(
+                        metric="skip_rate",
+                        model_success=int(model_block.get("roadmap_step_skipped", 0)),
+                        model_total=int(model_block.get("roadmap_step_exposed", 0)),
+                        control_success=int(control_block.get("roadmap_step_skipped", 0)),
+                        control_total=int(control_block.get("roadmap_step_exposed", 0)),
+                        model_plans=model_plans,
+                        control_plans=control_plans,
+                        min_plans=min_plans,
+                    ),
+                },
+                "offer_funnel": {
+                    "offer_ctr": _build_uplift_metric(
+                        metric="offer_ctr",
+                        model_success=0,
+                        model_total=0,
+                        control_success=0,
+                        control_total=0,
+                        model_plans=model_plans,
+                        control_plans=control_plans,
+                        min_plans=min_plans,
+                    ),
+                    "offer_redeem_rate": _build_uplift_metric(
+                        metric="offer_redeem_rate",
+                        model_success=0,
+                        model_total=0,
+                        control_success=0,
+                        control_total=0,
+                        model_plans=model_plans,
+                        control_plans=control_plans,
+                        min_plans=min_plans,
+                    ),
+                },
+            }
+
+        overall_uplift = _uplift_from_pair(model_final, control_final)
+        by_category_uplift = {
+            cat: _uplift_from_pair(rows["model_used"], rows["control"])
+            for cat, rows in sorted(by_category_final.items())
+        }
+        by_freshness_uplift = {
+            key: _uplift_from_pair(rows["model_used"], rows["control"])
+            for key, rows in sorted(by_freshness_final.items())
+        }
+        by_source_uplift = {
+            source: {
+                "step_funnel": {
+                    "step_ctr": _build_uplift_metric(
+                        metric="step_ctr",
+                        model_success=int(rows["model_used"].get("roadmap_step_clicked", 0)),
+                        model_total=int(rows["model_used"].get("roadmap_step_exposed", 0)),
+                        control_success=int(rows["control"].get("roadmap_step_clicked", 0)),
+                        control_total=int(rows["control"].get("roadmap_step_exposed", 0)),
+                        model_plans=int(model_final.get("plans_total", 0)),
+                        control_plans=int(control_final.get("plans_total", 0)),
+                        min_plans=min_plans,
+                    ),
+                    "step_completion_rate": _build_uplift_metric(
+                        metric="step_completion_rate",
+                        model_success=int(rows["model_used"].get("roadmap_step_completed", 0)),
+                        model_total=int(rows["model_used"].get("roadmap_step_exposed", 0)),
+                        control_success=int(rows["control"].get("roadmap_step_completed", 0)),
+                        control_total=int(rows["control"].get("roadmap_step_exposed", 0)),
+                        model_plans=int(model_final.get("plans_total", 0)),
+                        control_plans=int(control_final.get("plans_total", 0)),
+                        min_plans=min_plans,
+                    ),
+                    "skip_rate": _build_uplift_metric(
+                        metric="skip_rate",
+                        model_success=int(rows["model_used"].get("roadmap_step_skipped", 0)),
+                        model_total=int(rows["model_used"].get("roadmap_step_exposed", 0)),
+                        control_success=int(rows["control"].get("roadmap_step_skipped", 0)),
+                        control_total=int(rows["control"].get("roadmap_step_exposed", 0)),
+                        model_plans=int(model_final.get("plans_total", 0)),
+                        control_plans=int(control_final.get("plans_total", 0)),
+                        min_plans=min_plans,
+                    ),
+                },
+                "offer_funnel": {
+                    "offer_ctr": {"metric": "offer_ctr", "note": "historical_replay does not reconstruct offer cohorts"},
+                    "offer_redeem_rate": {"metric": "offer_redeem_rate", "note": "historical_replay does not reconstruct offer cohorts"},
+                },
+            }
+            for source, rows in sorted(by_source_final.items())
+        }
+
+        partial_makeup_empty = _finalize_bucket(_new_bucket())
+        partial_makeup_uplift = {
+            "definition": {
+                "canary": "not_applicable_for_historical_replay",
+                "control": "not_applicable_for_historical_replay",
+            },
+            "overall": {
+                "canary": partial_makeup_empty,
+                "control": partial_makeup_empty,
+                "uplift": _uplift_from_pair(partial_makeup_empty, partial_makeup_empty),
+            },
+            "by_product_type": {},
+            "by_step_index": {},
+        }
+
+        model_summary = _safe_dict(nextstep_model_artifact_summary(model_path_filter)) if model_path_filter else {}
+        guard_eval_report = {
+            "model_path": model_path_filter,
+            "model_version": str(model_summary.get("model_version") or ""),
+            "params": {
+                "cohort_mode": "fresh",
+                "control": "non_model",
+                "model_path_filter": model_path_filter,
+                "evidence_source": evidence_source,
+            },
+            "breakdowns": {"by_category": by_category_final},
+            "uplift": {"by_category": by_category_uplift},
+        }
+        rollout_categories = [category] if category != "all" else sorted(set(["skincare", "haircare", "makeup", "fragrance"]) | set(by_category_final.keys()))
+        rollout_recommendation_by_category: dict[str, Any] = {}
+        for cat in rollout_categories:
+            rollout = v4_category_rollout_status(cat)
+            guard = v4_category_uplift_guard_status_from_report(
+                cat,
+                guard_eval_report,
+                report_path=f"inline://report_roadmap_ml_uplift?days={days}&category={category}&evidence_source={evidence_source}",
+            )
+            recommendation = "DISABLE" if not bool(rollout.get("passed")) else ("ENABLE" if bool(guard.get("passed")) else "HOLD")
+            rollout_recommendation_by_category[cat] = {
+                "recommendation": recommendation,
+                "rollout": rollout,
+                "guard": guard,
+            }
+
+        runtime_observability = {
+            "decision_counts": {
+                "model_used": int(decision_counts.get("model_used", 0)),
+                "fallback": int(decision_counts.get("fallback", 0)),
+                "disabled": int(decision_counts.get("disabled", 0)),
+                "missing_ml_meta": int(decision_counts.get("missing_ml_meta", 0)),
+            },
+            "comparability": {
+                "comparable_anchor_plans_total": int(len(model_anchor_ids & control_anchor_ids)),
+                "model_cohort_plans_total": int(len(model_anchor_ids)),
+                "control_cohort_plans_total": int(len(control_anchor_ids)),
+                "baseline_control_reasons": {
+                    str(k): int(v)
+                    for k, v in sorted(
+                        Counter(reason for reason in plan_control_reason.values() if str(reason or "").strip()).items(),
+                        key=lambda kv: (-kv[1], kv[0]),
+                    )
+                },
+                "excluded_reasons": {
+                    str(k): int(v)
+                    for k, v in sorted(comparability_exclusion_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+            },
+            "historical_reconstruction": {
+                "anchors_total_in_scope": int(len(all_scope_anchor_ids)),
+                "anchors_total_after_cohort_mode": int(len(cohort_scope_anchor_ids)),
+                "anchors_recovered_historically": int(recovered_from_current_snapshot),
+                "current_snapshot_excluded_reasons": {
+                    str(k): int(v)
+                    for k, v in sorted(current_snapshot_exclusion_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+                "historical_reconstruction_excluded_reasons": {
+                    str(k): int(v)
+                    for k, v in sorted(comparability_exclusion_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+            },
+            "rollout_mode_distribution": {
+                str(k): int(v)
+                for k, v in sorted(rollout_mode_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            },
+            "rollout_selected_distribution": {
+                str(k): int(v)
+                for k, v in sorted(rollout_selected_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            },
+            "fallback_reasons": {
+                str(k): int(v)
+                for k, v in sorted(fallback_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            },
+            "disabled_reasons": {
+                str(k): int(v)
+                for k, v in sorted(disabled_reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            },
+            "mode_distribution": {
+                str(k): int(v)
+                for k, v in sorted(mode_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+            },
+            "top_model_paths": [
+                {"model_path": str(k), "count": int(v)}
+                for k, v in model_path_counts.most_common(10)
+            ],
+        }
+
+        return {
+            "generated_at_utc": now_utc.isoformat(),
+            "window_start_utc": since.isoformat(),
+            "window_end_utc": now_utc.isoformat(),
+            "model_path": model_path_filter,
+            "model_version": str(model_summary.get("model_version") or ""),
+            "params": {
+                "days": days,
+                "category": category,
+                "include_ga": include_ga,
+                "format": out_format,
+                "cohort_mode": cohort_mode,
+                "control": control,
+                "min_plans": min_plans,
+                "evidence_source": evidence_source,
+                "model_path_filter": model_path_filter,
+                "sync_runtime_artifact": sync_runtime_artifact,
+            },
+            "overall": {
+                "plans_total_in_scope": len(all_scope_anchor_ids),
+                "plans_total_after_cohort_mode": len(cohort_scope_anchor_ids),
+                "analysis_plans_total": len(model_anchor_ids | control_anchor_ids),
+                "model_used_plans_total": len(model_anchor_ids),
+                "control_plans_total": len(control_anchor_ids),
+            },
+            "cohorts": {"model_used": model_final, "control": control_final},
+            "uplift": {
+                "overall": overall_uplift,
+                "by_category": by_category_uplift,
+                "by_freshness": by_freshness_uplift,
+                "by_expose_source": by_source_uplift,
+            },
+            "partial_makeup_uplift": partial_makeup_uplift,
+            "breakdowns": {
+                "by_category": by_category_final,
+                "by_freshness": by_freshness_final,
+                "by_expose_source": by_source_final,
+            },
+            "runtime_observability": runtime_observability,
+            "rollout_recommendation_by_category": rollout_recommendation_by_category,
+            "unattributed_excluded": {
+                "fresh_mode_excluded_missing_ml_meta_plans": int(len(all_scope_anchor_ids - cohort_scope_anchor_ids)),
+                "cohort_scope_excluded_non_selected_plans": int(len(cohort_scope_anchor_ids - (model_anchor_ids | control_anchor_ids))),
+                "historical_anchors_total": int(len(anchors)),
+                "historical_anchors_with_plan_meta": int(sum(1 for anchor in anchors if int(anchor.get("plan_id") or 0) in plan_rows)),
+                "historical_current_snapshot_exclusions": int(sum(current_snapshot_exclusion_counts.values())),
+            },
+            "notes": [
+                "Read-only wrt DB: no DB writes; file outputs happen only via --out or --sync-runtime-artifact.",
+                "historical_replay reconstructs continuation anchors from PLAN_REFRESHED + STEP_GENERATED immutable event windows.",
+                "Current-snapshot exclusions are reported separately from historical reconstruction exclusions.",
+                "Comparable model/control anchors can overlap because both decisions are reconstructed for the same immutable anchor under freeze.",
+                "Offer uplift is not reconstructed for historical_replay; offer metrics remain informational zeros.",
+            ],
+        }
 
     def handle(self, *args, **options):
         days = int(options["days"] or 7)
@@ -821,9 +1609,13 @@ class Command(BaseCommand):
         cohort_mode = str(options["cohort_mode"] or "fresh").strip().lower()
         control = str(options["control"] or "non_model").strip().lower()
         min_plans = int(options["min_plans"] or 30)
+        evidence_source = str(options.get("evidence_source") or "runtime").strip().lower()
         sync_runtime_artifact = bool(options.get("sync_runtime_artifact"))
+        model_path_filter = _normalized_path(options.get("model_path"))
         if min_plans <= 0:
             raise CommandError("--min-plans must be > 0")
+        if evidence_source in {"shadow_replay", "historical_replay"} and not model_path_filter:
+            raise CommandError(f"--evidence-source {evidence_source} requires --model-path")
         runtime_window = _runtime_window_label(days)
         if sync_runtime_artifact:
             if runtime_window is None:
@@ -834,9 +1626,43 @@ class Command(BaseCommand):
                 raise CommandError("--sync-runtime-artifact requires --cohort-mode fresh")
             if control != "non_model":
                 raise CommandError("--sync-runtime-artifact requires --control non_model")
+            if evidence_source != "runtime":
+                raise CommandError("--sync-runtime-artifact requires --evidence-source runtime")
+            if not model_path_filter:
+                model_path_filter = _normalized_path(
+                    getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or ""
+                )
+            if not model_path_filter:
+                raise CommandError(
+                    "--sync-runtime-artifact requires ROADMAP_NEXTSTEP_V4_MODEL_PATH or --model-path"
+                )
 
         now_utc = timezone.now()
         since = now_utc - timedelta(days=days)
+
+        if evidence_source == "historical_replay":
+            payload = self._build_historical_replay_payload(
+                now_utc=now_utc,
+                since=since,
+                days=days,
+                category=category,
+                include_ga=include_ga,
+                out_format=out_format,
+                cohort_mode=cohort_mode,
+                control=control,
+                min_plans=min_plans,
+                evidence_source=evidence_source,
+                model_path_filter=model_path_filter,
+                sync_runtime_artifact=sync_runtime_artifact,
+            )
+            self._emit_payload(
+                payload=payload,
+                out_raw=out_raw,
+                out_format=out_format,
+                sync_runtime_artifact=sync_runtime_artifact,
+                runtime_window=runtime_window,
+            )
+            return
 
         if control == "disabled":
             control_decisions = {"disabled"}
@@ -873,9 +1699,14 @@ class Command(BaseCommand):
         model_path_counts: Counter[str] = Counter()
         rollout_mode_counts: Counter[str] = Counter()
         rollout_selected_counts: Counter[str] = Counter()
+        comparability_exclusion_counts: Counter[str] = Counter()
         plans_by_user_scope: dict[int, list[dict[str, Any]]] = defaultdict(list)
         plan_rollout_mode: dict[int, str] = {}
         plan_rollout_selected: dict[int, bool] = {}
+        plan_model_path: dict[int, str] = {}
+        cohorts_by_plan_id: dict[int, set[str]] = defaultdict(set)
+        plan_comparability_exclusion_reason: dict[int, str] = {}
+        plan_control_reason: dict[int, str] = {}
 
         for row in plan_rows:
             pid = int(row["id"])
@@ -885,24 +1716,48 @@ class Command(BaseCommand):
             meta = _safe_dict(row.get("meta"))
             ml = _safe_dict(meta.get("ml"))
 
-            decision = _decision_from_meta(meta)
+            if evidence_source == "shadow_replay":
+                plan_state = _shadow_replay_plan_state(
+                    meta=meta,
+                    model_path_filter=model_path_filter,
+                )
+                decision = str(plan_state.get("decision") or "missing_ml_meta")
+                fallback_reason = str(plan_state.get("fallback_reason") or "").strip()
+                disabled_reason = str(plan_state.get("disabled_reason") or "").strip()
+                mode = str(plan_state.get("mode") or "shadow_replay").strip() or "shadow_replay"
+                model_path = _normalized_path(plan_state.get("model_path")) or "__none__"
+                rollout_mode = str(plan_state.get("rollout_mode") or "shadow").strip().lower() or "shadow"
+                rollout_selected = bool(plan_state.get("rollout_selected"))
+                plan_control_reason[pid] = str(plan_state.get("control_reason") or "").strip()
+                plan_comparability_exclusion_reason[pid] = str(
+                    plan_state.get("comparability_exclusion_reason") or ""
+                ).strip()
+                for cohort in _safe_list(plan_state.get("cohort_memberships")):
+                    normalized_cohort = str(cohort or "").strip().lower()
+                    if normalized_cohort in {"model_used", "control"}:
+                        cohorts_by_plan_id[pid].add(normalized_cohort)
+            else:
+                decision = _decision_from_meta(meta)
+                fallback_reason = str(ml.get("fallback_reason") or "").strip()
+                disabled_reason = str(ml.get("disabled_reason") or ml.get("fallback_reason") or "").strip()
+                mode = str(ml.get("mode") or "none").strip() or "none"
+                model_path = _normalized_path(ml.get("model_path")) or "__none__"
+                rollout_mode = str(ml.get("rollout_mode") or "none").strip().lower() or "none"
+                rollout_selected = _as_bool(ml.get("rollout_selected"))
+
             decision_counts[decision] += 1
 
             if decision == "fallback":
-                reason = str(ml.get("fallback_reason") or "").strip() or "__missing_reason__"
+                reason = fallback_reason or "__missing_reason__"
                 fallback_reason_counts[reason] += 1
             elif decision == "disabled":
-                reason = str(ml.get("disabled_reason") or ml.get("fallback_reason") or "").strip() or "__missing_reason__"
+                reason = disabled_reason or "__missing_reason__"
                 disabled_reason_counts[reason] += 1
 
-            mode = str(ml.get("mode") or "none").strip() or "none"
-            model_path = str(ml.get("model_path") or "__none__").strip() or "__none__"
             mode_counts[mode] += 1
             model_path_counts[model_path] += 1
-            rollout_mode = str(ml.get("rollout_mode") or "none").strip().lower() or "none"
-            if rollout_mode not in {"full", "partial", "none"}:
+            if rollout_mode not in {"full", "partial", "none", "shadow"}:
                 rollout_mode = "none"
-            rollout_selected = _as_bool(ml.get("rollout_selected"))
             if rollout_mode == "full":
                 rollout_selected = True
             elif rollout_mode == "none":
@@ -916,6 +1771,7 @@ class Command(BaseCommand):
             plan_decision[pid] = decision
             plan_rollout_mode[pid] = rollout_mode
             plan_rollout_selected[pid] = rollout_selected
+            plan_model_path[pid] = model_path
             plans_by_user_scope[user_id].append(
                 {
                     "id": pid,
@@ -932,19 +1788,29 @@ class Command(BaseCommand):
 
         fresh_excluded_missing = len(all_scope_plan_ids - cohort_scope_plan_ids)
 
-        cohort_by_plan_id: dict[int, str] = {}
-        for pid in cohort_scope_plan_ids:
-            cohort = _decision_to_cohort(
-                plan_decision.get(pid, "missing_ml_meta"),
-                cohort_mode=cohort_mode,
-                control_decisions=control_decisions,
-            )
-            if cohort:
-                cohort_by_plan_id[pid] = cohort
+        if evidence_source != "shadow_replay":
+            for pid in cohort_scope_plan_ids:
+                cohort = _decision_to_cohort(
+                    plan_decision.get(pid, "missing_ml_meta"),
+                    cohort_mode=cohort_mode,
+                    control_decisions=control_decisions,
+                )
+                if cohort == "model_used" and model_path_filter:
+                    if str(plan_model_path.get(pid) or "__none__") != model_path_filter:
+                        cohort = None
+                if cohort:
+                    cohorts_by_plan_id[pid].add(cohort)
 
-        model_plan_ids = {pid for pid, c in cohort_by_plan_id.items() if c == "model_used"}
-        control_plan_ids = {pid for pid, c in cohort_by_plan_id.items() if c == "control"}
-        analysis_plan_ids = set(cohort_by_plan_id.keys())
+        for pid in cohort_scope_plan_ids:
+            if cohorts_by_plan_id.get(pid):
+                continue
+            reason = str(plan_comparability_exclusion_reason.get(pid) or "").strip()
+            if reason:
+                comparability_exclusion_counts[reason] += 1
+
+        model_plan_ids = {pid for pid, cohorts in cohorts_by_plan_id.items() if "model_used" in cohorts}
+        control_plan_ids = {pid for pid, cohorts in cohorts_by_plan_id.items() if "control" in cohorts}
+        analysis_plan_ids = model_plan_ids | control_plan_ids
         excluded_non_selected = len(cohort_scope_plan_ids - analysis_plan_ids)
         makeup_cohort_scope_plan_ids = {
             pid for pid in cohort_scope_plan_ids if str(plan_category.get(pid) or "") == "makeup"
@@ -983,7 +1849,6 @@ class Command(BaseCommand):
             plans_by_user_scope[user_id] = rows
 
         for pid in analysis_plan_ids:
-            cohort = cohort_by_plan_id[pid]
             user_id = plan_user[pid]
             cat = plan_category[pid]
             updated_at = plan_updated[pid]
@@ -992,16 +1857,17 @@ class Command(BaseCommand):
             segment_keys.extend([("freshness", x) for x in labels])
             plan_segments[pid] = segment_keys
 
-            for section, key in segment_keys:
-                if section == "overall":
-                    bucket = overall_buckets[cohort]
-                elif section == "category":
-                    bucket = by_category_buckets[key][cohort]
-                else:
-                    bucket = by_freshness_buckets[key][cohort]
-                bucket["plans_total"] += 1
-                bucket["user_ids"].add(user_id)
-                bucket["category_counts"][cat] += 1
+            for cohort in sorted(cohorts_by_plan_id.get(pid, set())):
+                for section, key in segment_keys:
+                    if section == "overall":
+                        bucket = overall_buckets[cohort]
+                    elif section == "category":
+                        bucket = by_category_buckets[key][cohort]
+                    else:
+                        bucket = by_freshness_buckets[key][cohort]
+                    bucket["plans_total"] += 1
+                    bucket["user_ids"].add(user_id)
+                    bucket["category_counts"][cat] += 1
 
         plan_step_types: dict[int, set[str]] = defaultdict(set)
         plan_step_index_buckets: dict[int, set[str]] = defaultdict(set)
@@ -1033,18 +1899,18 @@ class Command(BaseCommand):
                 plan_steps_total[pid] += cnt
 
         for pid in analysis_plan_ids:
-            cohort = cohort_by_plan_id[pid]
             status_counts = plan_step_status_counts.get(pid, Counter())
             total_steps = int(plan_steps_total.get(pid, 0))
-            for section, key in plan_segments.get(pid, []):
-                if section == "overall":
-                    bucket = overall_buckets[cohort]
-                elif section == "category":
-                    bucket = by_category_buckets[key][cohort]
-                else:
-                    bucket = by_freshness_buckets[key][cohort]
-                bucket["steps_total"] += total_steps
-                bucket["step_status"].update(status_counts)
+            for cohort in sorted(cohorts_by_plan_id.get(pid, set())):
+                for section, key in plan_segments.get(pid, []):
+                    if section == "overall":
+                        bucket = overall_buckets[cohort]
+                    elif section == "category":
+                        bucket = by_category_buckets[key][cohort]
+                    else:
+                        bucket = by_freshness_buckets[key][cohort]
+                    bucket["steps_total"] += total_steps
+                    bucket["step_status"].update(status_counts)
 
         step_sources_by_cohort_step: dict[tuple[str, int], set[str]] = defaultdict(set)
         if cohort_scope_plan_ids:
@@ -1066,29 +1932,30 @@ class Command(BaseCommand):
                 plan_metrics[pid]["roadmap_step_exposed"] += 1
                 if step_id is not None:
                     plan_exposed_step_ids[pid].add(step_id)
-                cohort = cohort_by_plan_id.get(pid)
-                if cohort not in {"model_used", "control"}:
+                cohorts = cohorts_by_plan_id.get(pid, set())
+                if not cohorts:
                     continue
                 source = _source_from_expose_context(_safe_dict(row.get("context")))
 
-                for section, key in plan_segments.get(pid, []):
-                    if section == "overall":
-                        bucket = overall_buckets[cohort]
-                    elif section == "category":
-                        bucket = by_category_buckets[key][cohort]
-                    else:
-                        bucket = by_freshness_buckets[key][cohort]
-                    bucket["step_events"]["exposed"] += 1
-                    bucket["exposed_plan_ids"].add(pid)
-                    if step_id is not None:
-                        bucket["exposed_step_ids"].add(step_id)
+                for cohort in sorted(cohorts):
+                    for section, key in plan_segments.get(pid, []):
+                        if section == "overall":
+                            bucket = overall_buckets[cohort]
+                        elif section == "category":
+                            bucket = by_category_buckets[key][cohort]
+                        else:
+                            bucket = by_freshness_buckets[key][cohort]
+                        bucket["step_events"]["exposed"] += 1
+                        bucket["exposed_plan_ids"].add(pid)
+                        if step_id is not None:
+                            bucket["exposed_step_ids"].add(step_id)
 
-                source_bucket = by_source_buckets[source][cohort]
-                source_bucket["step_events"]["exposed"] += 1
-                source_bucket["exposed_plan_ids"].add(pid)
-                if step_id is not None:
-                    source_bucket["exposed_step_ids"].add(step_id)
-                    step_sources_by_cohort_step[(cohort, step_id)].add(source)
+                    source_bucket = by_source_buckets[source][cohort]
+                    source_bucket["step_events"]["exposed"] += 1
+                    source_bucket["exposed_plan_ids"].add(pid)
+                    if step_id is not None:
+                        source_bucket["exposed_step_ids"].add(step_id)
+                        step_sources_by_cohort_step[(cohort, step_id)].add(source)
 
             interaction_qs = (
                 RoadmapEvent.objects.filter(
@@ -1118,22 +1985,23 @@ class Command(BaseCommand):
                 if not metric_key:
                     continue
                 plan_metrics[pid][f"roadmap_step_{metric_key}"] += 1
-                cohort = cohort_by_plan_id.get(pid)
-                if cohort not in {"model_used", "control"}:
+                cohorts = cohorts_by_plan_id.get(pid, set())
+                if not cohorts:
                     continue
 
-                for section, key in plan_segments.get(pid, []):
-                    if section == "overall":
-                        bucket = overall_buckets[cohort]
-                    elif section == "category":
-                        bucket = by_category_buckets[key][cohort]
-                    else:
-                        bucket = by_freshness_buckets[key][cohort]
-                    bucket["step_events"][metric_key] += 1
+                for cohort in sorted(cohorts):
+                    for section, key in plan_segments.get(pid, []):
+                        if section == "overall":
+                            bucket = overall_buckets[cohort]
+                        elif section == "category":
+                            bucket = by_category_buckets[key][cohort]
+                        else:
+                            bucket = by_freshness_buckets[key][cohort]
+                        bucket["step_events"][metric_key] += 1
 
-                if step_id is not None:
-                    for source in step_sources_by_cohort_step.get((cohort, step_id), set()):
-                        by_source_buckets[source][cohort]["step_events"][metric_key] += 1
+                    if step_id is not None:
+                        for source in step_sources_by_cohort_step.get((cohort, step_id), set()):
+                            by_source_buckets[source][cohort]["step_events"][metric_key] += 1
 
         roadmap_assignment_total = 0
         roadmap_assignment_attributed = 0
@@ -1235,8 +2103,8 @@ class Command(BaseCommand):
                 if shortcut:
                     plan_metrics[attributed_plan_id_int]["offers_with_roadmap_shortcut"] += 1
 
-            cohort = cohort_by_plan_id.get(attributed_plan_id_int)
-            if cohort not in {"model_used", "control"}:
+            cohorts = cohorts_by_plan_id.get(attributed_plan_id_int, set())
+            if not cohorts:
                 roadmap_assignment_excluded_non_cohort += 1
                 assignment_state[assignment_id] = {
                     "state": "non_cohort",
@@ -1248,20 +2116,21 @@ class Command(BaseCommand):
             roadmap_assignment_attributed += 1
             assignment_state[assignment_id] = {
                 "state": "cohort",
-                "cohort": cohort,
+                "cohorts": sorted(cohorts),
                 "plan_id": attributed_plan_id_int,
                 "attribution_kind": attribution_kind,
             }
-            for section, key in plan_segments.get(attributed_plan_id_int, []):
-                if section == "overall":
-                    bucket = overall_buckets[cohort]
-                elif section == "category":
-                    bucket = by_category_buckets[key][cohort]
-                else:
-                    bucket = by_freshness_buckets[key][cohort]
-                bucket["offers"]["assigned_total"] += 1
-                if shortcut:
-                    bucket["offers"]["shortcut_total"] += 1
+            for cohort in sorted(cohorts):
+                for section, key in plan_segments.get(attributed_plan_id_int, []):
+                    if section == "overall":
+                        bucket = overall_buckets[cohort]
+                    elif section == "category":
+                        bucket = by_category_buckets[key][cohort]
+                    else:
+                        bucket = by_freshness_buckets[key][cohort]
+                    bucket["offers"]["assigned_total"] += 1
+                    if shortcut:
+                        bucket["offers"]["shortcut_total"] += 1
 
         offer_unattributed_event_counts: Counter[str] = Counter()
         offer_qs = OfferEvent.objects.filter(
@@ -1293,16 +2162,21 @@ class Command(BaseCommand):
             if plan_id_for_metrics is not None and int(plan_id_for_metrics) in cohort_scope_plan_ids:
                 plan_metrics[int(plan_id_for_metrics)][f"offer_{metric}"] += 1
             if state.get("state") == "cohort":
-                cohort = str(state.get("cohort"))
+                cohorts = {
+                    str(cohort or "").strip().lower()
+                    for cohort in _safe_list(state.get("cohorts"))
+                    if str(cohort or "").strip()
+                }
                 plan_id = int(state.get("plan_id"))
-                for section, key in plan_segments.get(plan_id, []):
-                    if section == "overall":
-                        bucket = overall_buckets[cohort]
-                    elif section == "category":
-                        bucket = by_category_buckets[key][cohort]
-                    else:
-                        bucket = by_freshness_buckets[key][cohort]
-                    bucket["offers"][metric] += 1
+                for cohort in sorted(cohorts):
+                    for section, key in plan_segments.get(plan_id, []):
+                        if section == "overall":
+                            bucket = overall_buckets[cohort]
+                        elif section == "category":
+                            bucket = by_category_buckets[key][cohort]
+                        else:
+                            bucket = by_freshness_buckets[key][cohort]
+                        bucket["offers"][metric] += 1
             else:
                 offer_unattributed_event_counts[metric] += 1
 
@@ -1579,6 +2453,26 @@ class Command(BaseCommand):
                 "disabled": int(decision_counts.get("disabled", 0)),
                 "missing_ml_meta": int(decision_counts.get("missing_ml_meta", 0)),
             },
+            "comparability": {
+                "comparable_anchor_plans_total": int(len(model_plan_ids & control_plan_ids)),
+                "model_cohort_plans_total": int(len(model_plan_ids)),
+                "control_cohort_plans_total": int(len(control_plan_ids)),
+                "baseline_control_reasons": {
+                    str(k): int(v)
+                    for k, v in sorted(
+                        Counter(
+                            reason
+                            for reason in plan_control_reason.values()
+                            if str(reason or "").strip()
+                        ).items(),
+                        key=lambda kv: (-kv[1], kv[0]),
+                    )
+                },
+                "excluded_reasons": {
+                    str(k): int(v)
+                    for k, v in sorted(comparability_exclusion_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                },
+            },
             "rollout_mode_distribution": {
                 str(k): int(v)
                 for k, v in sorted(rollout_mode_counts.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -1605,10 +2499,19 @@ class Command(BaseCommand):
             ],
         }
 
+        model_summary = (
+            _safe_dict(nextstep_model_artifact_summary(model_path_filter))
+            if model_path_filter
+            else {}
+        )
         guard_eval_report = {
+            "model_path": model_path_filter,
+            "model_version": str(model_summary.get("model_version") or ""),
             "params": {
                 "cohort_mode": "fresh",
                 "control": "non_model",
+                "model_path_filter": model_path_filter,
+                "evidence_source": evidence_source,
             },
             "breakdowns": {
                 "by_category": by_category_final,
@@ -1646,6 +2549,8 @@ class Command(BaseCommand):
             "generated_at_utc": now_utc.isoformat(),
             "window_start_utc": since.isoformat(),
             "window_end_utc": now_utc.isoformat(),
+            "model_path": model_path_filter,
+            "model_version": str(model_summary.get("model_version") or ""),
             "params": {
                 "days": days,
                 "category": category,
@@ -1654,6 +2559,8 @@ class Command(BaseCommand):
                 "cohort_mode": cohort_mode,
                 "control": control,
                 "min_plans": min_plans,
+                "evidence_source": evidence_source,
+                "model_path_filter": model_path_filter,
                 "sync_runtime_artifact": sync_runtime_artifact,
             },
             "overall": {
@@ -1696,6 +2603,9 @@ class Command(BaseCommand):
             "notes": [
                 "Read-only wrt DB: no DB writes; file outputs happen only via --out or --sync-runtime-artifact.",
                 "By default cohort-mode=fresh excludes missing_ml_meta from active uplift comparison.",
+                "When model_path_filter is set, only exact-artifact model_used plans enter the model cohort.",
+                f"Evidence source for cohort construction: {evidence_source}.",
+                "shadow_replay compares exact-artifact model shadow evidence against baseline control evidence reconstructed from the same plan anchor.",
                 "Historical tail is still visible in runtime_observability decision counts.",
                 "Offer attribution is conservative: explicit roadmap.plan_id first, fallback only when match is reliable.",
                 "Unattributed roadmap assignments/events are reported separately and never forced into cohorts.",
@@ -1703,39 +2613,10 @@ class Command(BaseCommand):
             ],
         }
 
-        markdown = _build_markdown(payload)
-        json_text = json.dumps(payload, ensure_ascii=False, indent=2)
-
-        out_stem = _resolve_out_stem(out=out_raw, days=days, category=category)
-        wrote_paths: list[Path] = []
-
-        if out_format in {"md", "both"}:
-            if out_raw:
-                md_path = out_stem.with_suffix(".md")
-                md_path.parent.mkdir(parents=True, exist_ok=True)
-                md_path.write_text(markdown, encoding="utf-8")
-                wrote_paths.append(md_path)
-            else:
-                self.stdout.write(markdown)
-
-        if out_format in {"json", "both"}:
-            if out_raw:
-                json_path = out_stem.with_suffix(".json")
-                json_path.parent.mkdir(parents=True, exist_ok=True)
-                json_path.write_text(json_text, encoding="utf-8")
-                wrote_paths.append(json_path)
-            else:
-                if out_format == "json":
-                    self.stdout.write(json_text)
-                else:
-                    self.stdout.write("\n---\n")
-                    self.stdout.write(json_text)
-
-        if sync_runtime_artifact and runtime_window is not None:
-            runtime_json_path = v4_runtime_uplift_report_path(runtime_window)
-            runtime_json_path.parent.mkdir(parents=True, exist_ok=True)
-            runtime_json_path.write_text(json_text, encoding="utf-8")
-            self.stderr.write(f"[report_roadmap_ml_uplift] synced runtime artifact: {runtime_json_path}")
-
-        for p in wrote_paths:
-            self.stdout.write(f"[report_roadmap_ml_uplift] wrote: {p}")
+        self._emit_payload(
+            payload=payload,
+            out_raw=out_raw,
+            out_format=out_format,
+            sync_runtime_artifact=sync_runtime_artifact,
+            runtime_window=runtime_window,
+        )

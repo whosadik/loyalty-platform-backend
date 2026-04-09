@@ -20,6 +20,17 @@ from django.conf import settings
 from django.utils import timezone
 
 from catalog.models import Product
+from roadmap_app.ml_artifact_proof import (
+    PROOF_FILE_EVAL,
+    PROOF_FILE_METADATA,
+    PROOF_FILE_SHADOW,
+    PROOF_FILE_UPLIFT_30D,
+    PROOF_FILE_UPLIFT_7D,
+    artifact_dir_for_model_path,
+    artifact_file_path,
+    load_json_file,
+    proof_bundle_status,
+)
 from roadmap_app.content_features import (
     build_base_content_features,
     build_candidate_catalog_summaries,
@@ -59,15 +70,19 @@ def _model_dir() -> Path:
 
 
 def _artifact_dir_for_model_path(model_path: Path) -> Path:
-    return model_path.parent if model_path.suffix else model_path
+    return artifact_dir_for_model_path(model_path)
 
 
 def _artifact_metadata_path_for_model_path(model_path: Path) -> Path:
-    return (_artifact_dir_for_model_path(model_path) / "metadata.json").expanduser()
+    return artifact_file_path(model_path, PROOF_FILE_METADATA)
 
 
 def _artifact_eval_report_path_for_model_path(model_path: Path) -> Path:
-    return (_artifact_dir_for_model_path(model_path) / "eval_report.json").expanduser()
+    return artifact_file_path(model_path, PROOF_FILE_EVAL)
+
+
+def _artifact_shadow_report_path_for_model_path(model_path: Path) -> Path:
+    return artifact_file_path(model_path, PROOF_FILE_SHADOW)
 
 
 def _artifact_metadata_path() -> Path:
@@ -79,8 +94,8 @@ def _artifact_eval_report_path() -> Path:
 
 
 def _artifact_uplift_report_path(window: str) -> Path:
-    suffix = "30d" if str(window or "").strip() == "30d" else "7d"
-    return (_model_dir() / f"uplift_report_{suffix}.json").expanduser()
+    suffix = PROOF_FILE_UPLIFT_30D if str(window or "").strip() == "30d" else PROOF_FILE_UPLIFT_7D
+    return artifact_file_path(_model_path(), suffix)
 
 
 def v4_runtime_eval_report_path() -> Path:
@@ -89,44 +104,6 @@ def v4_runtime_eval_report_path() -> Path:
 
 def v4_runtime_uplift_report_path(window: str) -> Path:
     return _artifact_uplift_report_path(window)
-
-
-def _eval_path() -> Path:
-    raw = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_EVAL_PATH", "") or "").strip()
-    if not raw:
-        raw = str(
-            (Path(__file__).resolve().parents[2] / "reports" / "roadmap_nextstep_v4_eval.json").resolve()
-        )
-    return Path(raw).expanduser()
-
-
-def _uplift_report_path() -> Path:
-    raw = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_UPLIFT_REPORT_PATH", "") or "").strip()
-    if not raw:
-        raw = str(
-            (Path(__file__).resolve().parents[2] / "reports" / "roadmap_ml_uplift_30d.json").resolve()
-        )
-    return Path(raw).expanduser()
-
-
-def _uplift_report_path_7d() -> Path:
-    raw = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_UPLIFT_REPORT_PATH_7D", "") or "").strip()
-    if not raw:
-        raw = str(
-            (Path(__file__).resolve().parents[2] / "reports" / "roadmap_ml_uplift_7d.json").resolve()
-        )
-    return Path(raw).expanduser()
-
-
-def _uplift_report_path_30d() -> Path:
-    raw = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_UPLIFT_REPORT_PATH_30D", "") or "").strip()
-    if not raw:
-        raw = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_UPLIFT_REPORT_PATH", "") or "").strip()
-    if not raw:
-        raw = str(
-            (Path(__file__).resolve().parents[2] / "reports" / "roadmap_ml_uplift_30d.json").resolve()
-        )
-    return Path(raw).expanduser()
 
 
 @lru_cache(maxsize=4)
@@ -252,38 +229,9 @@ def _eval_report_from_metadata(metadata: dict[str, Any] | None) -> dict[str, Any
     return report
 
 
-def _load_eval_report_bundle() -> tuple[dict[str, Any] | None, str, list[str]]:
-    candidate_paths = [str(_artifact_eval_report_path()), str(_eval_path())]
-    seen: set[str] = set()
-    normalized_candidates: list[str] = []
-    for raw in candidate_paths:
-        path_str = str(raw or "").strip()
-        if not path_str or path_str in seen:
-            continue
-        seen.add(path_str)
-        normalized_candidates.append(path_str)
-        path = Path(path_str)
-        if not path.exists() or not path.is_file():
-            continue
-        try:
-            report = _load_eval_report_cached(str(path.resolve()), int(path.stat().st_mtime_ns))
-        except Exception:
-            report = None
-        if report:
-            return report, path_str, normalized_candidates
-
-    metadata = _load_model_metadata()
-    metadata_report = _eval_report_from_metadata(metadata)
-    metadata_path = str(_artifact_metadata_path())
-    normalized_candidates.append(f"{metadata_path}#embedded_eval")
-    if metadata_report:
-        return metadata_report, f"{metadata_path}#embedded_eval", normalized_candidates
-    return None, str(_eval_path()), normalized_candidates
-
-
-def _load_eval_report() -> dict[str, Any] | None:
-    report, _, _ = _load_eval_report_bundle()
-    return report
+def _load_eval_report_for_path(model_path: str | Path | None) -> dict[str, Any] | None:
+    path = _artifact_eval_report_path_for_model_path(Path(str(model_path or "").strip()).expanduser())
+    return load_json_file(path)
 
 
 def nextstep_model_artifact_summary(model_path: str | Path | None = None) -> dict[str, Any]:
@@ -374,41 +322,51 @@ def _load_uplift_report_from_path(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def _load_uplift_report_bundle(window: str) -> tuple[dict[str, Any] | None, str]:
-    candidates: list[Path] = []
-    if str(window or "").strip() == "30d":
-        candidates = [_artifact_uplift_report_path("30d"), _uplift_report_path_30d()]
-    elif str(window or "").strip() == "legacy":
-        candidates = [_artifact_uplift_report_path("30d"), _uplift_report_path()]
-    else:
-        candidates = [_artifact_uplift_report_path("7d"), _uplift_report_path_7d()]
-
-    seen: set[str] = set()
-    for path in candidates:
-        path_str = str(path)
-        if not path_str or path_str in seen:
-            continue
-        seen.add(path_str)
-        report = _load_uplift_report_from_path(path)
-        if report:
-            return report, path_str
-    fallback = candidates[-1] if candidates else _uplift_report_path()
-    return None, str(fallback)
+def _artifact_uplift_report_path_for_model_path(model_path: str | Path | None, window: str) -> Path:
+    suffix = PROOF_FILE_UPLIFT_30D if str(window or "").strip() == "30d" else PROOF_FILE_UPLIFT_7D
+    return artifact_file_path(model_path, suffix)
 
 
-def _load_uplift_report() -> dict[str, Any] | None:
-    report, _ = _load_uplift_report_bundle("legacy")
-    return report
+def _load_uplift_report_bundle_for_model_path(
+    model_path: str | Path | None,
+    window: str,
+) -> tuple[dict[str, Any] | None, str]:
+    path = _artifact_uplift_report_path_for_model_path(model_path, window)
+    return _load_uplift_report_from_path(path), str(path)
 
 
-def _load_uplift_report_7d() -> dict[str, Any] | None:
-    report, _ = _load_uplift_report_bundle("7d")
-    return report
-
-
-def _load_uplift_report_30d() -> dict[str, Any] | None:
-    report, _ = _load_uplift_report_bundle("30d")
-    return report
+def nextstep_proof_bundle_status(
+    model_path: str | Path | None = None,
+    *,
+    require_shadow_report: bool = False,
+    require_uplift_reports: bool = False,
+) -> dict[str, Any]:
+    raw = str(model_path or _model_path()).strip()
+    if not raw:
+        return {
+            "model_path": "",
+            "artifact_dir": "",
+            "required_files": [],
+            "optional_files": [],
+            "files": {},
+            "required_complete": False,
+            "missing_required": ["model.pkl"],
+            "invalid_required": [],
+            "stale_required": [],
+            "reason": "missing_model_path",
+        }
+    metadata = _load_model_metadata_for_path(raw)
+    expected_model_version = str((metadata or {}).get("model_version") or "").strip() or None
+    required_files = [PROOF_FILE_METADATA, PROOF_FILE_EVAL]
+    if require_shadow_report:
+        required_files.append(PROOF_FILE_SHADOW)
+    if require_uplift_reports:
+        required_files.extend([PROOF_FILE_UPLIFT_7D, PROOF_FILE_UPLIFT_30D])
+    return proof_bundle_status(
+        model_path=raw,
+        required_files=required_files,
+        expected_model_version=expected_model_version,
+    )
 
 
 def _to_float(v: Any) -> float:
@@ -472,24 +430,35 @@ def _report_metric(report: dict[str, Any], metric: str) -> tuple[float | None, f
     return model_f, baseline_f
 
 
-def v4_min_lift_guard_status() -> dict[str, Any]:
+def v4_min_lift_guard_status(model_path: str | Path | None = None) -> dict[str, Any]:
     enabled = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_MIN_LIFT_GUARD_ENABLED", True))
     metric = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MIN_LIFT_METRIC", "ndcg_at_5") or "ndcg_at_5").strip()
     required_delta = float(getattr(settings, "ROADMAP_NEXTSTEP_V4_MIN_LIFT_DELTA", 0.01))
+    resolved_model_path = str(model_path or _model_path()).strip()
+    proof = nextstep_proof_bundle_status(resolved_model_path)
+    eval_path = str(_artifact_eval_report_path_for_model_path(Path(resolved_model_path).expanduser())) if resolved_model_path else ""
     out: dict[str, Any] = {
         "enabled": enabled,
         "metric": metric,
         "required_delta": required_delta,
         "passed": True,
         "reason": "guard_disabled" if not enabled else "ok",
-        "eval_path": str(_eval_path()),
+        "model_path": resolved_model_path,
+        "eval_path": eval_path,
+        "proof_bundle": proof,
     }
     if not enabled:
         return out
 
-    report, report_path, candidate_paths = _load_eval_report_bundle()
-    out["eval_path"] = report_path
-    out["eval_candidate_paths"] = candidate_paths
+    if not resolved_model_path:
+        out["passed"] = False
+        out["reason"] = "missing_model_path"
+        return out
+    if not bool(proof.get("required_complete")):
+        out["passed"] = False
+        out["reason"] = str(proof.get("reason") or "missing_eval_report")
+        return out
+    report = _load_eval_report_for_path(resolved_model_path)
     if not report:
         out["passed"] = False
         out["reason"] = "missing_eval_report"
@@ -619,7 +588,7 @@ def v4_category_uplift_guard_status_from_report(
 ) -> dict[str, Any]:
     category_norm = str(category or "").strip().lower()
     thresholds = _category_guard_thresholds_snapshot()
-    report_path_final = str(report_path or _uplift_report_path())
+    report_path_final = str(report_path or "")
 
     out: dict[str, Any] = {
         "passed": False,
@@ -682,7 +651,14 @@ def v4_category_uplift_guard_status_from_report(
 
     min_plans = int(thresholds["min_plans"])
     if model_plans < min_plans or control_plans < min_plans:
-        out["reason"] = "insufficient_sample"
+        if model_plans > 0 and control_plans > 0:
+            out["reason"] = "sample_too_small_but_nonzero_control"
+        elif model_plans > 0 and control_plans <= 0:
+            out["reason"] = "missing_control_sample"
+        elif control_plans > 0 and model_plans <= 0:
+            out["reason"] = "missing_model_sample"
+        else:
+            out["reason"] = "insufficient_sample"
         return out
 
     min_step_completion_lift = float(thresholds["min_step_completion_lift"])
@@ -695,7 +671,7 @@ def v4_category_uplift_guard_status_from_report(
     )
     out["primary_passed"] = primary_passed
     if not primary_passed:
-        out["reason"] = "primary_metrics_not_met"
+        out["reason"] = "low_uplift"
         return out
 
     secondary_step_threshold = float(thresholds["secondary_step_threshold"])
@@ -719,8 +695,13 @@ def v4_category_uplift_guard_status_from_report(
     return out
 
 
-def v4_category_uplift_guard_status(category: str) -> dict[str, Any]:
-    report, report_path = _load_uplift_report_bundle("legacy")
+def v4_category_uplift_guard_status(
+    category: str,
+    *,
+    model_path: str | Path | None = None,
+    window: str = "30d",
+) -> dict[str, Any]:
+    report, report_path = _load_uplift_report_bundle_for_model_path(model_path or _model_path(), window)
     return v4_category_uplift_guard_status_from_report(
         category,
         report,
@@ -747,12 +728,12 @@ def v4_category_staged_rollout_status_from_reports(
     guard_7d = v4_category_uplift_guard_status_from_report(
         category_norm,
         report_7d,
-        report_path=report_path_7d or str(_uplift_report_path_7d()),
+        report_path=report_path_7d,
     )
     guard_30d = v4_category_uplift_guard_status_from_report(
         category_norm,
         report_30d,
-        report_path=report_path_30d or str(_uplift_report_path_30d()),
+        report_path=report_path_30d,
     )
 
     recommendation_7d = _guard_recommendation(rollout, guard_7d)
@@ -796,15 +777,20 @@ def v4_category_staged_rollout_status_from_reports(
         "guard_7d": guard_7d,
         "guard_30d": guard_30d,
         "stability_gate_failures": stability_gate_failures,
-        "source_report_path_7d": str(report_path_7d or _uplift_report_path_7d()),
-        "source_report_path_30d": str(report_path_30d or _uplift_report_path_30d()),
+        "source_report_path_7d": str(report_path_7d or ""),
+        "source_report_path_30d": str(report_path_30d or ""),
     }
     return out
 
 
-def v4_category_staged_rollout_status(category: str) -> dict[str, Any]:
-    report_7d, report_path_7d = _load_uplift_report_bundle("7d")
-    report_30d, report_path_30d = _load_uplift_report_bundle("30d")
+def v4_category_staged_rollout_status(
+    category: str,
+    *,
+    model_path: str | Path | None = None,
+) -> dict[str, Any]:
+    resolved_model_path = str(model_path or _model_path()).strip()
+    report_7d, report_path_7d = _load_uplift_report_bundle_for_model_path(resolved_model_path, "7d")
+    report_30d, report_path_30d = _load_uplift_report_bundle_for_model_path(resolved_model_path, "30d")
     return v4_category_staged_rollout_status_from_reports(
         category,
         report_7d=report_7d,

@@ -1132,6 +1132,9 @@ class Command(BaseCommand):
             "target_column": target_column,
             "label_protocol_version": label_protocol_version,
             "outcome_windows_days": outcome_windows_days,
+            "targeted_retrain_policy_version": dataset_meta.get("targeted_retrain_policy_version"),
+            "targeted_retrain_policy": dataset_meta.get("targeted_retrain_policy") or {},
+            "targeted_retrain_summary": dataset_meta.get("targeted_retrain_summary") or {},
         }
 
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -1165,6 +1168,9 @@ class Command(BaseCommand):
             "negative_samples_per_episode": int(max_negatives_per_episode),
             "sample_weight_used": bool("sample_weight" in work.columns),
             "sample_weight_policy": dataset_meta.get("sample_weight_policy") or {},
+            "targeted_retrain_policy_version": dataset_meta.get("targeted_retrain_policy_version"),
+            "targeted_retrain_policy": dataset_meta.get("targeted_retrain_policy") or {},
+            "targeted_retrain_summary": dataset_meta.get("targeted_retrain_summary") or {},
             "selected_params": selected["params"],
             "candidate_types_by_category": dataset_meta.get("candidate_types_by_category") or {},
             "metrics_train": selected["metrics_train"],
@@ -1237,6 +1243,9 @@ class Command(BaseCommand):
             },
             "runtime_guard": runtime_guard,
             "report_stem": report_stem,
+            "targeted_retrain_policy_version": dataset_meta.get("targeted_retrain_policy_version"),
+            "targeted_retrain_policy": dataset_meta.get("targeted_retrain_policy") or {},
+            "targeted_retrain_summary": dataset_meta.get("targeted_retrain_summary") or {},
         }
         model_eval_report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         model_eval_report_md_path.write_text(_build_eval_markdown(report), encoding="utf-8")
