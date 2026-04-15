@@ -7,9 +7,8 @@ from typing import Any, Callable
 
 from django.utils import timezone
 
-from roadmap_app.historical_anchor_replay import build_historical_continuation_anchor_records
 from roadmap_app.ml_next_step import nextstep_model_artifact_summary, v4_category_staged_rollout_status
-from roadmap_app.models import RoadmapEvent, RoadmapPlan
+from roadmap_app.nextstep_historical_anchor_context import resolve_historical_anchor_read_context
 from roadmap_app.shadow_evidence import (
     get_historical_control_evidence_for_model_path,
     get_historical_shadow_evidence_for_model_path,
@@ -74,29 +73,6 @@ def _completion_window_truth_reason(anchor: dict[str, Any]) -> str:
     if not bool(anchor.get("has_completed_after_generated")):
         return "no_completed_truth_in_window_exposed_no_completion"
     return "no_completed_truth_in_window"
-
-
-def _completion_events_by_step(*, since, until, step_ids: set[int]) -> dict[int, list[dict[str, Any]]]:
-    if not step_ids:
-        return {}
-    rows = list(
-        RoadmapEvent.objects.filter(
-            event_type=RoadmapEvent.Type.STEP_COMPLETED,
-            step_id__in=step_ids,
-            created_at__gte=since,
-            created_at__lte=until,
-        )
-        .order_by("step_id", "created_at", "id")
-        .values("id", "step_id", "created_at", "context")
-    )
-    by_step: dict[int, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        try:
-            step_id = int(row.get("step_id") or 0)
-        except Exception:
-            continue
-        by_step[step_id].append(row)
-    return by_step
 
 
 def _first_completed_generated_candidate_truth(
@@ -338,6 +314,7 @@ def build_nextstep_v4_decision_quality_payload(
     category: str = "all",
     include_ga: bool = False,
     min_slice_size: int = 10,
+    historical_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now_utc = timezone.now()
     since = now_utc - timedelta(days=int(days))
@@ -345,29 +322,18 @@ def build_nextstep_v4_decision_quality_payload(
     if not model_path_norm:
         raise ValueError("model_path is required")
 
-    anchors = build_historical_continuation_anchor_records(
+    shared_context = resolve_historical_anchor_read_context(
         since=since,
         until=now_utc,
         category=category,
         include_ga=include_ga,
+        historical_context=historical_context,
     )
-    plan_ids = {int(anchor.get("plan_id") or 0) for anchor in anchors if int(anchor.get("plan_id") or 0) > 0}
-    meta_by_plan = {
-        int(row["id"]): _safe_dict(row.get("meta"))
-        for row in RoadmapPlan.objects.filter(id__in=plan_ids).values("id", "meta")
-    }
-
-    all_generated_step_ids = {
-        int(step_id)
-        for anchor in anchors
-        for step_id in _safe_list(anchor.get("generated_step_ids"))
-        if str(step_id or "").strip()
-    }
-    completions_by_step = _completion_events_by_step(
-        since=since,
-        until=now_utc,
-        step_ids=all_generated_step_ids,
-    )
+    since = shared_context.get("since", since)
+    now_utc = shared_context.get("until", now_utc)
+    anchors = _safe_list(shared_context.get("anchors"))
+    meta_by_plan = _safe_dict(shared_context.get("meta_by_plan"))
+    completions_by_step = _safe_dict(shared_context.get("completions_by_step"))
 
     records: list[dict[str, Any]] = []
     all_bucket = _new_bucket()

@@ -108,18 +108,6 @@ def build_historical_continuation_anchor_records(
     if not include_ga:
         qs = qs.exclude(user__username__startswith="ga_")
 
-    rows = list(
-        qs.values(
-            "id",
-            "user_id",
-            "plan_id",
-            "step_id",
-            "event_type",
-            "created_at",
-            "context",
-        )
-    )
-
     refreshes_by_plan: dict[int, list[dict[str, Any]]] = defaultdict(list)
     generated_by_plan: dict[int, list[dict[str, Any]]] = defaultdict(list)
     generated_by_plan_step: dict[tuple[int, int], list[dict[str, Any]]] = defaultdict(list)
@@ -127,10 +115,17 @@ def build_historical_continuation_anchor_records(
     clicks_by_step: dict[int, list[dict[str, Any]]] = defaultdict(list)
     completions_by_step: dict[int, list[dict[str, Any]]] = defaultdict(list)
     skips_by_step: dict[int, list[dict[str, Any]]] = defaultdict(list)
-
     category_filter = str(category or "all").strip().lower()
 
-    for row in rows:
+    for row in qs.values(
+        "id",
+        "user_id",
+        "plan_id",
+        "step_id",
+        "event_type",
+        "created_at",
+        "context",
+    ).iterator(chunk_size=2000):
         ctx = _safe_dict(row.get("context"))
         event_type = str(row.get("event_type") or "")
         event_id = int(row.get("id") or 0)

@@ -38,7 +38,8 @@ def _event_key(created_at: Any, event_id: Any) -> tuple[Any, int]:
 def completion_events_by_step(*, since, until, step_ids: set[int]) -> dict[int, list[dict[str, Any]]]:
     if not step_ids:
         return {}
-    rows = list(
+    out: dict[int, list[dict[str, Any]]] = {}
+    for row in (
         RoadmapEvent.objects.filter(
             event_type=RoadmapEvent.Type.STEP_COMPLETED,
             step_id__in=step_ids,
@@ -47,9 +48,8 @@ def completion_events_by_step(*, since, until, step_ids: set[int]) -> dict[int, 
         )
         .order_by("step_id", "created_at", "id")
         .values("id", "step_id", "created_at", "context")
-    )
-    out: dict[int, list[dict[str, Any]]] = {}
-    for row in rows:
+        .iterator(chunk_size=2000)
+    ):
         step_id = _to_int(row.get("step_id"))
         if step_id is None:
             continue

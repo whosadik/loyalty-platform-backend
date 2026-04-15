@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
 from django.db.utils import DatabaseError, OperationalError
+from django.utils import timezone
 
 from roadmap_app.ml_artifact_proof import (
     PROOF_FILE_EVAL,
@@ -20,6 +22,7 @@ from roadmap_app.ml_artifact_proof import (
 )
 from roadmap_app.ml_next_step import nextstep_model_artifact_summary
 from roadmap_app.nextstep_decision_quality import build_nextstep_v4_decision_quality_payload
+from roadmap_app.nextstep_historical_anchor_context import build_historical_anchor_read_context
 from roadmap_app.nextstep_haircare_shampoo_truth_design import (
     build_nextstep_haircare_shampoo_truth_design_payload,
 )
@@ -426,12 +429,18 @@ def _slice_lookup(payload: dict[str, Any], *, kind: str, key: str) -> dict[str, 
     return {}
 
 
-def _artifact_shampoo_truth_entry(*, model_path: str | Path, days: int) -> dict[str, Any]:
+def _artifact_shampoo_truth_entry(
+    *,
+    model_path: str | Path,
+    days: int,
+    historical_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     payload = build_nextstep_haircare_shampoo_truth_design_payload(
         model_path=model_path,
         reference_model_path="",
         days=days,
         include_ga=False,
+        historical_context=historical_context,
     )
     return {
         "executive_verdict": _safe_dict(payload.get("executive_verdict")),
@@ -498,12 +507,21 @@ def build_targeted_retrain_comparison_payload(
     candidate_model_path: str | Path,
     days: int = 30,
 ) -> dict[str, Any]:
+    now_utc = timezone.now()
+    since = now_utc - timedelta(days=int(days))
+    historical_context = build_historical_anchor_read_context(
+        since=since,
+        until=now_utc,
+        category="all",
+        include_ga=False,
+    )
     base_decision_quality = build_nextstep_v4_decision_quality_payload(
         model_path=base_model_path,
         days=days,
         category="all",
         include_ga=False,
         min_slice_size=10,
+        historical_context=historical_context,
     )
     candidate_decision_quality = build_nextstep_v4_decision_quality_payload(
         model_path=candidate_model_path,
@@ -511,6 +529,7 @@ def build_targeted_retrain_comparison_payload(
         category="all",
         include_ga=False,
         min_slice_size=10,
+        historical_context=historical_context,
     )
     base_eval = _load_eval_report(base_model_path)
     candidate_eval = _load_eval_report(candidate_model_path)
@@ -689,7 +708,13 @@ def render_targeted_retrain_comparison_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _artifact_comparison_entry(*, label: str, model_path: str | Path, days: int) -> dict[str, Any]:
+def _artifact_comparison_entry(
+    *,
+    label: str,
+    model_path: str | Path,
+    days: int,
+    historical_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     resolved_model_path = str(Path(str(model_path)).expanduser().resolve())
     decision_quality = build_nextstep_v4_decision_quality_payload(
         model_path=resolved_model_path,
@@ -697,6 +722,7 @@ def _artifact_comparison_entry(*, label: str, model_path: str | Path, days: int)
         category="all",
         include_ga=False,
         min_slice_size=10,
+        historical_context=historical_context,
     )
     return {
         "label": label,
@@ -707,6 +733,7 @@ def _artifact_comparison_entry(*, label: str, model_path: str | Path, days: int)
         "shampoo_truth_design": _artifact_shampoo_truth_entry(
             model_path=resolved_model_path,
             days=days,
+            historical_context=historical_context,
         ),
     }
 
@@ -1274,13 +1301,32 @@ def build_historical_anchor_candidate_comparison_payload(
     days: int = 30,
 ) -> dict[str, Any]:
     runtime_snapshot_before = _runtime_config_snapshot()
+    now_utc = timezone.now()
+    since = now_utc - timedelta(days=int(days))
+    historical_context = build_historical_anchor_read_context(
+        since=since,
+        until=now_utc,
+        category="all",
+        include_ga=False,
+    )
     artifacts = {
-        "active": _artifact_comparison_entry(label="active", model_path=active_model_path, days=days),
+        "active": _artifact_comparison_entry(
+            label="active",
+            model_path=active_model_path,
+            days=days,
+            historical_context=historical_context,
+        ),
         "retrain_v1": _artifact_comparison_entry(
-            label="retrain_v1", model_path=retrain_v1_model_path, days=days
+            label="retrain_v1",
+            model_path=retrain_v1_model_path,
+            days=days,
+            historical_context=historical_context,
         ),
         "v5_historical_anchor": _artifact_comparison_entry(
-            label="v5_historical_anchor", model_path=candidate_model_path, days=days
+            label="v5_historical_anchor",
+            model_path=candidate_model_path,
+            days=days,
+            historical_context=historical_context,
         ),
     }
     targeted_truth_rows = _comparison_slice_rows(

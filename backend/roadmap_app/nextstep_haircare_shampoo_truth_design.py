@@ -8,11 +8,9 @@ from typing import Any
 from django.conf import settings
 from django.utils import timezone
 
-from roadmap_app.historical_anchor_replay import build_historical_continuation_anchor_records
 from roadmap_app.ml_next_step import nextstep_model_artifact_summary
-from roadmap_app.models import RoadmapPlan
+from roadmap_app.nextstep_historical_anchor_context import resolve_historical_anchor_read_context
 from roadmap_app.nextstep_historical_anchor_dataset import (
-    completion_events_by_step,
     resolve_first_completed_generated_candidate,
 )
 from roadmap_app.shadow_evidence import (
@@ -659,35 +657,22 @@ def build_nextstep_haircare_shampoo_truth_design_payload(
     days: int = 30,
     include_ga: bool = False,
     reference_model_path: str | Path | None = None,
+    historical_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now_utc = timezone.now()
     since = now_utc - timedelta(days=int(days))
-    anchors = build_historical_continuation_anchor_records(
+    shared_context = resolve_historical_anchor_read_context(
         since=since,
         until=now_utc,
         category="all",
         include_ga=include_ga,
+        historical_context=historical_context,
     )
-    plan_ids = {
-        int(anchor.get("plan_id") or 0)
-        for anchor in anchors
-        if int(anchor.get("plan_id") or 0) > 0
-    }
-    meta_by_plan = {
-        int(row["id"]): _safe_dict(row.get("meta"))
-        for row in RoadmapPlan.objects.filter(id__in=plan_ids).values("id", "meta")
-    }
-    all_generated_step_ids = {
-        int(step_id)
-        for anchor in anchors
-        for step_id in _safe_list(anchor.get("generated_step_ids"))
-        if str(step_id or "").strip()
-    }
-    completions_by_step = completion_events_by_step(
-        since=since,
-        until=now_utc,
-        step_ids=all_generated_step_ids,
-    )
+    since = shared_context.get("since", since)
+    now_utc = shared_context.get("until", now_utc)
+    anchors = _safe_list(shared_context.get("anchors"))
+    meta_by_plan = _safe_dict(shared_context.get("meta_by_plan"))
+    completions_by_step = _safe_dict(shared_context.get("completions_by_step"))
 
     candidate_rows_payload = _build_shampoo_anchor_rows(
         model_path=str(model_path or ""),

@@ -27,6 +27,7 @@ from roadmap_app.nextstep_candidate_promotion import (
 )
 from roadmap_app.nextstep_artifact_eval import build_nextstep_v4_artifact_eval_report
 from roadmap_app.nextstep_decision_quality import build_nextstep_v4_decision_quality_payload
+from roadmap_app.nextstep_historical_anchor_context import build_historical_anchor_read_context
 from roadmap_app.nextstep_historical_anchor_dataset import (
     bucket_flags_for_row,
     classify_train_exclusion_reason,
@@ -1312,8 +1313,64 @@ class RoadmapNextstepDecisionQualityTests(TestCase):
         self.assertEqual(plan.meta, meta_before)
         self.assertEqual((plan.meta.get("ml") or {}).get("decision"), "disabled")
 
+    def test_decision_quality_reuses_provided_historical_context_without_extra_db_reads(self):
+        _, model_path, _ = self._create_decision_quality_plan(
+            username="dq_case_shared_context",
+            baseline_type="shampoo",
+            model_type="hair_mask",
+            completed_type="hair_mask",
+            category="haircare",
+        )
+        now_utc = timezone.now()
+        historical_context = build_historical_anchor_read_context(
+            since=now_utc - timedelta(days=30),
+            until=now_utc,
+            category="all",
+            include_ga=False,
+        )
+
+        with patch(
+            "roadmap_app.nextstep_historical_anchor_context.build_historical_continuation_anchor_records",
+            side_effect=AssertionError("historical anchors should be reused from provided context"),
+        ), patch(
+            "roadmap_app.nextstep_historical_anchor_context.RoadmapPlan.objects.filter",
+            side_effect=AssertionError("plan meta should be reused from provided context"),
+        ), patch(
+            "roadmap_app.nextstep_historical_anchor_context.completion_events_by_step",
+            side_effect=AssertionError("step completions should be reused from provided context"),
+        ):
+            payload = build_nextstep_v4_decision_quality_payload(
+                model_path=model_path,
+                days=30,
+                category="all",
+                min_slice_size=1,
+                historical_context=historical_context,
+            )
+
+        haircare = payload["per_category"]["haircare"]
+        self.assertEqual(haircare["model_wins_total"], 1)
+        self.assertEqual(haircare["baseline_wins_total"], 0)
+
 
 class RoadmapNextstepTargetedRetrainTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = patch(
+            "roadmap_app.nextstep_targeted_retrain.build_historical_anchor_read_context",
+            return_value={
+                "since": timezone.now() - timedelta(days=30),
+                "until": timezone.now(),
+                "category": "all",
+                "include_ga": False,
+                "anchors": [],
+                "meta_by_plan": {},
+                "completions_by_step": {},
+                "read_only": True,
+            },
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_targeted_retrain_weights_apply_target_and_protect_rules_without_touching_fragrance(self):
         df = pd.DataFrame(
             [
@@ -1609,6 +1666,24 @@ class RoadmapNextstepHistoricalAnchorTrainMetadataTests(SimpleTestCase):
 
 
 class RoadmapNextstepHistoricalAnchorComparisonTests(SimpleTestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = patch(
+            "roadmap_app.nextstep_targeted_retrain.build_historical_anchor_read_context",
+            return_value={
+                "since": timezone.now() - timedelta(days=30),
+                "until": timezone.now(),
+                "category": "all",
+                "include_ga": False,
+                "anchors": [],
+                "meta_by_plan": {},
+                "completions_by_step": {},
+                "read_only": True,
+            },
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def _two_stage_truth_payload(
         self,
         *,
@@ -2303,6 +2378,137 @@ class RoadmapNextstepHistoricalAnchorComparisonTests(SimpleTestCase):
             self.assertFalse(payload["qualification_scope"]["runtime_enablement"])
             self.assertFalse(payload["qualification_scope"]["rule_baseline_behavior_changed"])
 
+    def test_historical_anchor_comparison_reuses_one_shared_live_context(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            active_dir = root / "active"
+            retrain_dir = root / "retrain"
+            candidate_dir = root / "candidate"
+            for artifact_dir, version in [
+                (active_dir, "active_v1"),
+                (retrain_dir, "retrain_v1"),
+                (candidate_dir, "v5_v1"),
+            ]:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                model_path = artifact_dir / "model.pkl"
+                model_path.write_bytes(b"placeholder")
+                _write_json(artifact_dir / "metadata.json", {"model_version": version})
+                _write_json(
+                    artifact_dir / "eval_report.json",
+                    {"model_version": version, "metrics_test": {"recall_at_1": 0.23, "ndcg_at_5": 0.52}},
+                )
+                _write_json(artifact_dir / "shadow_report.json", {"model_version": version, "model_path": str(model_path)})
+                _write_json(artifact_dir / "uplift_report_7d.json", {"model_version": version, "model_path": str(model_path)})
+                _write_json(artifact_dir / "uplift_report_30d.json", {"model_version": version, "model_path": str(model_path)})
+
+            shared_context = {
+                "since": timezone.now() - timedelta(days=30),
+                "until": timezone.now(),
+                "category": "all",
+                "include_ga": False,
+                "anchors": [],
+                "meta_by_plan": {},
+                "completions_by_step": {},
+                "read_only": True,
+            }
+            dq_payloads = [
+                {
+                    "per_category": {
+                        "haircare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.16, "baseline_win_rate_vs_truth": 0.02, "both_wrong_rate": 0.42, "resolved_truth_anchors_total": 120},
+                        "skincare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.18, "baseline_win_rate_vs_truth": 0.10, "both_wrong_rate": 0.10, "resolved_truth_anchors_total": 300},
+                        "makeup": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 20},
+                        "fragrance": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.20, "baseline_win_rate_vs_truth": 0.15, "both_wrong_rate": 0.10, "resolved_truth_anchors_total": 20},
+                    },
+                    "overall_enabled_categories": {"net_win_rate_model_minus_baseline": 0.05, "both_wrong_rate": 0.15},
+                    "slice_analysis": {
+                        "truth_slice_lookup": {
+                            "haircare:hair_mask": {"model_win_rate_vs_truth": 0.3, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                            "haircare:hair_oil": {"model_win_rate_vs_truth": 0.4, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                            "skincare:essence": {"model_win_rate_vs_truth": 0.4, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 12},
+                        },
+                        "disagreement_pair_lookup": {
+                            "haircare:shampoo:conditioner": {"model_win_rate_vs_truth": 0.1, "baseline_win_rate_vs_truth": 0.7, "net_wins_model_minus_baseline": -2},
+                        },
+                    },
+                },
+                {
+                    "per_category": {
+                        "haircare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.18, "baseline_win_rate_vs_truth": 0.02, "both_wrong_rate": 0.40, "resolved_truth_anchors_total": 120},
+                        "skincare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.19, "baseline_win_rate_vs_truth": 0.10, "both_wrong_rate": 0.09, "resolved_truth_anchors_total": 300},
+                        "makeup": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 20},
+                        "fragrance": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.22, "baseline_win_rate_vs_truth": 0.15, "both_wrong_rate": 0.09, "resolved_truth_anchors_total": 20},
+                    },
+                    "overall_enabled_categories": {"net_win_rate_model_minus_baseline": 0.07, "both_wrong_rate": 0.14},
+                    "slice_analysis": {
+                        "truth_slice_lookup": {
+                            "haircare:hair_mask": {"model_win_rate_vs_truth": 0.31, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                            "haircare:hair_oil": {"model_win_rate_vs_truth": 0.41, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                            "skincare:essence": {"model_win_rate_vs_truth": 0.41, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 12},
+                        },
+                        "disagreement_pair_lookup": {
+                            "haircare:shampoo:conditioner": {"model_win_rate_vs_truth": 0.12, "baseline_win_rate_vs_truth": 0.7, "net_wins_model_minus_baseline": -2},
+                        },
+                    },
+                },
+                {
+                    "per_category": {
+                        "haircare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.30, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.10, "resolved_truth_anchors_total": 120},
+                        "skincare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.25, "baseline_win_rate_vs_truth": 0.10, "both_wrong_rate": 0.05, "resolved_truth_anchors_total": 300},
+                        "makeup": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 20},
+                        "fragrance": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.25, "baseline_win_rate_vs_truth": 0.10, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 20},
+                    },
+                    "overall_enabled_categories": {"net_win_rate_model_minus_baseline": 0.20, "both_wrong_rate": 0.0},
+                    "slice_analysis": {
+                        "truth_slice_lookup": {
+                            "haircare:hair_mask": {"model_win_rate_vs_truth": 0.32, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                            "haircare:hair_oil": {"model_win_rate_vs_truth": 0.42, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                            "skincare:essence": {"model_win_rate_vs_truth": 0.50, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 20},
+                        },
+                        "disagreement_pair_lookup": {
+                            "haircare:shampoo:conditioner": {"model_win_rate_vs_truth": 0.2, "baseline_win_rate_vs_truth": 0.7, "net_wins_model_minus_baseline": -1},
+                        },
+                    },
+                },
+            ]
+            decision_context_ids: list[int] = []
+            shampoo_context_ids: list[int] = []
+
+            def _decision_quality_side_effect(*args, **kwargs):
+                decision_context_ids.append(id(kwargs.get("historical_context")))
+                return dq_payloads[len(decision_context_ids) - 1]
+
+            shampoo_payloads = [
+                self._two_stage_truth_payload(stage1_model_win_rate=1.0, stage2_model_win_rate=0.5),
+                self._two_stage_truth_payload(stage1_model_win_rate=0.75, stage2_model_win_rate=0.25),
+                self._two_stage_truth_payload(stage1_model_win_rate=1.0, stage2_model_win_rate=1.0),
+            ]
+
+            def _shampoo_side_effect(*args, **kwargs):
+                shampoo_context_ids.append(id(kwargs.get("historical_context")))
+                return shampoo_payloads[len(shampoo_context_ids) - 1]
+
+            with patch(
+                "roadmap_app.nextstep_targeted_retrain.build_historical_anchor_read_context",
+                return_value=shared_context,
+            ) as build_context_mock, patch(
+                "roadmap_app.nextstep_targeted_retrain.build_nextstep_v4_decision_quality_payload",
+                side_effect=_decision_quality_side_effect,
+            ), patch(
+                "roadmap_app.nextstep_targeted_retrain.build_nextstep_haircare_shampoo_truth_design_payload",
+                side_effect=_shampoo_side_effect,
+            ):
+                payload = build_historical_anchor_candidate_comparison_payload(
+                    active_model_path=str(active_dir / "model.pkl"),
+                    retrain_v1_model_path=str(retrain_dir / "model.pkl"),
+                    candidate_model_path=str(candidate_dir / "model.pkl"),
+                    days=30,
+                )
+
+            self.assertEqual(build_context_mock.call_count, 1)
+            self.assertEqual(decision_context_ids, [id(shared_context)] * 3)
+            self.assertEqual(shampoo_context_ids, [id(shared_context)] * 3)
+            self.assertFalse(payload["catalog_safety"]["catalog_writes_performed"])
+
 
 class RoadmapNextstepCandidatePromotionTests(SimpleTestCase):
     def _cached_comparison_payload(self, *, active_model_path: str, retrain_model_path: str, candidate_model_path: str) -> dict:
@@ -2948,13 +3154,13 @@ class RoadmapNextstepHaircareShampooTruthDesignTests(SimpleTestCase):
 
         before_model_path = settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH
         with patch(
-            "roadmap_app.nextstep_haircare_shampoo_truth_design.build_historical_continuation_anchor_records",
+            "roadmap_app.nextstep_historical_anchor_context.build_historical_continuation_anchor_records",
             return_value=[anchor],
         ), patch(
-            "roadmap_app.nextstep_haircare_shampoo_truth_design.completion_events_by_step",
+            "roadmap_app.nextstep_historical_anchor_context.completion_events_by_step",
             return_value=completions,
         ), patch(
-            "roadmap_app.nextstep_haircare_shampoo_truth_design.RoadmapPlan.objects.filter",
+            "roadmap_app.nextstep_historical_anchor_context.RoadmapPlan.objects.filter",
             return_value=_ValuesWrapper(
                 self._model_meta(
                     model_path=model_path,
@@ -2979,3 +3185,52 @@ class RoadmapNextstepHaircareShampooTruthDesignTests(SimpleTestCase):
 
         self.assertFalse(payload["catalog_safety"]["catalog_writes_performed"])
         self.assertEqual(settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH, before_model_path)
+
+    def test_truth_design_payload_reuses_provided_historical_context_without_extra_db_reads(self):
+        model_path = str(Path("models/test_truth_design_shared_context_model.pkl").resolve())
+        anchor, completions = self._anchor(
+            anchor_key="plan_refresh:8",
+            step_id=18,
+            truth_product_type="hair_mask",
+        )
+        historical_context = {
+            "since": timezone.now() - timedelta(days=30),
+            "until": timezone.now(),
+            "category": "all",
+            "include_ga": False,
+            "anchors": [anchor],
+            "meta_by_plan": {
+                1: self._model_meta(
+                    model_path=model_path,
+                    anchor_key="plan_refresh:8",
+                    model_type="hair_mask",
+                    baseline_type="shampoo",
+                )
+            },
+            "completions_by_step": completions,
+            "read_only": True,
+        }
+
+        with patch(
+            "roadmap_app.nextstep_historical_anchor_context.build_historical_continuation_anchor_records",
+            side_effect=AssertionError("historical anchors should be reused from provided context"),
+        ), patch(
+            "roadmap_app.nextstep_historical_anchor_context.RoadmapPlan.objects.filter",
+            side_effect=AssertionError("plan meta should be reused from provided context"),
+        ), patch(
+            "roadmap_app.nextstep_historical_anchor_context.completion_events_by_step",
+            side_effect=AssertionError("step completions should be reused from provided context"),
+        ):
+            payload = build_nextstep_haircare_shampoo_truth_design_payload(
+                model_path=model_path,
+                reference_model_path=model_path,
+                days=30,
+                include_ga=False,
+                historical_context=historical_context,
+            )
+
+        self.assertEqual(
+            payload["candidate"]["truth_designs"]["designs"]["D_two_stage_truth"]["resolved_anchors_total"],
+            1,
+        )
+        self.assertFalse(payload["catalog_safety"]["catalog_writes_performed"])
