@@ -5,10 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from django.conf import settings
+from django.db.utils import DatabaseError, OperationalError
 
 from roadmap_app.integrity import (
     active_fragrance_runtime_integrity_counts,
     legacy_bad_fragrance_completion_details,
+)
+from roadmap_app.nextstep_candidate_promotion import (
+    build_v5_candidate_promotion_under_freeze_payload,
 )
 from roadmap_app.ml_artifact_proof import (
     PROOF_FILE_EVAL,
@@ -35,6 +39,8 @@ RUNTIME_CATEGORIES = ["skincare", "haircare", "makeup", "fragrance"]
 PASS = "PASS"
 HOLD = "HOLD"
 DISABLE = "DISABLE"
+DEFAULT_RETRAIN_V1_MODEL_PATH = "models/roadmap_next_step_v4_targeted_retrain_v1/model.pkl"
+DEFAULT_V5_PROMOTED_CANDIDATE_MODEL_PATH = "models/roadmap_next_step_v5_historical_anchor_targeted_v1/model.pkl"
 
 
 def _safe_dict(value: Any) -> dict[str, Any]:
@@ -404,14 +410,90 @@ def _missing_proof_items(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
+def freeze_candidate_promotion_manifest() -> dict[str, Any]:
+    active_model_path = str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or "").strip()
+    retrain_v1_model_path = DEFAULT_RETRAIN_V1_MODEL_PATH
+    candidate_model_path = DEFAULT_V5_PROMOTED_CANDIDATE_MODEL_PATH
+    try:
+        payload = build_v5_candidate_promotion_under_freeze_payload(
+            active_model_path=active_model_path,
+            retrain_v1_model_path=retrain_v1_model_path,
+            candidate_model_path=candidate_model_path,
+            source_preference="cached_artifact",
+        )
+        promotion_state = _safe_dict(payload.get("promotion_state"))
+        executive = _safe_dict(payload.get("executive_verdict"))
+        provenance = _safe_dict(payload.get("provenance"))
+        return {
+            "status": "available",
+            "promotion_state": promotion_state,
+            "executive_verdict": executive,
+            "provenance": provenance,
+            "report_paths": _safe_dict(payload.get("report_paths")),
+            "read_only_guards": _safe_dict(payload.get("read_only_guards")),
+        }
+    except Exception as exc:
+        return {
+            "status": "unavailable",
+            "reason": f"{type(exc).__module__}.{type(exc).__name__}: {exc}",
+            "promotion_state": {
+                "active_runtime_continuation_artifact": {
+                    "model_path": active_model_path,
+                },
+                "promoted_freeze_only_continuation_candidate": {
+                    "model_path": candidate_model_path,
+                },
+                "runtime_serve": {
+                    "runtime_freeze_ml": bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)),
+                    "serve_enabled": False,
+                },
+            },
+            "executive_verdict": {
+                "status": "promotion_status_unavailable",
+                "canonical_freeze_candidate": False,
+                "runtime_still_frozen": bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)),
+                "active_runtime_artifact_unchanged": True,
+            },
+            "provenance": {
+                "source_of_truth": "unavailable",
+                "report_materialization": "unavailable",
+                "generated_from": "unavailable",
+            },
+            "report_paths": {},
+            "read_only_guards": {
+                "catalog_writes_performed": False,
+                "runtime_config_changed": False,
+                "runtime_enablement_allowed": False,
+            },
+        }
+
+
+def _safe_fragrance_slot_qualification() -> dict[str, Any]:
+    try:
+        return {
+            "runtime": active_fragrance_runtime_integrity_counts(),
+            "legacy": legacy_bad_fragrance_completion_details(recent_days=30),
+            "source_of_truth": "live_db",
+            "db_error": "",
+        }
+    except (OperationalError, DatabaseError) as exc:
+        error = f"{type(exc).__module__}.{type(exc).__name__}: {exc}"
+        return {
+            "runtime": {"status": "unavailable", "reason": "db_unavailable", "error": error},
+            "legacy": {"status": "unavailable", "reason": "db_unavailable", "error": error},
+            "source_of_truth": "db_unavailable",
+            "db_error": error,
+        }
+
+
 def build_roadmap_ml_artifact_qualification_payload() -> dict[str, Any]:
     artifacts = configured_runtime_artifacts()
     planner_manifest = planner_pass_fail_manifest()
     nextstep_manifest = nextstep_pass_fail_manifest()
+    candidate_promotion = freeze_candidate_promotion_manifest()
     shadow_rows = _shadow_consideration_rows(artifacts)
     missing_items = _missing_proof_items(artifacts)
-    fragrance_runtime = active_fragrance_runtime_integrity_counts()
-    fragrance_legacy = legacy_bad_fragrance_completion_details(recent_days=30)
+    fragrance = _safe_fragrance_slot_qualification()
 
     any_future_shadow_eligible = any(bool(row.get("eligible")) for row in shadow_rows)
     any_future_serve_eligible = any(
@@ -434,16 +516,14 @@ def build_roadmap_ml_artifact_qualification_payload() -> dict[str, Any]:
             "planner_v1": planner_manifest,
             "nextstep_v4": nextstep_manifest,
         },
+        "freeze_candidate_promotion": candidate_promotion,
         "missing_proof_items": missing_items,
         "future_consideration": {
             "shadow_candidates": shadow_rows,
             "any_future_shadow_eligible": any_future_shadow_eligible,
             "any_future_serve_eligible": any_future_serve_eligible,
         },
-        "fragrance_slot_qualification": {
-            "runtime": fragrance_runtime,
-            "legacy": fragrance_legacy,
-        },
+        "fragrance_slot_qualification": fragrance,
         "continuation_runtime_candidate": {
             "model_root": str(continuation_model_root),
             "shadow_report_json": str((continuation_model_root / "shadow_report.json").resolve()),
@@ -461,6 +541,9 @@ def build_roadmap_ml_artifact_qualification_payload() -> dict[str, Any]:
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_ml_uplift --days 30 --category all --format both --evidence-source historical_replay --model-path models\\roadmap_next_step_v4_semantic_v4\\model.pkl --out models\\roadmap_next_step_v4_semantic_v4\\uplift_report_30d",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_ml_diagnostics --out models\\roadmap_next_step_v4_semantic_v4\\shadow_report --format both",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_continuation_shadow_diff --model-root models\\roadmap_continuation_planner_v2_after_runtime_patch --report-json models\\roadmap_continuation_planner_v2_after_runtime_patch\\shadow_report.json --report-md models\\roadmap_continuation_planner_v2_after_runtime_patch\\shadow_report.md",
+            ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_broader_qualification_rerun --source-preference fresh_db --candidate-model-path models\\roadmap_next_step_v5_historical_anchor_targeted_v1\\model.pkl --format both",
+            ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_broader_qualification_rerun --source-preference cached_artifact --candidate-model-path models\\roadmap_next_step_v5_historical_anchor_targeted_v1\\model.pkl --cached-comparison-json reports\\roadmap_nextstep_v5_historical_anchor_targeted_v1_comparison.json --format both",
+            ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_candidate_promotion_under_freeze --source-preference auto --candidate-model-path models\\roadmap_next_step_v5_historical_anchor_targeted_v1\\model.pkl --cached-comparison-json reports\\roadmap_nextstep_v5_historical_anchor_targeted_v1_comparison.json --format both",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_runtime_integrity --output-json reports\\roadmap_fragrance_slot_qualification.json --output-md reports\\roadmap_fragrance_slot_qualification.md",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_ml_artifact_qualification",
         ],
@@ -519,6 +602,29 @@ def render_roadmap_ml_artifact_qualification_markdown(payload: dict[str, Any]) -
                 f"{row_dict.get('model_path') or ''} |"
             )
 
+    promotion = _safe_dict(payload.get("freeze_candidate_promotion"))
+    promotion_state = _safe_dict(promotion.get("promotion_state"))
+    promotion_exec = _safe_dict(promotion.get("executive_verdict"))
+    promotion_provenance = _safe_dict(promotion.get("provenance"))
+    active_runtime = _safe_dict(promotion_state.get("active_runtime_continuation_artifact"))
+    promoted_candidate = _safe_dict(promotion_state.get("promoted_freeze_only_continuation_candidate"))
+    runtime_serve = _safe_dict(promotion_state.get("runtime_serve"))
+    lines.extend(
+        [
+            "",
+            "## Freeze Candidate Promotion",
+            f"- status: `{promotion.get('status')}`",
+            f"- promoted candidate under freeze: `{promotion_exec.get('canonical_freeze_candidate')}`",
+            f"- active runtime artifact: `{active_runtime.get('model_path')}`",
+            f"- promoted freeze-only candidate: `{promoted_candidate.get('model_path')}`",
+            f"- runtime still frozen: `{promotion_exec.get('runtime_still_frozen')}`",
+            f"- active runtime artifact unchanged: `{promotion_exec.get('active_runtime_artifact_unchanged')}`",
+            f"- runtime serve enabled: `{runtime_serve.get('serve_enabled')}`",
+            f"- promotion recommendation: `{promotion_exec.get('recommendation_code')}` {promotion_exec.get('recommendation_label')}",
+            f"- provenance: `{promotion_provenance.get('report_materialization')}` / `{promotion_provenance.get('source_of_truth')}` / `{promotion_provenance.get('generated_from')}`",
+        ]
+    )
+
     lines.extend(
         [
             "",
@@ -557,6 +663,8 @@ def render_roadmap_ml_artifact_qualification_markdown(payload: dict[str, Any]) -
         [
             "",
             "## Fragrance Slot Qualification",
+            f"- source_of_truth: `{fragrance.get('source_of_truth')}`",
+            f"- db_error: `{fragrance.get('db_error')}`",
             f"- runtime: `{_safe_dict(fragrance.get('runtime'))}`",
             f"- legacy: `{_safe_dict(fragrance.get('legacy'))}`",
         ]

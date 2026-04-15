@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from django.conf import settings
+from django.db.utils import DatabaseError, OperationalError
 
 from roadmap_app.ml_artifact_proof import (
     PROOF_FILE_EVAL,
@@ -30,12 +32,16 @@ DEFAULT_COMPARE_REPORT_STEM = Path("reports") / "roadmap_nextstep_targeted_retra
 DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_STEM = (
     Path("reports") / "roadmap_nextstep_v5_historical_anchor_targeted_v1_comparison"
 )
+DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_JSON = DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_STEM.with_suffix(
+    ".json"
+)
 DEFAULT_TWO_STAGE_GATE_RERUN_REPORT_STEM = (
     Path("reports") / "roadmap_nextstep_v5_gate_rerun_under_two_stage_truth"
 )
 DEFAULT_BROADER_QUALIFICATION_RERUN_REPORT_STEM = (
     Path("reports") / "roadmap_nextstep_v5_broader_qualification_rerun"
 )
+SOURCE_PREFERENCE_CHOICES = ["auto", "fresh_db", "cached_artifact"]
 
 
 TARGETED_TRUTH_SLICES = [
@@ -1121,6 +1127,145 @@ def _broader_qualification_summary(
     }
 
 
+def normalize_historical_anchor_candidate_comparison_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    work = deepcopy(_safe_dict(payload))
+    if not work:
+        raise ValueError("comparison payload must be a dict")
+
+    artifacts = _safe_dict(work.get("artifacts"))
+    category_rows = _safe_list(work.get("category_comparison"))
+    acceptance = _safe_dict(work.get("acceptance_gates"))
+
+    scope = _safe_dict(work.get("qualification_scope"))
+    if not scope:
+        work["qualification_scope"] = {
+            "mode": "read_only_qualification_rerun_under_runtime_freeze",
+            "categories": {
+                "primary": ["haircare", "skincare", "makeup"],
+                "analysis_only": ["fragrance"],
+            },
+            "decision_quality_path": "current historical-anchor decision-quality path",
+            "uplift_qualification_path": "current uplift/qualification path keyed by exact model_path",
+            "shampoo_acceptance_semantics": "D_two_stage_truth",
+            "unresolved_anchor_semantics": "fail_closed",
+            "runtime_enablement": False,
+            "rule_baseline_behavior_changed": False,
+        }
+
+    runtime_guardrails = _safe_dict(work.get("runtime_guardrails"))
+    if not runtime_guardrails:
+        snapshot = _runtime_config_snapshot()
+        work["runtime_guardrails"] = {
+            "before": snapshot,
+            "after": snapshot,
+            "runtime_config_changed": False,
+        }
+
+    catalog_safety = _safe_dict(work.get("catalog_safety"))
+    if not catalog_safety:
+        work["catalog_safety"] = (
+            _catalog_safety_summary(artifacts)
+            if artifacts
+            else {
+                "catalog_writes_performed": False,
+                "per_artifact": {},
+            }
+        )
+
+    broader = _safe_dict(work.get("broader_qualification"))
+    if not broader and category_rows and acceptance:
+        work["broader_qualification"] = _broader_qualification_summary(
+            category_rows=category_rows,
+            acceptance=acceptance,
+        )
+
+    provenance = _safe_dict(work.get("report_provenance"))
+    if not provenance:
+        work["report_provenance"] = {
+            "source_of_truth": "fresh_db",
+            "report_materialization": "fresh_db_rerun",
+            "generated_from": "live_db",
+            "fresh_db_attempted": True,
+            "fresh_db_succeeded": True,
+            "fresh_db_error": "",
+            "cached_artifact_path": "",
+            "input_sources": ["live_db", "current_runtime_settings_snapshot"],
+            "read_only": True,
+        }
+
+    return work
+
+
+def load_historical_anchor_candidate_comparison_payload_from_json(
+    comparison_json_path: str | Path,
+) -> dict[str, Any]:
+    resolved_path = Path(str(comparison_json_path)).expanduser().resolve()
+    payload = json.loads(resolved_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"comparison payload at {resolved_path} is not a dict")
+    return normalize_historical_anchor_candidate_comparison_payload(payload)
+
+
+def materialize_historical_anchor_candidate_comparison_payload(
+    *,
+    active_model_path: str | Path,
+    retrain_v1_model_path: str | Path,
+    candidate_model_path: str | Path,
+    days: int = 30,
+    source_preference: str = "auto",
+    cached_comparison_json_path: str | Path | None = None,
+) -> dict[str, Any]:
+    source_mode = str(source_preference or "auto").strip().lower()
+    if source_mode not in set(SOURCE_PREFERENCE_CHOICES):
+        raise ValueError(f"unsupported source_preference={source_preference}")
+
+    cached_path = Path(
+        str(cached_comparison_json_path or DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_JSON)
+    ).expanduser()
+    fresh_db_error = ""
+    fresh_db_attempted = source_mode in {"auto", "fresh_db"}
+
+    if source_mode in {"auto", "fresh_db"}:
+        try:
+            payload = build_historical_anchor_candidate_comparison_payload(
+                active_model_path=active_model_path,
+                retrain_v1_model_path=retrain_v1_model_path,
+                candidate_model_path=candidate_model_path,
+                days=days,
+            )
+            payload = normalize_historical_anchor_candidate_comparison_payload(payload)
+            payload["report_provenance"] = {
+                "source_of_truth": "fresh_db",
+                "report_materialization": "fresh_db_rerun",
+                "generated_from": "live_db",
+                "fresh_db_attempted": True,
+                "fresh_db_succeeded": True,
+                "fresh_db_error": "",
+                "cached_artifact_path": str(cached_path.resolve()) if cached_path.exists() else "",
+                "input_sources": ["live_db", "current_runtime_settings_snapshot"],
+                "read_only": True,
+            }
+            return payload
+        except (OperationalError, DatabaseError) as exc:
+            fresh_db_error = f"{type(exc).__module__}.{type(exc).__name__}: {exc}"
+            if source_mode == "fresh_db":
+                raise
+
+    payload = load_historical_anchor_candidate_comparison_payload_from_json(cached_path)
+    payload["report_provenance"] = {
+        "source_of_truth": "cached_artifact",
+        "report_materialization": "materialized_from_saved_artifacts",
+        "generated_from": "mixed_read_only_inputs" if fresh_db_attempted else "comparison_json",
+        "fresh_db_attempted": bool(fresh_db_attempted),
+        "fresh_db_succeeded": False,
+        "fresh_db_error": fresh_db_error,
+        "cached_artifact_path": str(cached_path.resolve()),
+        "input_sources": ["comparison_json", "current_runtime_settings_snapshot"],
+        "read_only": True,
+    }
+    return payload
+
+
 def build_historical_anchor_candidate_comparison_payload(
     *,
     active_model_path: str | Path,
@@ -1159,7 +1304,7 @@ def build_historical_anchor_candidate_comparison_payload(
     acceptance = _acceptance_gates(artifacts)
     category_comparison = _compare_category_rows(artifacts)
     runtime_snapshot_after = _runtime_config_snapshot()
-    return {
+    payload = {
         "qualification_scope": {
             "mode": "read_only_qualification_rerun_under_runtime_freeze",
             "categories": {
@@ -1192,6 +1337,7 @@ def build_historical_anchor_candidate_comparison_payload(
             acceptance=acceptance,
         ),
     }
+    return normalize_historical_anchor_candidate_comparison_payload(payload)
 
 
 def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, Any]) -> str:
@@ -1207,11 +1353,17 @@ def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, An
     catalog_safety = _safe_dict(payload.get("catalog_safety"))
     broader = _safe_dict(payload.get("broader_qualification"))
     broader_global = _safe_dict(broader.get("global"))
+    provenance = _safe_dict(payload.get("report_provenance"))
     lines = [
         "# Roadmap Nextstep v5 Broader Qualification Rerun",
         "",
         "## Executive Verdict",
         f"- scope: `{scope.get('mode')}`",
+        f"- report materialization: `{provenance.get('report_materialization')}`",
+        f"- source_of_truth: `{provenance.get('source_of_truth')}`",
+        f"- generated_from: `{provenance.get('generated_from')}`",
+        f"- fresh_db_attempted: `{provenance.get('fresh_db_attempted')}`",
+        f"- fresh_db_succeeded: `{provenance.get('fresh_db_succeeded')}`",
         f"- runtime ML freeze remains on: `{_safe_dict(runtime_guardrails.get('after')).get('runtime_freeze_ml')}`",
         f"- runtime config changed during rerun: `{runtime_guardrails.get('runtime_config_changed')}`",
         f"- catalog writes performed: `{catalog_safety.get('catalog_writes_performed')}`",
@@ -1226,6 +1378,13 @@ def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, An
         f"- some category or gate still blocks progression: `{broader_global.get('some_category_or_gate_still_blocks_progression')}`",
         f"- exact blocker: `{broader_global.get('exact_blocker')}`",
         f"- final recommendation: `{broader_global.get('recommendation_code')}` {broader_global.get('recommendation_label')}",
+        "",
+        "## Provenance",
+        f"- report_materialization: `{provenance.get('report_materialization')}`",
+        f"- source_of_truth: `{provenance.get('source_of_truth')}`",
+        f"- generated_from: `{provenance.get('generated_from')}`",
+        f"- cached_artifact_path: `{provenance.get('cached_artifact_path')}`",
+        f"- fresh_db_error: `{provenance.get('fresh_db_error')}`",
         "",
         "## Why These Slices Were Targeted",
     ]

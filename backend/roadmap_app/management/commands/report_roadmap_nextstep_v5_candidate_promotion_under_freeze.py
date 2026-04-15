@@ -6,12 +6,14 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from roadmap_app.nextstep_candidate_promotion import (
+    DEFAULT_CANDIDATE_PROMOTION_UNDER_FREEZE_REPORT_STEM,
+    build_v5_candidate_promotion_under_freeze_payload,
+    render_v5_candidate_promotion_under_freeze_markdown,
+)
 from roadmap_app.nextstep_targeted_retrain import (
-    DEFAULT_BROADER_QUALIFICATION_RERUN_REPORT_STEM,
     DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_JSON,
     SOURCE_PREFERENCE_CHOICES,
-    materialize_historical_anchor_candidate_comparison_payload,
-    render_historical_anchor_candidate_comparison_markdown,
 )
 
 
@@ -19,7 +21,7 @@ FORMAT_CHOICES = ["md", "json", "both"]
 
 
 class Command(BaseCommand):
-    help = "Build the freeze-only broader continuation qualification rerun for v5 under D_two_stage_truth."
+    help = "Promote v5 as the canonical freeze-only continuation candidate with explicit provenance."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -41,7 +43,7 @@ class Command(BaseCommand):
             default=str(DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_JSON),
         )
         parser.add_argument("--format", choices=FORMAT_CHOICES, default="both")
-        parser.add_argument("--out", default=str(DEFAULT_BROADER_QUALIFICATION_RERUN_REPORT_STEM))
+        parser.add_argument("--out", default=str(DEFAULT_CANDIDATE_PROMOTION_UNDER_FREEZE_REPORT_STEM))
 
     def handle(self, *args, **options):
         active_model_path = str(options.get("active_model_path") or "").strip()
@@ -55,9 +57,9 @@ class Command(BaseCommand):
             raise CommandError("candidate_model_path is required")
 
         out_stem = Path(
-            str(options.get("out") or DEFAULT_BROADER_QUALIFICATION_RERUN_REPORT_STEM)
+            str(options.get("out") or DEFAULT_CANDIDATE_PROMOTION_UNDER_FREEZE_REPORT_STEM)
         ).expanduser()
-        payload = materialize_historical_anchor_candidate_comparison_payload(
+        payload = build_v5_candidate_promotion_under_freeze_payload(
             active_model_path=active_model_path,
             retrain_v1_model_path=retrain_v1_model_path,
             candidate_model_path=candidate_model_path,
@@ -67,7 +69,7 @@ class Command(BaseCommand):
                 options.get("cached_comparison_json") or DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_JSON
             ),
         )
-        markdown = render_historical_anchor_candidate_comparison_markdown(payload)
+        markdown = render_v5_candidate_promotion_under_freeze_markdown(payload)
         out_format = str(options.get("format") or "both").strip().lower()
         out_stem.parent.mkdir(parents=True, exist_ok=True)
 
@@ -79,4 +81,4 @@ class Command(BaseCommand):
         if out_format in {"md", "both"}:
             out_stem.with_suffix(".md").write_text(markdown, encoding="utf-8")
 
-        self.stdout.write(self.style.SUCCESS(f"Broader qualification rerun written to `{out_stem}`"))
+        self.stdout.write(self.style.SUCCESS(f"Candidate promotion report written to `{out_stem}`"))

@@ -12,12 +12,18 @@ import pandas as pd
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.db.utils import OperationalError
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from roadmap_app.ml_artifact_qualification import (
     build_roadmap_ml_artifact_qualification_payload,
+    freeze_candidate_promotion_manifest,
     nextstep_pass_fail_manifest,
+)
+from roadmap_app.nextstep_candidate_promotion import (
+    build_v5_candidate_promotion_under_freeze_payload,
+    render_v5_candidate_promotion_under_freeze_markdown,
 )
 from roadmap_app.nextstep_artifact_eval import build_nextstep_v4_artifact_eval_report
 from roadmap_app.nextstep_decision_quality import build_nextstep_v4_decision_quality_payload
@@ -39,6 +45,7 @@ from roadmap_app.nextstep_targeted_retrain import (
     apply_targeted_retrain_weights,
     build_historical_anchor_candidate_comparison_payload,
     build_targeted_retrain_comparison_payload,
+    materialize_historical_anchor_candidate_comparison_payload,
     render_historical_anchor_candidate_comparison_markdown,
 )
 from roadmap_app.ml_next_step import (
@@ -326,6 +333,60 @@ class RoadmapMLArtifactQualificationTests(SimpleTestCase):
                 payload["per_category_manifest"]["nextstep_v4"]["model_path"],
                 str(active_model_path),
             )
+
+    def test_artifact_qualification_payload_survives_fragrance_db_timeout(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            active_model_path = _create_nextstep_artifact(
+                root,
+                "active_artifact",
+                with_eval=True,
+                with_uplift=True,
+                model_version="active_model",
+            )
+            with override_settings(
+                ROADMAP_NEXTSTEP_V4_ENABLED=True,
+                ROADMAP_NEXTSTEP_V4_MODEL_PATH=str(active_model_path),
+                ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+                ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+                ROADMAP_NEXTSTEP_V4_HAIRCARE_CORECHAIN_TEACHER_RERANK_ENABLED=False,
+                ROADMAP_NEXTSTEP_V4_HAIRCARE_SCALP_TEACHER_RERANK_ENABLED=False,
+            ), patch(
+                "roadmap_app.ml_artifact_qualification.active_fragrance_runtime_integrity_counts",
+                side_effect=OperationalError("connection timeout expired"),
+            ), patch(
+                "roadmap_app.ml_artifact_qualification.build_v5_candidate_promotion_under_freeze_payload",
+                return_value={
+                    "promotion_state": {
+                        "active_runtime_continuation_artifact": {"model_path": str(active_model_path)},
+                        "promoted_freeze_only_continuation_candidate": {"model_path": "models/v5.pkl"},
+                        "runtime_serve": {"serve_enabled": False},
+                    },
+                    "executive_verdict": {
+                        "canonical_freeze_candidate": True,
+                        "runtime_still_frozen": True,
+                        "active_runtime_artifact_unchanged": True,
+                        "recommendation_code": "A",
+                        "recommendation_label": "continue qualification with v5 as the new best candidate",
+                    },
+                    "provenance": {
+                        "report_materialization": "materialized_from_saved_artifacts",
+                        "source_of_truth": "cached_artifact",
+                        "generated_from": "comparison_json",
+                    },
+                    "report_paths": {},
+                    "read_only_guards": {
+                        "catalog_writes_performed": False,
+                        "runtime_config_changed": False,
+                        "runtime_enablement_allowed": False,
+                    },
+                },
+            ):
+                payload = build_roadmap_ml_artifact_qualification_payload()
+
+            fragrance = payload["fragrance_slot_qualification"]
+            self.assertEqual(fragrance["source_of_truth"], "db_unavailable")
+            self.assertEqual(fragrance["runtime"]["reason"], "db_unavailable")
 
     def test_planner_requires_local_shadow_report_for_runtime_guard(self):
         with TemporaryDirectory() as tmp:
@@ -2241,6 +2302,230 @@ class RoadmapNextstepHistoricalAnchorComparisonTests(SimpleTestCase):
             self.assertFalse(payload["runtime_guardrails"]["runtime_config_changed"])
             self.assertFalse(payload["qualification_scope"]["runtime_enablement"])
             self.assertFalse(payload["qualification_scope"]["rule_baseline_behavior_changed"])
+
+
+class RoadmapNextstepCandidatePromotionTests(SimpleTestCase):
+    def _cached_comparison_payload(self, *, active_model_path: str, retrain_model_path: str, candidate_model_path: str) -> dict:
+        return {
+            "artifacts": {
+                "active": {"model_path": active_model_path},
+                "retrain_v1": {"model_path": retrain_model_path},
+                "v5_historical_anchor": {"model_path": candidate_model_path},
+            },
+            "category_comparison": [
+                {
+                    "category": "haircare",
+                    "active": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate": 0.17, "baseline_win_rate": 0.0, "both_wrong_rate": 0.45, "resolved_truth": 117},
+                    "retrain_v1": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate": 0.09, "baseline_win_rate": 0.0, "both_wrong_rate": 0.54, "resolved_truth": 117},
+                    "v5_historical_anchor": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate": 0.62, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 117},
+                },
+                {
+                    "category": "skincare",
+                    "active": {"rollout_reason": "low_uplift", "diagnosis": {"code": "B"}, "model_win_rate": 0.08, "baseline_win_rate": 0.23, "both_wrong_rate": 0.17, "resolved_truth": 276},
+                    "retrain_v1": {"rollout_reason": "low_uplift", "diagnosis": {"code": "B"}, "model_win_rate": 0.04, "baseline_win_rate": 0.22, "both_wrong_rate": 0.21, "resolved_truth": 276},
+                    "v5_historical_anchor": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate": 0.25, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 276},
+                },
+                {
+                    "category": "makeup",
+                    "active": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate": 0.0, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 28},
+                    "retrain_v1": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate": 0.0, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 28},
+                    "v5_historical_anchor": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate": 0.0, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 28},
+                },
+                {
+                    "category": "fragrance",
+                    "active": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate": 0.24, "baseline_win_rate": 0.30, "both_wrong_rate": 0.29, "resolved_truth": 63},
+                    "retrain_v1": {"rollout_reason": "category_disabled", "diagnosis": {"code": "B"}, "model_win_rate": 0.0, "baseline_win_rate": 0.17, "both_wrong_rate": 0.52, "resolved_truth": 63},
+                    "v5_historical_anchor": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate": 0.41, "baseline_win_rate": 0.05, "both_wrong_rate": 0.11, "resolved_truth": 63},
+                },
+            ],
+            "acceptance_gates": {
+                "overall_passed": True,
+                "gates": [
+                    {"name": "skincare_not_clearly_B_low_uplift", "passed": True, "reason": "passed", "details": {}},
+                    {"name": "haircare_shampoo_two_stage_truth_improves", "passed": True, "reason": "passed", "details": {}},
+                    {"name": "protected_slices_non_regression", "passed": True, "reason": "passed", "details": {}},
+                    {"name": "overall_decision_quality_not_worse_than_active", "passed": True, "reason": "passed", "details": {}},
+                    {"name": "offline_eval_not_materially_worse_than_active", "passed": True, "reason": "passed", "details": {}},
+                ],
+            },
+            "haircare_shampoo_truth_gate_comparison": {
+                "v5_historical_anchor": {
+                    "stage_1_family_model_win_rate": 1.0,
+                    "stage_2_concrete_model_win_rate": 1.0,
+                    "two_stage_resolved": 40,
+                    "two_stage_unresolved": 12,
+                }
+            },
+            "targeted_truth_slices": [],
+            "protected_truth_slices": [],
+        }
+
+    @override_settings(
+        ROADMAP_RUNTIME_FREEZE_ML=True,
+        ROADMAP_NEXTSTEP_V4_MODEL_PATH="models/runtime_active.pkl",
+    )
+    def test_materialized_comparison_payload_marks_cached_provenance(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cached_path = root / "comparison.json"
+            active_model_path = str((root / "active" / "model.pkl").resolve())
+            retrain_model_path = str((root / "retrain" / "model.pkl").resolve())
+            candidate_model_path = str((root / "candidate" / "model.pkl").resolve())
+            _write_json(
+                cached_path,
+                self._cached_comparison_payload(
+                    active_model_path=active_model_path,
+                    retrain_model_path=retrain_model_path,
+                    candidate_model_path=candidate_model_path,
+                ),
+            )
+
+            payload = materialize_historical_anchor_candidate_comparison_payload(
+                active_model_path=active_model_path,
+                retrain_v1_model_path=retrain_model_path,
+                candidate_model_path=candidate_model_path,
+                source_preference="cached_artifact",
+                cached_comparison_json_path=str(cached_path),
+            )
+
+            self.assertEqual(payload["report_provenance"]["source_of_truth"], "cached_artifact")
+            self.assertEqual(
+                payload["report_provenance"]["report_materialization"],
+                "materialized_from_saved_artifacts",
+            )
+            self.assertEqual(payload["report_provenance"]["generated_from"], "comparison_json")
+            self.assertFalse(payload["runtime_guardrails"]["runtime_config_changed"])
+
+    def test_candidate_promotion_keeps_active_runtime_separate_from_promoted_candidate(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cached_path = root / "comparison.json"
+            active_model_path = str((root / "active" / "model.pkl").resolve())
+            retrain_model_path = str((root / "retrain" / "model.pkl").resolve())
+            candidate_model_path = str((root / "candidate" / "model.pkl").resolve())
+            _write_json(
+                cached_path,
+                self._cached_comparison_payload(
+                    active_model_path=active_model_path,
+                    retrain_model_path=retrain_model_path,
+                    candidate_model_path=candidate_model_path,
+                ),
+            )
+
+            with override_settings(
+                ROADMAP_RUNTIME_FREEZE_ML=True,
+                ROADMAP_NEXTSTEP_V4_MODEL_PATH=active_model_path,
+            ):
+                before = (settings.ROADMAP_RUNTIME_FREEZE_ML, settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH)
+                with patch(
+                    "catalog.models.Product.save",
+                    side_effect=AssertionError("catalog write should not happen"),
+                ), patch(
+                    "catalog.models.Product.delete",
+                    side_effect=AssertionError("catalog delete should not happen"),
+                ):
+                    payload = build_v5_candidate_promotion_under_freeze_payload(
+                        active_model_path=active_model_path,
+                        retrain_v1_model_path=retrain_model_path,
+                        candidate_model_path=candidate_model_path,
+                        source_preference="cached_artifact",
+                        cached_comparison_json_path=str(cached_path),
+                    )
+                after = (settings.ROADMAP_RUNTIME_FREEZE_ML, settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH)
+
+            promotion_state = payload["promotion_state"]
+            self.assertEqual(
+                promotion_state["active_runtime_continuation_artifact"]["model_path"],
+                active_model_path,
+            )
+            self.assertEqual(
+                promotion_state["promoted_freeze_only_continuation_candidate"]["model_path"],
+                candidate_model_path,
+            )
+            self.assertTrue(payload["executive_verdict"]["canonical_freeze_candidate"])
+            self.assertEqual(payload["executive_verdict"]["recommendation_code"], "A")
+            self.assertFalse(promotion_state["runtime_serve"]["serve_enabled"])
+            self.assertFalse(
+                promotion_state["runtime_serve"]["runtime_model_path_switched_to_candidate"]
+            )
+            self.assertFalse(payload["read_only_guards"]["runtime_enablement_allowed"])
+            self.assertFalse(payload["read_only_guards"]["catalog_writes_performed"])
+            self.assertEqual(before, after)
+            self.assertTrue(
+                payload["executive_verdict"]["active_runtime_artifact_unchanged"]
+            )
+            markdown = render_v5_candidate_promotion_under_freeze_markdown(payload)
+            self.assertIn("current active runtime continuation artifact", markdown)
+            self.assertIn("promoted freeze-only continuation candidate", markdown)
+
+    def test_artifact_qualification_manifest_includes_freeze_candidate_promotion(self):
+        promotion_payload = {
+            "promotion_state": {
+                "active_runtime_continuation_artifact": {"model_path": "models/active.pkl"},
+                "promoted_freeze_only_continuation_candidate": {"model_path": "models/v5.pkl"},
+                "runtime_serve": {"serve_enabled": False},
+            },
+            "executive_verdict": {
+                "status": "promoted_under_freeze",
+                "recommendation_code": "A",
+                "recommendation_label": "continue qualification with v5 as the new best candidate",
+                "canonical_freeze_candidate": True,
+                "runtime_still_frozen": True,
+                "active_runtime_artifact_unchanged": True,
+            },
+            "provenance": {
+                "report_materialization": "materialized_from_saved_artifacts",
+                "source_of_truth": "cached_artifact",
+                "generated_from": "comparison_json",
+            },
+            "report_paths": {},
+            "read_only_guards": {
+                "catalog_writes_performed": False,
+                "runtime_config_changed": False,
+                "runtime_enablement_allowed": False,
+            },
+        }
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            active_model_path = _create_nextstep_artifact(
+                root,
+                "active_artifact",
+                with_eval=True,
+                with_uplift=True,
+                model_version="active_model",
+            )
+            with override_settings(
+                ROADMAP_NEXTSTEP_V4_ENABLED=True,
+                ROADMAP_NEXTSTEP_V4_MODEL_PATH=str(active_model_path),
+                ROADMAP_NEXTSTEP_V4_ENABLED_CATEGORIES=["skincare", "haircare", "makeup"],
+                ROADMAP_NEXTSTEP_V4_DISABLED_CATEGORIES=["fragrance"],
+            ), patch(
+                "roadmap_app.ml_artifact_qualification.active_fragrance_runtime_integrity_counts",
+                return_value={"active_fragrance_slot_mismatch_count": 0},
+            ), patch(
+                "roadmap_app.ml_artifact_qualification.legacy_bad_fragrance_completion_details",
+                return_value={"legacy_bucket": "clean"},
+            ), patch(
+                "roadmap_app.ml_artifact_qualification.build_v5_candidate_promotion_under_freeze_payload",
+                return_value=promotion_payload,
+            ):
+                payload = build_roadmap_ml_artifact_qualification_payload()
+
+        promotion = payload["freeze_candidate_promotion"]
+        self.assertEqual(promotion["status"], "available")
+        self.assertTrue(promotion["executive_verdict"]["canonical_freeze_candidate"])
+        self.assertEqual(
+            promotion["promotion_state"]["active_runtime_continuation_artifact"]["model_path"],
+            "models/active.pkl",
+        )
+        self.assertEqual(
+            promotion["promotion_state"]["promoted_freeze_only_continuation_candidate"]["model_path"],
+            "models/v5.pkl",
+        )
+        self.assertEqual(
+            promotion["provenance"]["report_materialization"],
+            "materialized_from_saved_artifacts",
+        )
 
 
 class RoadmapNextstepHaircareShampooGateTests(SimpleTestCase):
