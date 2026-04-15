@@ -22,10 +22,7 @@ from roadmap_app.ml_artifact_proof import (
 )
 from roadmap_app.ml_next_step import nextstep_model_artifact_summary
 from roadmap_app.nextstep_decision_quality import build_nextstep_v4_decision_quality_payload
-from roadmap_app.nextstep_historical_anchor_context import (
-    HistoricalAnchorReadError,
-    build_historical_anchor_read_context,
-)
+from roadmap_app.nextstep_historical_anchor_context import build_historical_anchor_read_context
 from roadmap_app.nextstep_haircare_shampoo_truth_design import (
     build_nextstep_haircare_shampoo_truth_design_payload,
 )
@@ -1218,17 +1215,10 @@ def normalize_historical_anchor_candidate_comparison_payload(payload: dict[str, 
             "fresh_db_attempted": True,
             "fresh_db_succeeded": True,
             "fresh_db_error": "",
-            "fresh_db_failure_stage": "",
-            "fresh_db_failure_operation": "",
             "cached_artifact_path": "",
             "input_sources": ["live_db", "current_runtime_settings_snapshot"],
             "read_only": True,
         }
-    else:
-        normalized = dict(provenance)
-        normalized.setdefault("fresh_db_failure_stage", "")
-        normalized.setdefault("fresh_db_failure_operation", "")
-        work["report_provenance"] = normalized
 
     return work
 
@@ -1260,8 +1250,6 @@ def materialize_historical_anchor_candidate_comparison_payload(
         str(cached_comparison_json_path or DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_JSON)
     ).expanduser()
     fresh_db_error = ""
-    fresh_db_failure_stage = ""
-    fresh_db_failure_operation = ""
     fresh_db_attempted = source_mode in {"auto", "fresh_db"}
 
     if source_mode in {"auto", "fresh_db"}:
@@ -1280,23 +1268,13 @@ def materialize_historical_anchor_candidate_comparison_payload(
                 "fresh_db_attempted": True,
                 "fresh_db_succeeded": True,
                 "fresh_db_error": "",
-                "fresh_db_failure_stage": "",
-                "fresh_db_failure_operation": "",
                 "cached_artifact_path": str(cached_path.resolve()) if cached_path.exists() else "",
                 "input_sources": ["live_db", "current_runtime_settings_snapshot"],
                 "read_only": True,
             }
             return payload
-        except HistoricalAnchorReadError as exc:
-            fresh_db_error = str(exc.error_text)
-            fresh_db_failure_stage = str(exc.stage)
-            fresh_db_failure_operation = str(exc.operation)
-            if source_mode == "fresh_db":
-                raise
         except (OperationalError, DatabaseError) as exc:
             fresh_db_error = f"{type(exc).__module__}.{type(exc).__name__}: {exc}"
-            fresh_db_failure_stage = "unclassified_db_failure"
-            fresh_db_failure_operation = "build_historical_anchor_candidate_comparison_payload"
             if source_mode == "fresh_db":
                 raise
 
@@ -1308,8 +1286,6 @@ def materialize_historical_anchor_candidate_comparison_payload(
         "fresh_db_attempted": bool(fresh_db_attempted),
         "fresh_db_succeeded": False,
         "fresh_db_error": fresh_db_error,
-        "fresh_db_failure_stage": fresh_db_failure_stage,
-        "fresh_db_failure_operation": fresh_db_failure_operation,
         "cached_artifact_path": str(cached_path.resolve()),
         "input_sources": ["comparison_json", "current_runtime_settings_snapshot"],
         "read_only": True,
@@ -1454,8 +1430,6 @@ def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, An
         f"- source_of_truth: `{provenance.get('source_of_truth')}`",
         f"- generated_from: `{provenance.get('generated_from')}`",
         f"- cached_artifact_path: `{provenance.get('cached_artifact_path')}`",
-        f"- fresh_db_failure_stage: `{provenance.get('fresh_db_failure_stage')}`",
-        f"- fresh_db_failure_operation: `{provenance.get('fresh_db_failure_operation')}`",
         f"- fresh_db_error: `{provenance.get('fresh_db_error')}`",
         "",
         "## Why These Slices Were Targeted",

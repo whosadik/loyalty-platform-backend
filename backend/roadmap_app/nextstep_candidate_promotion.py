@@ -92,11 +92,23 @@ def _why_v5_is_best_candidate(comparison_payload: dict[str, Any]) -> list[str]:
     broader = _safe_dict(comparison_payload.get("broader_qualification"))
     broader_global = _safe_dict(broader.get("global"))
     per_category = _safe_dict(broader.get("per_category"))
+    shampoo_gate = next(
+        (
+            _safe_dict(gate)
+            for gate in _safe_list(_safe_dict(comparison_payload.get("acceptance_gates")).get("gates"))
+            if str(_safe_dict(gate).get("name") or "") == "haircare_shampoo_two_stage_truth_improves"
+        ),
+        {},
+    )
     return [
         "Broader freeze-only acceptance passes with recommendation `A` and no remaining blockers."
         if not _safe_list(broader_global.get("remaining_blockers"))
         else "Recommendation remains conditional because blockers are still present.",
-        "Haircare clears the shampoo gate under `D_two_stage_truth`, and unresolved anchors remain fail-closed.",
+        (
+            "Haircare clears the shampoo gate under `D_two_stage_truth`, and unresolved anchors remain fail-closed."
+            if bool(shampoo_gate.get("passed"))
+            else "Haircare does not clear the shampoo gate under `D_two_stage_truth`; unresolved anchors remain fail-closed."
+        ),
         f"Haircare verdict: {_safe_dict(per_category.get('haircare')).get('direct_answer')}.",
         f"Skincare verdict: {_safe_dict(per_category.get('skincare')).get('direct_answer')}.",
         "Protected slices remain non-regressed relative to the active artifact.",
@@ -107,10 +119,19 @@ def _why_not_runtime_enablement(comparison_payload: dict[str, Any], promotion_st
     runtime_serve = _safe_dict(promotion_state.get("runtime_serve"))
     active_runtime = _safe_dict(promotion_state.get("active_runtime_continuation_artifact"))
     promoted = _safe_dict(promotion_state.get("promoted_freeze_only_continuation_candidate"))
+    promoted_under_freeze = bool(promotion_state.get("promoted_candidate_under_freeze"))
     return [
-        "Runtime ML freeze remains ON, so this promotion is qualification-only.",
+        (
+            "Runtime ML freeze remains ON, so this promotion is qualification-only."
+            if promoted_under_freeze
+            else "Runtime ML freeze remains ON, so the candidate remains under qualification only."
+        ),
         f"Serve path remains bound to the active runtime artifact: `{active_runtime.get('model_path')}`.",
-        f"Promoted freeze-only candidate is tracked separately: `{promoted.get('model_path')}`.",
+        (
+            f"Promoted freeze-only candidate is tracked separately: `{promoted.get('model_path')}`."
+            if promoted_under_freeze
+            else f"Freeze-only candidate under evaluation is tracked separately: `{promoted.get('model_path')}`."
+        ),
         f"Runtime model_path switched to v5 for serve: `{runtime_serve.get('runtime_model_path_switched_to_candidate')}`.",
         "Rule baseline behavior remains unchanged.",
     ]
@@ -118,14 +139,24 @@ def _why_not_runtime_enablement(comparison_payload: dict[str, Any], promotion_st
 
 def _exact_next_phase(comparison_payload: dict[str, Any]) -> str:
     provenance = _safe_dict(comparison_payload.get("report_provenance"))
+    broader = _safe_dict(comparison_payload.get("broader_qualification"))
+    broader_global = _safe_dict(broader.get("global"))
+    recommendation_code = str(broader_global.get("recommendation_code") or "")
     if str(provenance.get("source_of_truth") or "") == "cached_artifact":
         return (
-            "Re-run the promoted v5 qualification pack from live DB when the connection is healthy, then continue "
+            "Re-run the v5 qualification pack from live DB when the connection is healthy, then continue "
             "freeze-only qualification for haircare and skincare while makeup stays sample-limited and fragrance remains analysis-only."
         )
+    if recommendation_code == "A":
+        return (
+            "Continue qualification with v5 under freeze for the approved next-stage categories and do not enable runtime serve."
+        )
+    if recommendation_code == "C":
+        return (
+            "Continue qualification only for the subset that remains viable under freeze; keep haircare on HOLD, continue with skincare, keep makeup sample-limited, and keep fragrance analysis-only."
+        )
     return (
-        "Continue the promoted v5 qualification pack under freeze for haircare and skincare; keep makeup sample-limited, "
-        "keep fragrance analysis-only, and do not enable runtime serve."
+        "Keep continuation under freeze, resolve the remaining blockers, and do not enable runtime serve."
     )
 
 
@@ -137,7 +168,6 @@ def _canonical_commands(
     candidate_arg = f"--candidate-model-path {candidate_model_path}"
     cached_arg = f"--cached-comparison-json {cached_comparison_json_path}"
     return [
-        ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_db_rerun_readiness --format both",
         ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_broader_qualification_rerun "
         f"--source-preference fresh_db {candidate_arg} --format both",
         ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_broader_qualification_rerun "
@@ -246,6 +276,17 @@ def render_v5_candidate_promotion_under_freeze_markdown(payload: dict[str, Any])
     shampoo = _safe_dict(payload.get("shampoo_gate_under_d_two_stage_truth"))
     shampoo_gate = _safe_dict(shampoo.get("gate"))
     shampoo_comparison = _safe_dict(shampoo.get("comparison"))
+    promoted_under_freeze = bool(promotion_state.get("promoted_candidate_under_freeze"))
+    candidate_label = (
+        "promoted freeze-only continuation candidate"
+        if promoted_under_freeze
+        else "freeze-only continuation candidate under evaluation"
+    )
+    candidate_section_title = (
+        "## Why v5 Is Now The Best Continuation Candidate"
+        if promoted_under_freeze
+        else "## Why v5 Remains Under Freeze-Only Qualification"
+    )
 
     lines = [
         "# Roadmap Nextstep v5 Candidate Promotion Under Freeze",
@@ -261,7 +302,7 @@ def render_v5_candidate_promotion_under_freeze_markdown(payload: dict[str, Any])
         "",
         "## Artifact Roles",
         f"- current active runtime continuation artifact: `{active_runtime.get('model_path')}`",
-        f"- promoted freeze-only continuation candidate: `{promoted_candidate.get('model_path')}`",
+        f"- {candidate_label}: `{promoted_candidate.get('model_path')}`",
         f"- runtime serve enabled: `{runtime_serve.get('serve_enabled')}`",
         f"- runtime model_path switched to candidate: `{runtime_serve.get('runtime_model_path_switched_to_candidate')}`",
         "",
@@ -272,11 +313,9 @@ def render_v5_candidate_promotion_under_freeze_markdown(payload: dict[str, Any])
         f"- fresh_db_attempted: `{provenance.get('fresh_db_attempted')}`",
         f"- fresh_db_succeeded: `{provenance.get('fresh_db_succeeded')}`",
         f"- cached_artifact_path: `{provenance.get('cached_artifact_path')}`",
-        f"- fresh_db_failure_stage: `{provenance.get('fresh_db_failure_stage')}`",
-        f"- fresh_db_failure_operation: `{provenance.get('fresh_db_failure_operation')}`",
         f"- fresh_db_error: `{provenance.get('fresh_db_error')}`",
         "",
-        "## Why v5 Is Now The Best Continuation Candidate",
+        candidate_section_title,
     ]
     for item in _safe_list(payload.get("why_v5_is_best_candidate")):
         lines.append(f"- {item}")

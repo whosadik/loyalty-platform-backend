@@ -419,7 +419,7 @@ def freeze_candidate_promotion_manifest() -> dict[str, Any]:
             active_model_path=active_model_path,
             retrain_v1_model_path=retrain_v1_model_path,
             candidate_model_path=candidate_model_path,
-            source_preference="cached_artifact",
+            source_preference="auto",
         )
         promotion_state = _safe_dict(payload.get("promotion_state"))
         executive = _safe_dict(payload.get("executive_verdict"))
@@ -541,7 +541,6 @@ def build_roadmap_ml_artifact_qualification_payload() -> dict[str, Any]:
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_ml_uplift --days 30 --category all --format both --evidence-source historical_replay --model-path models\\roadmap_next_step_v4_semantic_v4\\model.pkl --out models\\roadmap_next_step_v4_semantic_v4\\uplift_report_30d",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_ml_diagnostics --out models\\roadmap_next_step_v4_semantic_v4\\shadow_report --format both",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_continuation_shadow_diff --model-root models\\roadmap_continuation_planner_v2_after_runtime_patch --report-json models\\roadmap_continuation_planner_v2_after_runtime_patch\\shadow_report.json --report-md models\\roadmap_continuation_planner_v2_after_runtime_patch\\shadow_report.md",
-            ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_db_rerun_readiness --format both",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_broader_qualification_rerun --source-preference fresh_db --candidate-model-path models\\roadmap_next_step_v5_historical_anchor_targeted_v1\\model.pkl --format both",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_broader_qualification_rerun --source-preference cached_artifact --candidate-model-path models\\roadmap_next_step_v5_historical_anchor_targeted_v1\\model.pkl --cached-comparison-json reports\\roadmap_nextstep_v5_historical_anchor_targeted_v1_comparison.json --format both",
             ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_candidate_promotion_under_freeze --source-preference auto --candidate-model-path models\\roadmap_next_step_v5_historical_anchor_targeted_v1\\model.pkl --cached-comparison-json reports\\roadmap_nextstep_v5_historical_anchor_targeted_v1_comparison.json --format both",
