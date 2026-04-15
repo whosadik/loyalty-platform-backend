@@ -137,6 +137,7 @@ def _canonical_commands(
     candidate_arg = f"--candidate-model-path {candidate_model_path}"
     cached_arg = f"--cached-comparison-json {cached_comparison_json_path}"
     return [
+        ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_db_rerun_readiness --format both",
         ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_broader_qualification_rerun "
         f"--source-preference fresh_db {candidate_arg} --format both",
         ".\\.venv\\Scripts\\python.exe backend\\manage.py report_roadmap_nextstep_v5_broader_qualification_rerun "
@@ -271,6 +272,8 @@ def render_v5_candidate_promotion_under_freeze_markdown(payload: dict[str, Any])
         f"- fresh_db_attempted: `{provenance.get('fresh_db_attempted')}`",
         f"- fresh_db_succeeded: `{provenance.get('fresh_db_succeeded')}`",
         f"- cached_artifact_path: `{provenance.get('cached_artifact_path')}`",
+        f"- fresh_db_failure_stage: `{provenance.get('fresh_db_failure_stage')}`",
+        f"- fresh_db_failure_operation: `{provenance.get('fresh_db_failure_operation')}`",
         f"- fresh_db_error: `{provenance.get('fresh_db_error')}`",
         "",
         "## Why v5 Is Now The Best Continuation Candidate",

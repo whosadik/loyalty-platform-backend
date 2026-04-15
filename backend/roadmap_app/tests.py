@@ -21,13 +21,21 @@ from roadmap_app.ml_artifact_qualification import (
     freeze_candidate_promotion_manifest,
     nextstep_pass_fail_manifest,
 )
+from roadmap_app.nextstep_db_rerun_readiness import (
+    build_v5_db_rerun_readiness_payload,
+    render_v5_db_rerun_readiness_markdown,
+)
 from roadmap_app.nextstep_candidate_promotion import (
     build_v5_candidate_promotion_under_freeze_payload,
     render_v5_candidate_promotion_under_freeze_markdown,
 )
 from roadmap_app.nextstep_artifact_eval import build_nextstep_v4_artifact_eval_report
 from roadmap_app.nextstep_decision_quality import build_nextstep_v4_decision_quality_payload
-from roadmap_app.nextstep_historical_anchor_context import build_historical_anchor_read_context
+from roadmap_app.nextstep_historical_anchor_context import (
+    HistoricalAnchorReadError,
+    build_historical_anchor_read_context,
+    probe_historical_anchor_read_context,
+)
 from roadmap_app.nextstep_historical_anchor_dataset import (
     bucket_flags_for_row,
     classify_train_exclusion_reason,
@@ -2602,6 +2610,44 @@ class RoadmapNextstepCandidatePromotionTests(SimpleTestCase):
             self.assertEqual(payload["report_provenance"]["generated_from"], "comparison_json")
             self.assertFalse(payload["runtime_guardrails"]["runtime_config_changed"])
 
+    def test_materialized_comparison_payload_captures_fresh_db_failure_stage(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cached_path = root / "comparison.json"
+            active_model_path = str((root / "active" / "model.pkl").resolve())
+            retrain_model_path = str((root / "retrain" / "model.pkl").resolve())
+            candidate_model_path = str((root / "candidate" / "model.pkl").resolve())
+            _write_json(
+                cached_path,
+                self._cached_comparison_payload(
+                    active_model_path=active_model_path,
+                    retrain_model_path=retrain_model_path,
+                    candidate_model_path=candidate_model_path,
+                ),
+            )
+
+            with patch(
+                "roadmap_app.nextstep_targeted_retrain.build_historical_anchor_candidate_comparison_payload",
+                side_effect=HistoricalAnchorReadError(
+                    stage="db_connect",
+                    operation="select_1_preflight",
+                    exc=OperationalError("connection timeout expired"),
+                ),
+            ):
+                payload = materialize_historical_anchor_candidate_comparison_payload(
+                    active_model_path=active_model_path,
+                    retrain_v1_model_path=retrain_model_path,
+                    candidate_model_path=candidate_model_path,
+                    source_preference="auto",
+                    cached_comparison_json_path=str(cached_path),
+                )
+
+            provenance = payload["report_provenance"]
+            self.assertEqual(provenance["source_of_truth"], "cached_artifact")
+            self.assertEqual(provenance["fresh_db_failure_stage"], "db_connect")
+            self.assertEqual(provenance["fresh_db_failure_operation"], "select_1_preflight")
+            self.assertIn("connection timeout expired", provenance["fresh_db_error"])
+
     def test_candidate_promotion_keeps_active_runtime_separate_from_promoted_candidate(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2663,6 +2709,7 @@ class RoadmapNextstepCandidatePromotionTests(SimpleTestCase):
             markdown = render_v5_candidate_promotion_under_freeze_markdown(payload)
             self.assertIn("current active runtime continuation artifact", markdown)
             self.assertIn("promoted freeze-only continuation candidate", markdown)
+            self.assertIn("report_roadmap_nextstep_v5_db_rerun_readiness", markdown)
 
     def test_artifact_qualification_manifest_includes_freeze_candidate_promotion(self):
         promotion_payload = {
@@ -2732,6 +2779,69 @@ class RoadmapNextstepCandidatePromotionTests(SimpleTestCase):
             promotion["provenance"]["report_materialization"],
             "materialized_from_saved_artifacts",
         )
+
+
+class RoadmapNextstepDbRerunReadinessTests(SimpleTestCase):
+    def test_probe_historical_anchor_context_marks_db_connect_failure_stage(self):
+        class _BrokenConnection:
+            def cursor(self):
+                raise OperationalError("connection timeout expired")
+
+        probe = None
+        with patch(
+            "roadmap_app.nextstep_historical_anchor_context.connections",
+            {"default": _BrokenConnection()},
+        ):
+            probe = probe_historical_anchor_read_context(
+                since=timezone.now() - timedelta(days=30),
+                until=timezone.now(),
+                category="all",
+                include_ga=False,
+            )
+
+        self.assertEqual(probe["status"], "blocked")
+        self.assertFalse(probe["db_connect_ok"])
+        self.assertEqual(probe["failure_stage"], "db_connect")
+        self.assertEqual(probe["failure_operation"], "select_1_preflight")
+        self.assertIn("connection timeout expired", probe["failure_error"])
+
+    @override_settings(
+        ROADMAP_RUNTIME_FREEZE_ML=True,
+        ROADMAP_NEXTSTEP_V4_MODEL_PATH="models/runtime_active.pkl",
+    )
+    def test_db_rerun_readiness_payload_reports_blocked_probe_honestly(self):
+        with patch(
+            "roadmap_app.nextstep_db_rerun_readiness.probe_historical_anchor_read_context",
+            return_value={
+                "status": "blocked",
+                "source_of_truth": "live_db_probe",
+                "read_only": True,
+                "category": "all",
+                "include_ga": False,
+                "db_connect_ok": False,
+                "historical_anchor_query_ok": False,
+                "plan_meta_query_ok": False,
+                "completion_query_ok": False,
+                "anchors_total": 0,
+                "plan_ids_total": 0,
+                "generated_step_ids_total": 0,
+                "failure_stage": "db_connect",
+                "failure_operation": "select_1_preflight",
+                "failure_error": "django.db.utils.OperationalError: connection timeout expired",
+            },
+        ):
+            payload = build_v5_db_rerun_readiness_payload()
+
+        verdict = payload["executive_verdict"]
+        self.assertEqual(verdict["status"], "blocked")
+        self.assertTrue(verdict["runtime_still_frozen"])
+        self.assertEqual(verdict["failure_stage"], "db_connect")
+        self.assertIn("connection timeout expired", verdict["failure_error"])
+        self.assertFalse(verdict["catalog_writes_performed"])
+        self.assertFalse(verdict["runtime_config_changed"])
+        markdown = render_v5_db_rerun_readiness_markdown(payload)
+        self.assertIn("failure_stage: `db_connect`", markdown)
+        self.assertIn("report_roadmap_nextstep_v5_broader_qualification_rerun", markdown)
 
 
 class RoadmapNextstepHaircareShampooGateTests(SimpleTestCase):
@@ -3154,6 +3264,9 @@ class RoadmapNextstepHaircareShampooTruthDesignTests(SimpleTestCase):
 
         before_model_path = settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH
         with patch(
+            "roadmap_app.nextstep_historical_anchor_context._probe_default_db_connection",
+            return_value=None,
+        ), patch(
             "roadmap_app.nextstep_historical_anchor_context.build_historical_continuation_anchor_records",
             return_value=[anchor],
         ), patch(
