@@ -39,6 +39,7 @@ from roadmap_app.nextstep_targeted_retrain import (
     apply_targeted_retrain_weights,
     build_historical_anchor_candidate_comparison_payload,
     build_targeted_retrain_comparison_payload,
+    render_historical_anchor_candidate_comparison_markdown,
 )
 from roadmap_app.ml_next_step import (
     v4_category_staged_rollout_status,
@@ -2046,6 +2047,200 @@ class RoadmapNextstepHistoricalAnchorComparisonTests(SimpleTestCase):
                 payload["haircare_shampoo_truth_gate_comparison"]["v5_historical_anchor"]["stage_2_concrete_model_win_rate"],
                 1.0,
             )
+
+    def test_broader_qualification_summary_recommends_a_for_v5(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            active_dir = root / "active"
+            retrain_dir = root / "retrain"
+            candidate_dir = root / "candidate"
+            for artifact_dir, version, metrics in [
+                (active_dir, "active_v1", {"recall_at_1": 0.23, "ndcg_at_5": 0.52}),
+                (retrain_dir, "retrain_v1", {"recall_at_1": 0.22, "ndcg_at_5": 0.51}),
+                (candidate_dir, "v5_v1", {"recall_at_1": 0.97, "ndcg_at_5": 0.98}),
+            ]:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                model_path = artifact_dir / "model.pkl"
+                model_path.write_bytes(b"placeholder")
+                _write_json(artifact_dir / "metadata.json", {"model_version": version})
+                _write_json(artifact_dir / "eval_report.json", {"model_version": version, "metrics_test": metrics})
+                _write_json(artifact_dir / "shadow_report.json", {"model_version": version, "model_path": str(model_path)})
+                _write_json(artifact_dir / "uplift_report_7d.json", {"model_version": version, "model_path": str(model_path)})
+                _write_json(artifact_dir / "uplift_report_30d.json", {"model_version": version, "model_path": str(model_path)})
+
+            active_payload = {
+                "per_category": {
+                    "haircare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.17, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.45, "resolved_truth_anchors_total": 117},
+                    "skincare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "B"}, "model_win_rate_vs_truth": 0.08, "baseline_win_rate_vs_truth": 0.23, "both_wrong_rate": 0.17, "resolved_truth_anchors_total": 276},
+                    "makeup": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 28},
+                    "fragrance": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.24, "baseline_win_rate_vs_truth": 0.30, "both_wrong_rate": 0.29, "resolved_truth_anchors_total": 63},
+                },
+                "overall_enabled_categories": {"net_win_rate_model_minus_baseline": -0.10, "both_wrong_rate": 0.25},
+                "slice_analysis": {
+                    "truth_slice_lookup": {
+                        "haircare:hair_mask": {"model_win_rate_vs_truth": 0.31, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                        "haircare:hair_oil": {"model_win_rate_vs_truth": 0.48, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                        "skincare:essence": {"model_win_rate_vs_truth": 0.33, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                    },
+                    "disagreement_pair_lookup": {
+                        "haircare:shampoo:conditioner": {"model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 1.0, "net_wins_model_minus_baseline": -3},
+                    },
+                },
+            }
+            retrain_payload = {
+                "per_category": {
+                    "haircare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.09, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.54, "resolved_truth_anchors_total": 117},
+                    "skincare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "B"}, "model_win_rate_vs_truth": 0.04, "baseline_win_rate_vs_truth": 0.22, "both_wrong_rate": 0.21, "resolved_truth_anchors_total": 276},
+                    "makeup": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 28},
+                    "fragrance": {"rollout_reason": "category_disabled", "diagnosis": {"code": "B"}, "model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.17, "both_wrong_rate": 0.52, "resolved_truth_anchors_total": 63},
+                },
+                "overall_enabled_categories": {"net_win_rate_model_minus_baseline": -0.12, "both_wrong_rate": 0.30},
+                "slice_analysis": {
+                    "truth_slice_lookup": {
+                        "haircare:hair_mask": {"model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 0},
+                        "haircare:hair_oil": {"model_win_rate_vs_truth": 0.48, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                        "skincare:essence": {"model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 0},
+                    },
+                    "disagreement_pair_lookup": {
+                        "haircare:shampoo:conditioner": {"model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 1.0, "net_wins_model_minus_baseline": -4},
+                    },
+                },
+            }
+            candidate_payload = {
+                "per_category": {
+                    "haircare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.62, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 117},
+                    "skincare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.25, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 276},
+                    "makeup": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 28},
+                    "fragrance": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.41, "baseline_win_rate_vs_truth": 0.05, "both_wrong_rate": 0.11, "resolved_truth_anchors_total": 63},
+                },
+                "overall_enabled_categories": {"net_win_rate_model_minus_baseline": 0.30, "both_wrong_rate": 0.0},
+                "slice_analysis": {
+                    "truth_slice_lookup": {
+                        "haircare:hair_mask": {"model_win_rate_vs_truth": 0.31, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                        "haircare:hair_oil": {"model_win_rate_vs_truth": 0.48, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                        "skincare:essence": {"model_win_rate_vs_truth": 1.0, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 30},
+                    },
+                    "disagreement_pair_lookup": {
+                        "haircare:shampoo:conditioner": {"model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 1.0, "net_wins_model_minus_baseline": -4},
+                    },
+                },
+            }
+
+            with patch(
+                "roadmap_app.nextstep_targeted_retrain.build_nextstep_v4_decision_quality_payload",
+                side_effect=[active_payload, retrain_payload, candidate_payload],
+            ), patch(
+                "roadmap_app.nextstep_targeted_retrain.build_nextstep_haircare_shampoo_truth_design_payload",
+                side_effect=[
+                    self._two_stage_truth_payload(stage1_model_win_rate=1.0, stage2_model_win_rate=0.5),
+                    self._two_stage_truth_payload(stage1_model_win_rate=0.75, stage2_model_win_rate=0.25),
+                    self._two_stage_truth_payload(stage1_model_win_rate=1.0, stage2_model_win_rate=1.0),
+                ],
+            ):
+                payload = build_historical_anchor_candidate_comparison_payload(
+                    active_model_path=str(active_dir / "model.pkl"),
+                    retrain_v1_model_path=str(retrain_dir / "model.pkl"),
+                    candidate_model_path=str(candidate_dir / "model.pkl"),
+                    days=30,
+                )
+
+            broader = payload["broader_qualification"]
+            self.assertEqual(broader["global"]["recommendation_code"], "A")
+            self.assertTrue(broader["global"]["is_v5_new_best_continuation_candidate"])
+            self.assertEqual(
+                broader["per_category"]["haircare"]["status"],
+                "candidate_for_next_stage_under_freeze",
+            )
+            self.assertEqual(
+                broader["per_category"]["skincare"]["status"],
+                "improved_enough_for_next_stage_under_freeze",
+            )
+            self.assertEqual(
+                broader["per_category"]["makeup"]["status"],
+                "sample_limited_hold",
+            )
+            self.assertEqual(
+                broader["per_category"]["fragrance"]["status"],
+                "analysis_only_positive_signal",
+            )
+            markdown = render_historical_anchor_candidate_comparison_markdown(payload)
+            self.assertIn("final recommendation: `A`", markdown)
+
+    @override_settings(
+        ROADMAP_RUNTIME_FREEZE_ML=True,
+        ROADMAP_NEXTSTEP_V4_MODEL_PATH="models/original_active.pkl",
+        ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH="models/original_shadow.pkl",
+    )
+    def test_comparison_payload_does_not_modify_runtime_config(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            active_dir = root / "active"
+            retrain_dir = root / "retrain"
+            candidate_dir = root / "candidate"
+            for artifact_dir, version in [
+                (active_dir, "active_v1"),
+                (retrain_dir, "retrain_v1"),
+                (candidate_dir, "v5_v1"),
+            ]:
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                model_path = artifact_dir / "model.pkl"
+                model_path.write_bytes(b"placeholder")
+                _write_json(artifact_dir / "metadata.json", {"model_version": version})
+                _write_json(artifact_dir / "eval_report.json", {"model_version": version, "metrics_test": {"recall_at_1": 0.23, "ndcg_at_5": 0.52}})
+                _write_json(artifact_dir / "shadow_report.json", {"model_version": version, "model_path": str(model_path)})
+                _write_json(artifact_dir / "uplift_report_7d.json", {"model_version": version, "model_path": str(model_path)})
+                _write_json(artifact_dir / "uplift_report_30d.json", {"model_version": version, "model_path": str(model_path)})
+
+            dq_payload = {
+                "per_category": {
+                    "haircare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.16, "baseline_win_rate_vs_truth": 0.02, "both_wrong_rate": 0.42, "resolved_truth_anchors_total": 120},
+                    "skincare": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.20, "baseline_win_rate_vs_truth": 0.10, "both_wrong_rate": 0.05, "resolved_truth_anchors_total": 300},
+                    "makeup": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "A"}, "model_win_rate_vs_truth": 0.0, "baseline_win_rate_vs_truth": 0.0, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 20},
+                    "fragrance": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate_vs_truth": 0.25, "baseline_win_rate_vs_truth": 0.10, "both_wrong_rate": 0.0, "resolved_truth_anchors_total": 20},
+                },
+                "overall_enabled_categories": {"net_win_rate_model_minus_baseline": 0.20, "both_wrong_rate": 0.0},
+                "slice_analysis": {
+                    "truth_slice_lookup": {
+                        "haircare:hair_mask": {"model_win_rate_vs_truth": 0.3, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                        "haircare:hair_oil": {"model_win_rate_vs_truth": 0.4, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 10},
+                        "skincare:essence": {"model_win_rate_vs_truth": 0.5, "baseline_win_rate_vs_truth": 0.0, "net_wins_model_minus_baseline": 20},
+                    },
+                    "disagreement_pair_lookup": {},
+                },
+            }
+
+            before = (
+                settings.ROADMAP_RUNTIME_FREEZE_ML,
+                settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH,
+                settings.ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH,
+            )
+            with patch(
+                "roadmap_app.nextstep_targeted_retrain.build_nextstep_v4_decision_quality_payload",
+                side_effect=[dq_payload, dq_payload, dq_payload],
+            ), patch(
+                "roadmap_app.nextstep_targeted_retrain.build_nextstep_haircare_shampoo_truth_design_payload",
+                side_effect=[
+                    self._two_stage_truth_payload(stage1_model_win_rate=1.0, stage2_model_win_rate=0.5),
+                    self._two_stage_truth_payload(stage1_model_win_rate=1.0, stage2_model_win_rate=0.5),
+                    self._two_stage_truth_payload(stage1_model_win_rate=1.0, stage2_model_win_rate=1.0),
+                ],
+            ):
+                payload = build_historical_anchor_candidate_comparison_payload(
+                    active_model_path=str(active_dir / "model.pkl"),
+                    retrain_v1_model_path=str(retrain_dir / "model.pkl"),
+                    candidate_model_path=str(candidate_dir / "model.pkl"),
+                    days=30,
+                )
+
+            after = (
+                settings.ROADMAP_RUNTIME_FREEZE_ML,
+                settings.ROADMAP_NEXTSTEP_V4_MODEL_PATH,
+                settings.ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH,
+            )
+            self.assertEqual(before, after)
+            self.assertFalse(payload["runtime_guardrails"]["runtime_config_changed"])
+            self.assertFalse(payload["qualification_scope"]["runtime_enablement"])
+            self.assertFalse(payload["qualification_scope"]["rule_baseline_behavior_changed"])
 
 
 class RoadmapNextstepHaircareShampooGateTests(SimpleTestCase):

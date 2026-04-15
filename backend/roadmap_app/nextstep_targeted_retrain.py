@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from django.conf import settings
+
 from roadmap_app.ml_artifact_proof import (
     PROOF_FILE_EVAL,
     PROOF_FILE_METADATA,
@@ -30,6 +32,9 @@ DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_STEM = (
 )
 DEFAULT_TWO_STAGE_GATE_RERUN_REPORT_STEM = (
     Path("reports") / "roadmap_nextstep_v5_gate_rerun_under_two_stage_truth"
+)
+DEFAULT_BROADER_QUALIFICATION_RERUN_REPORT_STEM = (
+    Path("reports") / "roadmap_nextstep_v5_broader_qualification_rerun"
 )
 
 
@@ -567,6 +572,15 @@ def _pct(value: Any) -> str:
         return "n/a"
 
 
+def _ppt(value: Any) -> str:
+    try:
+        if value is None:
+            return "n/a"
+        return f"{float(value) * 100.0:+.2f}pp"
+    except Exception:
+        return "n/a"
+
+
 def render_targeted_retrain_comparison_markdown(payload: dict[str, Any]) -> str:
     lines = [
         "# Roadmap Nextstep Targeted Retrain Comparison",
@@ -895,6 +909,218 @@ def _acceptance_gates(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _runtime_config_snapshot() -> dict[str, Any]:
+    return {
+        "runtime_freeze_ml": bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)),
+        "roadmap_nextstep_model_path": str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or ""),
+        "roadmap_nextstep_v3_model_path": str(getattr(settings, "ROADMAP_NEXTSTEP_V3_MODEL_PATH", "") or ""),
+        "roadmap_nextstep_v4_model_path": str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or ""),
+        "roadmap_nextstep_v4_shadow_model_path": str(
+            getattr(settings, "ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH", "") or ""
+        ),
+    }
+
+
+def _catalog_safety_summary(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    per_artifact: dict[str, Any] = {}
+    writes_performed = False
+    for label, artifact in artifacts.items():
+        safety = _safe_dict(_safe_dict(artifact.get("shampoo_truth_design")).get("catalog_safety"))
+        per_artifact[label] = safety
+        writes_performed = writes_performed or bool(safety.get("catalog_writes_performed"))
+    return {
+        "catalog_writes_performed": bool(writes_performed),
+        "per_artifact": per_artifact,
+    }
+
+
+def _category_delta_summary(candidate: dict[str, Any], reference: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "model_win_rate_delta": _delta(candidate.get("model_win_rate"), reference.get("model_win_rate")),
+        "baseline_win_rate_delta": _delta(candidate.get("baseline_win_rate"), reference.get("baseline_win_rate")),
+        "both_wrong_rate_delta": _delta(candidate.get("both_wrong_rate"), reference.get("both_wrong_rate")),
+        "resolved_truth_delta": (
+            _int_value(candidate.get("resolved_truth"), 0) - _int_value(reference.get("resolved_truth"), 0)
+        ),
+    }
+
+
+def _is_best_against_references(candidate: dict[str, Any], *references: dict[str, Any]) -> bool:
+    if not references:
+        return False
+    candidate_model_win = _float_value(candidate.get("model_win_rate"), -1.0)
+    candidate_baseline_win = _float_value(candidate.get("baseline_win_rate"), 1.0)
+    candidate_both_wrong = _float_value(candidate.get("both_wrong_rate"), 1.0)
+    return all(
+        candidate_model_win >= _float_value(reference.get("model_win_rate"), -1.0)
+        and candidate_baseline_win <= _float_value(reference.get("baseline_win_rate"), 1.0)
+        and candidate_both_wrong <= _float_value(reference.get("both_wrong_rate"), 1.0)
+        for reference in references
+    )
+
+
+def _category_qualification_verdict(
+    row: dict[str, Any],
+    *,
+    gate_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    category = str(row.get("category") or "")
+    active = _safe_dict(row.get("active"))
+    retrain = _safe_dict(row.get("retrain_v1"))
+    candidate = _safe_dict(row.get("v5_historical_anchor"))
+    candidate_reason = str(candidate.get("rollout_reason") or "")
+    candidate_diagnosis = _safe_dict(candidate.get("diagnosis"))
+    diagnosis_code = str(candidate_diagnosis.get("code") or "")
+    candidate_best = _is_best_against_references(candidate, active, retrain)
+    beats_active = _is_best_against_references(candidate, active)
+    beats_retrain = _is_best_against_references(candidate, retrain)
+    shampoo_gate = _safe_dict(gate_lookup.get("haircare_shampoo_two_stage_truth_improves"))
+
+    status = "hold"
+    direct_answer = "hold"
+    next_stage = False
+    blocks_next_phase = False
+
+    if category == "haircare":
+        if bool(shampoo_gate.get("passed")) and beats_active and beats_retrain:
+            status = "candidate_for_next_stage_under_freeze"
+            direct_answer = "improved; candidate for next stage under freeze, but not for runtime enablement"
+            next_stage = True
+        elif _float_value(candidate.get("model_win_rate"), 0.0) > _float_value(active.get("model_win_rate"), 0.0):
+            status = "improved_but_shampoo_gate_blocked"
+            direct_answer = "improved, but the shampoo acceptance gate still blocks broader progression"
+            blocks_next_phase = True
+        else:
+            status = "hold"
+            direct_answer = "still HOLD"
+            blocks_next_phase = True
+    elif category == "skincare":
+        if candidate_reason == "low_uplift" and diagnosis_code == "B":
+            status = "hold_low_uplift"
+            direct_answer = "still HOLD(low_uplift)"
+            blocks_next_phase = True
+        elif beats_active and beats_retrain:
+            status = "improved_enough_for_next_stage_under_freeze"
+            direct_answer = "improved enough for the next qualification stage under freeze; runtime remains HOLD(low_uplift)"
+            next_stage = True
+        else:
+            status = "hold_low_uplift"
+            direct_answer = "still HOLD(low_uplift)"
+            blocks_next_phase = True
+    elif category == "makeup":
+        if candidate_reason == "sample_too_small_but_nonzero_control":
+            status = "sample_limited_hold"
+            direct_answer = "still sample-limited; not good enough yet"
+        elif beats_active and beats_retrain:
+            status = "candidate_for_next_stage_under_freeze"
+            direct_answer = "good enough for next stage under freeze"
+            next_stage = True
+        else:
+            status = "hold"
+            direct_answer = "not good enough yet"
+            blocks_next_phase = True
+    elif category == "fragrance":
+        if beats_active and beats_retrain:
+            status = "analysis_only_positive_signal"
+            direct_answer = "analysis-only bucket shows useful positive signal; still no runtime implication"
+        else:
+            status = "analysis_only_noisy_signal"
+            direct_answer = "analysis-only bucket remains noisy; still no runtime implication"
+
+    return {
+        "category": category,
+        "status": status,
+        "direct_answer": direct_answer,
+        "candidate_for_next_stage_under_freeze": bool(next_stage),
+        "blocks_next_qualification_phase": bool(blocks_next_phase),
+        "candidate_is_best_among_artifacts": bool(candidate_best),
+        "candidate_beats_active": bool(beats_active),
+        "candidate_beats_retrain_v1": bool(beats_retrain),
+        "current_rollout_reason": candidate_reason,
+        "candidate_diagnosis": candidate_diagnosis,
+        "candidate": candidate,
+        "comparison_vs_active": _category_delta_summary(candidate, active),
+        "comparison_vs_retrain_v1": _category_delta_summary(candidate, retrain),
+    }
+
+
+def _global_blockers(
+    *,
+    acceptance: dict[str, Any],
+    category_verdicts: dict[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    for gate in _safe_list(_safe_dict(acceptance).get("gates")):
+        safe_gate = _safe_dict(gate)
+        if bool(safe_gate.get("passed")):
+            continue
+        blockers.append(f"{safe_gate.get('name')}:{safe_gate.get('reason')}")
+    for category, summary in sorted(category_verdicts.items()):
+        safe_summary = _safe_dict(summary)
+        if bool(safe_summary.get("blocks_next_qualification_phase")):
+            blockers.append(f"{category}:{safe_summary.get('status')}")
+    return blockers
+
+
+def _broader_qualification_summary(
+    *,
+    category_rows: list[dict[str, Any]],
+    acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    gate_lookup = {
+        str(gate.get("name")): _safe_dict(gate)
+        for gate in _safe_list(_safe_dict(acceptance).get("gates"))
+    }
+    per_category = {
+        str(row.get("category") or ""): _category_qualification_verdict(row, gate_lookup=gate_lookup)
+        for row in category_rows
+    }
+    blockers = _global_blockers(acceptance=acceptance, category_verdicts=per_category)
+    overall_passed = bool(_safe_dict(acceptance).get("overall_passed"))
+    haircare_ready = bool(_safe_dict(per_category.get("haircare")).get("candidate_for_next_stage_under_freeze"))
+    skincare_ready = bool(_safe_dict(per_category.get("skincare")).get("candidate_for_next_stage_under_freeze"))
+    any_subset_ready = any(
+        bool(_safe_dict(summary).get("candidate_for_next_stage_under_freeze"))
+        for summary in per_category.values()
+    )
+    best_overall = overall_passed and haircare_ready and skincare_ready and not blockers
+
+    if best_overall:
+        recommendation_code = "A"
+        recommendation_label = "continue qualification with v5 as the new best candidate"
+    elif any_subset_ready:
+        recommendation_code = "C"
+        recommendation_label = "continue qualification only for a subset of categories under freeze"
+    else:
+        recommendation_code = "B"
+        recommendation_label = "keep continuation frozen because broader results do not justify progression"
+
+    return {
+        "per_category": per_category,
+        "global": {
+            "recommendation_code": recommendation_code,
+            "recommendation_label": recommendation_label,
+            "is_v5_new_best_continuation_candidate": bool(best_overall),
+            "is_v5_better_enough_than_active_for_next_phase": bool(recommendation_code in {"A", "C"}),
+            "some_category_or_gate_still_blocks_progression": bool(blockers),
+            "exact_blocker": "; ".join(blockers) if blockers else "none",
+            "next_stage_focus_categories": [
+                category
+                for category, summary in per_category.items()
+                if bool(_safe_dict(summary).get("candidate_for_next_stage_under_freeze"))
+            ],
+            "analysis_only_categories": [
+                category
+                for category, summary in per_category.items()
+                if str(_safe_dict(summary).get("status") or "").startswith("analysis_only_")
+            ],
+            "runtime_enablement_allowed": False,
+            "runtime_enablement_reason": "Runtime ML freeze remains on; this rerun is qualification/reporting only.",
+            "remaining_blockers": blockers,
+        },
+    }
+
+
 def build_historical_anchor_candidate_comparison_payload(
     *,
     active_model_path: str | Path,
@@ -902,6 +1128,7 @@ def build_historical_anchor_candidate_comparison_payload(
     candidate_model_path: str | Path,
     days: int = 30,
 ) -> dict[str, Any]:
+    runtime_snapshot_before = _runtime_config_snapshot()
     artifacts = {
         "active": _artifact_comparison_entry(label="active", model_path=active_model_path, days=days),
         "retrain_v1": _artifact_comparison_entry(
@@ -929,15 +1156,41 @@ def build_historical_anchor_candidate_comparison_payload(
         key_builder=lambda spec: f"{spec['category']}:{spec['truth_product_type']}",
         specs=PROTECTED_TRUTH_SLICES,
     )
+    acceptance = _acceptance_gates(artifacts)
+    category_comparison = _compare_category_rows(artifacts)
+    runtime_snapshot_after = _runtime_config_snapshot()
     return {
+        "qualification_scope": {
+            "mode": "read_only_qualification_rerun_under_runtime_freeze",
+            "categories": {
+                "primary": ["haircare", "skincare", "makeup"],
+                "analysis_only": ["fragrance"],
+            },
+            "decision_quality_path": "current historical-anchor decision-quality path",
+            "uplift_qualification_path": "current uplift/qualification path keyed by exact model_path",
+            "shampoo_acceptance_semantics": "D_two_stage_truth",
+            "unresolved_anchor_semantics": "fail_closed",
+            "runtime_enablement": False,
+            "rule_baseline_behavior_changed": False,
+        },
         "policy": targeted_retrain_policy_payload(),
         "artifacts": artifacts,
-        "category_comparison": _compare_category_rows(artifacts),
+        "runtime_guardrails": {
+            "before": runtime_snapshot_before,
+            "after": runtime_snapshot_after,
+            "runtime_config_changed": runtime_snapshot_before != runtime_snapshot_after,
+        },
+        "catalog_safety": _catalog_safety_summary(artifacts),
+        "category_comparison": category_comparison,
         "targeted_truth_slices": targeted_truth_rows,
         "targeted_disagreement_pairs": targeted_pair_rows,
         "protected_truth_slices": protected_rows,
         "haircare_shampoo_truth_gate_comparison": _compare_shampoo_two_stage_rows(artifacts),
-        "acceptance_gates": _acceptance_gates(artifacts),
+        "acceptance_gates": acceptance,
+        "broader_qualification": _broader_qualification_summary(
+            category_rows=category_comparison,
+            acceptance=acceptance,
+        ),
     }
 
 
@@ -949,14 +1202,30 @@ def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, An
     }
     shampoo_gate = _safe_dict(gate_lookup.get("haircare_shampoo_two_stage_truth_improves"))
     shampoo_comparison = _safe_dict(payload.get("haircare_shampoo_truth_gate_comparison"))
+    scope = _safe_dict(payload.get("qualification_scope"))
+    runtime_guardrails = _safe_dict(payload.get("runtime_guardrails"))
+    catalog_safety = _safe_dict(payload.get("catalog_safety"))
+    broader = _safe_dict(payload.get("broader_qualification"))
+    broader_global = _safe_dict(broader.get("global"))
     lines = [
-        "# Roadmap Nextstep v5 Historical Anchor Targeted Comparison",
+        "# Roadmap Nextstep v5 Broader Qualification Rerun",
         "",
         "## Executive Verdict",
+        f"- scope: `{scope.get('mode')}`",
+        f"- runtime ML freeze remains on: `{_safe_dict(runtime_guardrails.get('after')).get('runtime_freeze_ml')}`",
+        f"- runtime config changed during rerun: `{runtime_guardrails.get('runtime_config_changed')}`",
+        f"- catalog writes performed: `{catalog_safety.get('catalog_writes_performed')}`",
+        f"- rule baseline behavior changed: `{scope.get('rule_baseline_behavior_changed')}`",
+        f"- unresolved anchors remain fail-closed: `{scope.get('unresolved_anchor_semantics') == 'fail_closed'}`",
         f"- shampoo gate semantics adopted: `D_two_stage_truth`",
         f"- shampoo gate passed: `{shampoo_gate.get('passed')}`",
         f"- shampoo gate reason: `{shampoo_gate.get('reason')}`",
         f"- overall acceptance passed: `{_safe_dict(payload.get('acceptance_gates')).get('overall_passed')}`",
+        f"- v5 is now the best continuation candidate overall: `{broader_global.get('is_v5_new_best_continuation_candidate')}`",
+        f"- v5 is better enough than active to continue to the next qualification phase: `{broader_global.get('is_v5_better_enough_than_active_for_next_phase')}`",
+        f"- some category or gate still blocks progression: `{broader_global.get('some_category_or_gate_still_blocks_progression')}`",
+        f"- exact blocker: `{broader_global.get('exact_blocker')}`",
+        f"- final recommendation: `{broader_global.get('recommendation_code')}` {broader_global.get('recommendation_label')}",
         "",
         "## Why These Slices Were Targeted",
     ]
@@ -998,6 +1267,21 @@ def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, An
         lines.append(f"- final shampoo gate verdict for v5: `{'cleared' if shampoo_gate.get('passed') else 'not_cleared'}`")
         lines.append(f"- gate reason: `{shampoo_gate.get('reason')}`")
         lines.append("- unresolved anchors remain fail-closed under the adopted gate.")
+
+    lines.extend(["", "## Per-Category Qualification Verdict"])
+    lines.append("| category | direct_answer | v5_status | current_rollout_reason | v5_diag | vs_active_model_win | vs_active_both_wrong | vs_retrain_model_win | vs_retrain_both_wrong |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for row in _safe_list(payload.get("category_comparison")):
+        category = str(row.get("category") or "")
+        verdict = _safe_dict(_safe_dict(broader.get("per_category")).get(category))
+        lines.append(
+            f"| {category} | {verdict.get('direct_answer')} | {verdict.get('status')} | "
+            f"{verdict.get('current_rollout_reason')} | {str(_safe_dict(verdict.get('candidate_diagnosis')).get('code') or '')} | "
+            f"{_ppt(_safe_dict(verdict.get('comparison_vs_active')).get('model_win_rate_delta'))} | "
+            f"{_ppt(_safe_dict(verdict.get('comparison_vs_active')).get('both_wrong_rate_delta'))} | "
+            f"{_ppt(_safe_dict(verdict.get('comparison_vs_retrain_v1')).get('model_win_rate_delta'))} | "
+            f"{_ppt(_safe_dict(verdict.get('comparison_vs_retrain_v1')).get('both_wrong_rate_delta'))} |"
+        )
 
     lines.extend(["", "## Category Comparison"])
     lines.append("| category | active_reason | retrain_v1_reason | v5_reason | active_model_win | retrain_v1_model_win | v5_model_win |")
@@ -1055,10 +1339,21 @@ def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, An
         lines.append(f"| {key} | {_pct(metrics.get('recall_at_1'))} | {_pct(metrics.get('ndcg_at_5'))} |")
 
     lines.extend(["", "## Verdict"])
+    lines.append(
+        f"- Recommendation `{broader_global.get('recommendation_code')}`: {broader_global.get('recommendation_label')}."
+    )
+    lines.append(
+        f"- Next-stage focus categories under freeze: `{', '.join(_safe_list(broader_global.get('next_stage_focus_categories'))) or 'none'}`."
+    )
+    lines.append(
+        f"- Analysis-only categories: `{', '.join(_safe_list(broader_global.get('analysis_only_categories'))) or 'none'}`."
+    )
+    lines.append(
+        f"- Runtime enablement allowed: `{broader_global.get('runtime_enablement_allowed')}`. "
+        f"{broader_global.get('runtime_enablement_reason')}"
+    )
     if bool(_safe_dict(payload.get("acceptance_gates")).get("overall_passed")):
-        lines.append("- v5 historical-anchor artifact satisfies the updated acceptance gates and can continue to the next qualification step.")
-        lines.append("- Exact next block: broader category re-run under the same freeze/qualification regime. Runtime ML remains disabled.")
+        lines.append("- v5 satisfies the updated freeze-only acceptance gates and should advance as the broader qualification candidate, not as a runtime artifact.")
     else:
-        lines.append("- v5 historical-anchor artifact does not satisfy the updated acceptance gates and should not advance runtime qualification.")
-        lines.append("- Exact next block: keep frozen and address the remaining failing acceptance gate before any broader rerun.")
+        lines.append("- v5 does not satisfy the updated broader qualification gates; keep continuation frozen until the listed blocker is resolved.")
     return "\n".join(lines).strip() + "\n"
