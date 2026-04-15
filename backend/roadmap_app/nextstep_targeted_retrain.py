@@ -16,6 +16,9 @@ from roadmap_app.ml_artifact_proof import (
 )
 from roadmap_app.ml_next_step import nextstep_model_artifact_summary
 from roadmap_app.nextstep_decision_quality import build_nextstep_v4_decision_quality_payload
+from roadmap_app.nextstep_haircare_shampoo_truth_design import (
+    build_nextstep_haircare_shampoo_truth_design_payload,
+)
 
 
 POLICY_VERSION = "roadmap_nextstep_v4_targeted_retrain_v1"
@@ -24,6 +27,9 @@ DEFAULT_TARGETED_MODEL_DIR = Path("models") / "roadmap_next_step_v4_targeted_ret
 DEFAULT_COMPARE_REPORT_STEM = Path("reports") / "roadmap_nextstep_targeted_retrain_comparison"
 DEFAULT_HISTORICAL_ANCHOR_COMPARE_REPORT_STEM = (
     Path("reports") / "roadmap_nextstep_v5_historical_anchor_targeted_v1_comparison"
+)
+DEFAULT_TWO_STAGE_GATE_RERUN_REPORT_STEM = (
+    Path("reports") / "roadmap_nextstep_v5_gate_rerun_under_two_stage_truth"
 )
 
 
@@ -409,6 +415,72 @@ def _slice_lookup(payload: dict[str, Any], *, kind: str, key: str) -> dict[str, 
     return {}
 
 
+def _artifact_shampoo_truth_entry(*, model_path: str | Path, days: int) -> dict[str, Any]:
+    payload = build_nextstep_haircare_shampoo_truth_design_payload(
+        model_path=model_path,
+        reference_model_path="",
+        days=days,
+        include_ga=False,
+    )
+    return {
+        "executive_verdict": _safe_dict(payload.get("executive_verdict")),
+        "truth_designs": _safe_dict(_safe_dict(payload.get("candidate")).get("truth_designs")),
+        "catalog_safety": _safe_dict(payload.get("catalog_safety")),
+    }
+
+
+def _shampoo_two_stage_snapshot(artifact: dict[str, Any]) -> dict[str, Any]:
+    shampoo_payload = _safe_dict(artifact.get("shampoo_truth_design"))
+    truth_designs = _safe_dict(shampoo_payload.get("truth_designs"))
+    current_gate = _safe_dict(truth_designs.get("current_gate"))
+    designs = _safe_dict(truth_designs.get("designs"))
+    two_stage = _safe_dict(designs.get("D_two_stage_truth"))
+    stage1 = _safe_dict(two_stage.get("stage_1_family"))
+    stage2 = _safe_dict(two_stage.get("stage_2_concrete_step"))
+    return {
+        "current_gate": current_gate,
+        "two_stage": two_stage,
+        "stage_1_family": stage1,
+        "stage_2_concrete_step": stage2,
+        "stage_1_outcome": _safe_dict(stage1.get("outcome_matrix")),
+        "stage_2_outcome": _safe_dict(stage2.get("outcome_matrix")),
+        "resolved_anchors_total": _int_value(two_stage.get("resolved_anchors_total"), 0),
+        "unresolved_anchors_total": _int_value(two_stage.get("unresolved_anchors_total"), 0),
+        "unresolved_anchors_by_reason": _safe_dict(two_stage.get("unresolved_anchors_by_reason")),
+        "shampoo_conditioner_observability": _safe_dict(two_stage.get("shampoo_conditioner_observability")),
+        "model_vs_baseline_comparable": bool(two_stage.get("model_vs_baseline_comparable")),
+        "current_gate_status": str(_safe_dict(current_gate.get("verdict")).get("status") or ""),
+        "two_stage_gate_informativeness": str(two_stage.get("gate_informativeness_status") or ""),
+    }
+
+
+def _compare_shampoo_two_stage_rows(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    rows = {}
+    for label, artifact in artifacts.items():
+        snapshot = _shampoo_two_stage_snapshot(artifact)
+        rows[label] = {
+            "current_gate_status": snapshot.get("current_gate_status"),
+            "old_gate_resolved": _int_value(_safe_dict(snapshot.get("current_gate")).get("resolved_anchors_total"), 0),
+            "old_gate_unresolved": _int_value(_safe_dict(snapshot.get("current_gate")).get("unresolved_anchors_total"), 0),
+            "old_gate_shampoo_truth_rows": _int_value(_safe_dict(snapshot.get("current_gate")).get("standalone_shampoo_truth_rows_total"), 0),
+            "old_gate_shampoo_conditioner_rows": _int_value(
+                _safe_dict(snapshot.get("current_gate")).get("resolved_shampoo_conditioner_comparable_rows_total"), 0
+            ),
+            "two_stage_resolved": snapshot.get("resolved_anchors_total"),
+            "two_stage_unresolved": snapshot.get("unresolved_anchors_total"),
+            "two_stage_unresolved_by_reason": snapshot.get("unresolved_anchors_by_reason"),
+            "stage_1_family_model_win_rate": _safe_dict(snapshot.get("stage_1_outcome")).get("model_win_rate"),
+            "stage_1_family_baseline_win_rate": _safe_dict(snapshot.get("stage_1_outcome")).get("baseline_win_rate"),
+            "stage_1_family_model_wins": _safe_dict(snapshot.get("stage_1_outcome")).get("model_wins"),
+            "stage_2_concrete_model_win_rate": _safe_dict(snapshot.get("stage_2_outcome")).get("model_win_rate"),
+            "stage_2_concrete_baseline_win_rate": _safe_dict(snapshot.get("stage_2_outcome")).get("baseline_win_rate"),
+            "stage_2_concrete_model_wins": _safe_dict(snapshot.get("stage_2_outcome")).get("model_wins"),
+            "shampoo_conditioner_observability": snapshot.get("shampoo_conditioner_observability"),
+            "two_stage_gate_informativeness": snapshot.get("two_stage_gate_informativeness"),
+        }
+    return rows
+
+
 def build_targeted_retrain_comparison_payload(
     *,
     base_model_path: str | Path,
@@ -612,6 +684,10 @@ def _artifact_comparison_entry(*, label: str, model_path: str | Path, days: int)
         "eval": _load_eval_report(resolved_model_path),
         "proof_bundle": candidate_proof_bundle_summary(resolved_model_path),
         "decision_quality": decision_quality,
+        "shampoo_truth_design": _artifact_shampoo_truth_entry(
+            model_path=resolved_model_path,
+            days=days,
+        ),
     }
 
 
@@ -674,18 +750,46 @@ def _acceptance_gates(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
         and str(_safe_dict(candidate_skincare.get("diagnosis")).get("code") or "") == "B"
     )
 
-    shampoo_key = "haircare:shampoo"
-    pair_key = "haircare:shampoo:conditioner"
-    active_shampoo = _slice_lookup(active_dq, kind="truth_slice_lookup", key=shampoo_key)
-    candidate_shampoo = _slice_lookup(candidate_dq, kind="truth_slice_lookup", key=shampoo_key)
-    active_pair = _slice_lookup(active_dq, kind="disagreement_pair_lookup", key=pair_key)
-    candidate_pair = _slice_lookup(candidate_dq, kind="disagreement_pair_lookup", key=pair_key)
-    gate_haircare = (
-        _int_value(candidate_shampoo.get("net_wins_model_minus_baseline"), -10**9)
-        > _int_value(active_shampoo.get("net_wins_model_minus_baseline"), -10**9)
-        and _int_value(candidate_pair.get("net_wins_model_minus_baseline"), 0)
-        >= _int_value(active_pair.get("net_wins_model_minus_baseline"), 0)
+    active_shampoo = _shampoo_two_stage_snapshot(active)
+    candidate_shampoo = _shampoo_two_stage_snapshot(candidate)
+    active_stage1 = _safe_dict(active_shampoo.get("stage_1_outcome"))
+    candidate_stage1 = _safe_dict(candidate_shampoo.get("stage_1_outcome"))
+    active_stage2 = _safe_dict(active_shampoo.get("stage_2_outcome"))
+    candidate_stage2 = _safe_dict(candidate_shampoo.get("stage_2_outcome"))
+    gate_haircare_measurable = (
+        bool(active_shampoo.get("model_vs_baseline_comparable"))
+        and bool(candidate_shampoo.get("model_vs_baseline_comparable"))
+        and _int_value(active_shampoo.get("resolved_anchors_total"), 0) > 0
+        and _int_value(candidate_shampoo.get("resolved_anchors_total"), 0) > 0
     )
+    gate_haircare_unresolved_stable = (
+        _int_value(candidate_shampoo.get("unresolved_anchors_total"), 10**9)
+        <= _int_value(active_shampoo.get("unresolved_anchors_total"), 10**9)
+    )
+    gate_haircare_stage1 = (
+        _float_value(candidate_stage1.get("model_win_rate"), -1.0)
+        >= _float_value(active_stage1.get("model_win_rate"), -1.0)
+    )
+    gate_haircare_stage2 = (
+        _float_value(candidate_stage2.get("model_win_rate"), -1.0)
+        > _float_value(active_stage2.get("model_win_rate"), -1.0)
+    )
+    gate_haircare = (
+        gate_haircare_measurable
+        and gate_haircare_unresolved_stable
+        and gate_haircare_stage1
+        and gate_haircare_stage2
+    )
+    if not gate_haircare_measurable:
+        gate_haircare_reason = "haircare_two_stage_truth_not_measurable"
+    elif not gate_haircare_unresolved_stable:
+        gate_haircare_reason = "haircare_two_stage_unresolved_regressed"
+    elif not gate_haircare_stage1:
+        gate_haircare_reason = "haircare_two_stage_stage1_regressed"
+    elif not gate_haircare_stage2:
+        gate_haircare_reason = "haircare_two_stage_stage2_not_improved"
+    else:
+        gate_haircare_reason = "passed"
 
     protected_results = []
     protected_passed = True
@@ -746,14 +850,18 @@ def _acceptance_gates(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
             },
         ),
         _gate_status(
-            "haircare_shampoo_and_pair_improve",
+            "haircare_shampoo_two_stage_truth_improves",
             gate_haircare,
-            "haircare_targeted_slice_not_improved" if not gate_haircare else "passed",
+            gate_haircare_reason,
             {
-                "active_shampoo": active_shampoo,
-                "candidate_shampoo": candidate_shampoo,
-                "active_pair": active_pair,
-                "candidate_pair": candidate_pair,
+                "active": active_shampoo,
+                "candidate": candidate_shampoo,
+                "old_gate_semantics": "exact_shampoo_truth_or_shampoo_to_conditioner_pair",
+                "new_gate_semantics": {
+                    "rule": "D_two_stage_truth",
+                    "stage_1": "transition_family_correctness",
+                    "stage_2": "exact_downstream_concrete_step_correctness",
+                },
             },
         ),
         _gate_status(
@@ -828,14 +936,27 @@ def build_historical_anchor_candidate_comparison_payload(
         "targeted_truth_slices": targeted_truth_rows,
         "targeted_disagreement_pairs": targeted_pair_rows,
         "protected_truth_slices": protected_rows,
+        "haircare_shampoo_truth_gate_comparison": _compare_shampoo_two_stage_rows(artifacts),
         "acceptance_gates": _acceptance_gates(artifacts),
     }
 
 
 def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, Any]) -> str:
     artifacts = _safe_dict(payload.get("artifacts"))
+    gate_lookup = {
+        str(gate.get("name")): _safe_dict(gate)
+        for gate in _safe_list(_safe_dict(payload.get("acceptance_gates")).get("gates"))
+    }
+    shampoo_gate = _safe_dict(gate_lookup.get("haircare_shampoo_two_stage_truth_improves"))
+    shampoo_comparison = _safe_dict(payload.get("haircare_shampoo_truth_gate_comparison"))
     lines = [
         "# Roadmap Nextstep v5 Historical Anchor Targeted Comparison",
+        "",
+        "## Executive Verdict",
+        f"- shampoo gate semantics adopted: `D_two_stage_truth`",
+        f"- shampoo gate passed: `{shampoo_gate.get('passed')}`",
+        f"- shampoo gate reason: `{shampoo_gate.get('reason')}`",
+        f"- overall acceptance passed: `{_safe_dict(payload.get('acceptance_gates')).get('overall_passed')}`",
         "",
         "## Why These Slices Were Targeted",
     ]
@@ -854,6 +975,29 @@ def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, An
             f"- `{key}` path=`{artifact.get('model_path')}` proof_complete=`{proof.get('required_complete')}` "
             f"reason=`{proof.get('reason')}`"
         )
+
+    lines.extend(["", "## Haircare Shampoo Gate"])
+    lines.append("- old gate semantics: `exact shampoo truth or shampoo->conditioner pair truth`")
+    lines.append("- old gate status: semantically mismatched to immutable historical truth")
+    lines.append("- adopted gate semantics: `D_two_stage_truth`")
+    lines.append("  stage 1: transition family correctness")
+    lines.append("  stage 2: exact downstream concrete-step correctness")
+    lines.append("")
+    lines.append("| artifact | old_gate_status | old_resolved | old_unresolved | old_shampoo_truth_rows | old_shampoo->conditioner_rows | stage1_model_win | stage2_model_win | two_stage_resolved | two_stage_unresolved |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+    for key in ["active", "retrain_v1", "v5_historical_anchor"]:
+        row = _safe_dict(shampoo_comparison.get(key))
+        lines.append(
+            f"| {key} | {row.get('current_gate_status')} | {row.get('old_gate_resolved')} | {row.get('old_gate_unresolved')} "
+            f"| {row.get('old_gate_shampoo_truth_rows')} | {row.get('old_gate_shampoo_conditioner_rows')} "
+            f"| {_pct(row.get('stage_1_family_model_win_rate'))} | {_pct(row.get('stage_2_concrete_model_win_rate'))} "
+            f"| {row.get('two_stage_resolved')} | {row.get('two_stage_unresolved')} |"
+        )
+    if shampoo_gate:
+        lines.append("")
+        lines.append(f"- final shampoo gate verdict for v5: `{'cleared' if shampoo_gate.get('passed') else 'not_cleared'}`")
+        lines.append(f"- gate reason: `{shampoo_gate.get('reason')}`")
+        lines.append("- unresolved anchors remain fail-closed under the adopted gate.")
 
     lines.extend(["", "## Category Comparison"])
     lines.append("| category | active_reason | retrain_v1_reason | v5_reason | active_model_win | retrain_v1_model_win | v5_model_win |")
@@ -912,7 +1056,9 @@ def render_historical_anchor_candidate_comparison_markdown(payload: dict[str, An
 
     lines.extend(["", "## Verdict"])
     if bool(_safe_dict(payload.get("acceptance_gates")).get("overall_passed")):
-        lines.append("- v5 historical-anchor artifact satisfies the defined acceptance gates and is a meaningful future qualification candidate.")
+        lines.append("- v5 historical-anchor artifact satisfies the updated acceptance gates and can continue to the next qualification step.")
+        lines.append("- Exact next block: broader category re-run under the same freeze/qualification regime. Runtime ML remains disabled.")
     else:
-        lines.append("- v5 historical-anchor artifact does not satisfy the defined acceptance gates and should not advance runtime qualification.")
+        lines.append("- v5 historical-anchor artifact does not satisfy the updated acceptance gates and should not advance runtime qualification.")
+        lines.append("- Exact next block: keep frozen and address the remaining failing acceptance gate before any broader rerun.")
     return "\n".join(lines).strip() + "\n"
