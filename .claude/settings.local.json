@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /c/Users/Adik/Uilesim/loyalty-platform-backend/backend/roadmap_app/*.py)"
+    ]
+  }
+}

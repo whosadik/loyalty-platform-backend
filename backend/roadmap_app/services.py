@@ -2270,6 +2270,14 @@ def resolve_primary_roadmap_category(user) -> str:
     return RoadmapPlan.Category.SKINCARE
 
 
+def is_base_roadmap_step(category: str, product_type: str) -> bool:
+    """Return True if product_type is a base (non-optional) step for the given category."""
+    cat = str(category or "").strip().lower()
+    pt = str(product_type or "").strip().lower()
+    rules = CATEGORY_RULES.get(cat, {})
+    return pt in set(rules.get("base", []))
+
+
 def get_next_missing_step(plan: RoadmapPlan | None) -> RoadmapStep | None:
     if not plan:
         return None
@@ -2312,9 +2320,20 @@ def update_roadmap_from_purchase(user, post_ctx: dict[str, Any] | None) -> dict[
     if not categories:
         return None
 
+    txn_id = (post_ctx or {}).get("transaction_id")
+
     plans_by_category: dict[str, RoadmapPlan] = {}
     for category in categories:
-        plans_by_category[category] = refresh_roadmap(user, category=category, post_ctx=post_ctx)
+        if txn_id is not None:
+            existing = get_active_plan(user, category=category)
+            if existing and str((existing.meta or {}).get("last_purchase_txn_id") or "") == str(txn_id):
+                plans_by_category[category] = existing
+                continue
+        refreshed = refresh_roadmap(user, category=category, post_ctx=post_ctx)
+        if txn_id is not None and refreshed is not None:
+            refreshed.meta = {**(refreshed.meta or {}), "last_purchase_txn_id": str(txn_id)}
+            refreshed.save(update_fields=["meta", "updated_at"])
+        plans_by_category[category] = refreshed
 
     selected_category = categories[0]
     selected_plan = plans_by_category[selected_category]
@@ -2477,7 +2496,8 @@ def patch_step_status(*, user, step_id: int, status: str) -> RoadmapStep:
                 anchor_has_scalp_focus=False,
             )
             selected_action = str(continuation_meta.get("action") or STOP_TOKEN)
-            if selected_action == STOP_TOKEN:
+            skipped_is_base = is_base_roadmap_step(category, str(step.product_type or ""))
+            if selected_action == STOP_TOKEN and not skipped_is_base:
                 RoadmapStep.objects.filter(
                     plan=plan,
                     status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED],

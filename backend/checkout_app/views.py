@@ -1,7 +1,10 @@
 ﻿from __future__ import annotations
 
+import logging
 from decimal import Decimal, InvalidOperation
 from datetime import timedelta
+
+logger = logging.getLogger(__name__)
 
 from django.db import transaction as db_tx
 from django.utils import timezone
@@ -395,6 +398,7 @@ class CheckoutView(APIView):
                 "categories": purchased_categories,
                 "product_types": purchased_types,
                 "product_ids": purchased_ids,
+                "transaction_id": txn.id,
             }
             request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
             completed_matches = []
@@ -444,6 +448,11 @@ class CheckoutView(APIView):
                     language=language,
                 )
             except Exception:
+                logger.exception(
+                    "update_roadmap_from_purchase failed for user=%s txn=%s",
+                    request.user.id,
+                    txn.id,
+                )
                 roadmap_ctx = None
                 next_roadmap_step = None
 

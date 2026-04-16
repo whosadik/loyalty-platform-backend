@@ -7,7 +7,7 @@ from rest_framework import serializers
 from backend.request_language import AppLanguage, get_context_language
 from roadmap_app.models import RoadmapPlan, RoadmapStep
 from roadmap_app.runtime_status import roadmap_step_explainability
-from roadmap_app.services import build_plan_summary, get_next_missing_step
+from roadmap_app.services import build_plan_summary, get_next_missing_step, is_base_roadmap_step
 from roadmap_app.step_presentation import (
     build_roadmap_step_presentation,
     get_roadmap_step_presentation,
@@ -103,6 +103,7 @@ def _serialize_snapshot_from_dict(
     explainability = roadmap_step_explainability(
         why=list(payload.get("why") or []),
         plan_meta=plan_meta,
+        category=resolved_category,
     )
     recommended_product = serialize_roadmap_recommended_product(payload.get("recommended_product"))
     is_fragrance = str(resolved_category or "").strip().lower() == "fragrance"
@@ -122,12 +123,14 @@ def _serialize_snapshot_from_dict(
         "description": step_texts["description"],
         "presentation": step_presentation,
         "why": list(explainability["why"] or []),
+        "why_label": _coerce_string(explainability.get("why_label")),
         "picked_via": _coerce_string(explainability.get("picked_via")),
         "decision_source": _coerce_string(explainability.get("decision_source")),
         "continuation_reason": explainability.get("continuation_reason"),
         "continuation_markers": list(explainability.get("continuation_markers") or []),
         "fragrance_slot": product_type if is_fragrance and product_type else None,
         "recommended_actual_product_type": recommended_actual_product_type if is_fragrance else None,
+        "can_skip": not is_base_roadmap_step(resolved_category, product_type),
         "cadence": _coerce_string(payload.get("cadence")),
         "recommended_product_id": _coerce_int(payload.get("recommended_product_id")),
         "recommended_product": recommended_product,
@@ -168,6 +171,7 @@ def serialize_roadmap_step_snapshot(
     explainability = roadmap_step_explainability(
         why=list(step.why or []),
         plan_meta=resolved_plan_meta,
+        category=resolved_category,
     )
     recommended_product = serialize_roadmap_recommended_product(step.recommended_product)
     is_fragrance = str(resolved_category or "").strip().lower() == "fragrance"
@@ -187,12 +191,14 @@ def serialize_roadmap_step_snapshot(
         "description": step_texts["description"],
         "presentation": step_presentation,
         "why": list(explainability["why"] or []),
+        "why_label": _coerce_string(explainability.get("why_label")),
         "picked_via": _coerce_string(explainability.get("picked_via")),
         "decision_source": _coerce_string(explainability.get("decision_source")),
         "continuation_reason": explainability.get("continuation_reason"),
         "continuation_markers": list(explainability.get("continuation_markers") or []),
         "fragrance_slot": _coerce_string(step.product_type) if is_fragrance else None,
         "recommended_actual_product_type": recommended_actual_product_type if is_fragrance else None,
+        "can_skip": not is_base_roadmap_step(resolved_category, _coerce_string(step.product_type)),
         "cadence": _coerce_string(step.cadence),
         "recommended_product_id": int(step.recommended_product_id) if step.recommended_product_id else None,
         "recommended_product": recommended_product,
@@ -246,12 +252,14 @@ class RoadmapStepSnapshotSerializer(serializers.Serializer):
     description = serializers.CharField()
     presentation = RoadmapStepPresentationSerializer(required=False)
     why = serializers.ListField(child=serializers.CharField(), required=False)
+    why_label = serializers.CharField(required=False, allow_blank=True)
     picked_via = serializers.CharField(required=False, allow_blank=True)
     decision_source = serializers.CharField(required=False, allow_blank=True)
     continuation_reason = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     continuation_markers = serializers.ListField(child=serializers.CharField(), required=False)
     fragrance_slot = serializers.CharField(required=False, allow_null=True, allow_blank=True)
     recommended_actual_product_type = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    can_skip = serializers.BooleanField(required=False)
     cadence = serializers.CharField(required=False, allow_blank=True)
     recommended_product_id = serializers.IntegerField(required=False, allow_null=True)
     recommended_product = RoadmapRecommendedProductSerializer(required=False, allow_null=True)

@@ -8,6 +8,32 @@ ROADMAP_PICKED_VIA_RULES = "rules"
 ROADMAP_PICKED_VIA_TEACHER = "teacher"
 ROADMAP_PICKED_VIA_RUNTIME_CONTINUATION = "runtime_continuation_rules"
 
+# ---------------------------------------------------------------------------
+# Human-readable why labels
+# ---------------------------------------------------------------------------
+
+# Primary sentence by decision source
+_PICKED_VIA_LABEL: dict[str, str] = {
+    ROADMAP_PICKED_VIA_RULES: "Следующий логичный шаг в вашей рутине",
+    ROADMAP_PICKED_VIA_TEACHER: "Рекомендуем на основе вашего профиля и покупок",
+    ROADMAP_PICKED_VIA_RUNTIME_CONTINUATION: "Подобрано с учётом вашей текущей рутины",
+}
+
+# Extra context sentence by continuation marker
+_CONTINUATION_LABEL: dict[str, str] = {
+    "continued_due_to_core_gap":     "Базовый шаг вашей рутины пока не закрыт",
+    "continued_due_to_profile_need": "Рекомендуем с учётом вашего профиля",
+    "continued_due_to_owned_gap":    "Этого шага ещё нет в вашей рутине",
+}
+
+# Category-specific context added to profile_need marker
+_CATEGORY_PROFILE_LABEL: dict[str, str] = {
+    "skincare":  "Рекомендуем с учётом вашего типа кожи",
+    "haircare":  "Рекомендуем с учётом вашего типа волос",
+    "makeup":    "Рекомендуем под ваш образ",
+    "fragrance": "Рекомендуем под ваш сценарий использования",
+}
+
 ROADMAP_SOURCE_MARKERS = {
     "picked via rules",
     "picked via teacher",
@@ -127,10 +153,42 @@ def sanitize_roadmap_why(
     return out
 
 
+def build_why_label(
+    *,
+    picked_via: str,
+    continuation_markers: list[str],
+    category: str | None = None,
+) -> str:
+    """
+    Returns a single human-readable sentence explaining why this step was chosen.
+
+    Priority:
+    1. Profile-need continuation → category-specific label
+    2. Other continuation marker → generic continuation label
+    3. ML/teacher decision → source label
+    4. Rules fallback → generic label
+    """
+    cat = str(category or "").strip().lower()
+
+    # Check continuation markers first (most specific signal)
+    for marker in continuation_markers:
+        m = str(marker or "").strip().lower()
+        if m == "continued_due_to_profile_need":
+            # Use category-specific label if available
+            return _CATEGORY_PROFILE_LABEL.get(cat, _CONTINUATION_LABEL[m])
+        label = _CONTINUATION_LABEL.get(m)
+        if label:
+            return label
+
+    # Fall back to picked_via source
+    return _PICKED_VIA_LABEL.get(picked_via, "Следующий шаг вашей рутины")
+
+
 def roadmap_step_explainability(
     *,
     why: list[Any] | None,
     plan_meta: dict[str, Any] | None = None,
+    category: str | None = None,
 ) -> dict[str, Any]:
     picked_via = derive_roadmap_picked_via(why=why, plan_meta=plan_meta)
     continuation_markers = [
@@ -145,10 +203,18 @@ def roadmap_step_explainability(
             continuation_reason = str(plan_continuation.get("reason") or "").strip() or None
         if not continuation_reason:
             continuation_reason = str(continuation_markers[-1] or "").strip() or None
+
+    why_label = build_why_label(
+        picked_via=picked_via,
+        continuation_markers=continuation_markers,
+        category=category,
+    )
+
     return {
         "picked_via": picked_via,
         "decision_source": picked_via,
         "why": sanitize_roadmap_why(why=why, picked_via=picked_via),
+        "why_label": why_label,
         "continuation_reason": continuation_reason,
         "continuation_markers": continuation_markers,
     }
