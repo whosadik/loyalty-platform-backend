@@ -114,7 +114,7 @@ ROADMAP_OWNED_FRESHNESS_DEFAULTS: dict[str, dict[str, int]] = {
 }
 
 FRAGRANCE_DEFAULT_CHAIN = ["warm_day", "warm_evening", "cold_day", "cold_evening"]
-CONTINUATION_PATCH_CATEGORIES = {"haircare", "skincare"}
+CONTINUATION_PATCH_CATEGORIES = {"haircare", "skincare", "makeup"}
 HAIRCARE_CONTINUATION_CORE_PREDECESSOR = {
     "conditioner": "shampoo",
     "hair_mask": "conditioner",
@@ -1074,6 +1074,88 @@ def _runtime_continuation_candidate_decision_from_signals(
                 or profile_hair_concerns_count > 0
             )
             if need and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_profile_need",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+    if category == "makeup":
+        has_foundation = "foundation" in purchased_or_owned
+        has_mascara = "mascara" in purchased_or_owned
+        base_covered = len(purchased_or_owned & {"foundation", "mascara", "blush"}) >= 2
+
+        # --- Core base steps — apply on any trigger ---
+        if candidate_type == "foundation":
+            # Foundation is the anchor: always continue if not yet owned
+            if candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_core_gap", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_core_gap",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "mascara":
+            # Mascara works standalone, no foundation dependency
+            if candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_core_gap", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_core_gap",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "blush":
+            # Blush follows foundation — skip without it
+            if has_foundation and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_core_gap", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_core_gap",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        # --- Optional tail — only on post_skipped ---
+        if trigger != "post_skipped":
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "primer":
+            # Primer makes sense once foundation is the routine anchor
+            if has_foundation and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_profile_need",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "setting_spray":
+            # Setting spray completes the base application sequence
+            if has_foundation and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_profile_need",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "lipstick":
+            # Lipstick once core base (foundation + mascara or blush) is covered
+            if base_covered and candidate_type not in owned_types:
+                return {
+                    "continue": True,
+                    "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
+                    "reason": "continued_due_to_profile_need",
+                }
+            return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+        if candidate_type == "eyeshadow":
+            # Eyeshadow is the most advanced — needs solid base
+            if base_covered and candidate_type not in owned_types:
                 return {
                     "continue": True,
                     "markers": ["continued_due_to_profile_need", "continued_due_to_owned_gap"],
