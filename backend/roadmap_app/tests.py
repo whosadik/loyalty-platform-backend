@@ -41,6 +41,10 @@ from roadmap_app.nextstep_haircare_shampoo_truth_design import (
     build_nextstep_haircare_shampoo_truth_design_payload,
     evaluate_haircare_shampoo_truth_designs,
 )
+from roadmap_app.nextstep_skincare_freeze_qualification import (
+    build_v5_skincare_freeze_qualification_payload,
+    render_v5_skincare_freeze_qualification_markdown,
+)
 from roadmap_app.nextstep_targeted_retrain import (
     _slice_lookup,
     apply_targeted_retrain_weights,
@@ -2732,6 +2736,186 @@ class RoadmapNextstepCandidatePromotionTests(SimpleTestCase):
             promotion["provenance"]["report_materialization"],
             "materialized_from_saved_artifacts",
         )
+
+
+class RoadmapNextstepSkincareFreezeQualificationTests(SimpleTestCase):
+    def _cached_comparison_payload(self, *, active_model_path: str, retrain_model_path: str, candidate_model_path: str) -> dict:
+        return {
+            "artifacts": {
+                "active": {"model_path": active_model_path},
+                "retrain_v1": {"model_path": retrain_model_path},
+                "v5_historical_anchor": {"model_path": candidate_model_path},
+            },
+            "category_comparison": [
+                {
+                    "category": "haircare",
+                    "active": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate": 0.31, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 22},
+                    "retrain_v1": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate": 0.31, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 22},
+                    "v5_historical_anchor": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate": 0.31, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 22},
+                },
+                {
+                    "category": "skincare",
+                    "active": {"rollout_reason": "low_uplift", "diagnosis": {"code": "B"}, "model_win_rate": 0.0, "baseline_win_rate": 0.0, "both_wrong_rate": 0.33, "resolved_truth": 61},
+                    "retrain_v1": {"rollout_reason": "low_uplift", "diagnosis": {"code": "C"}, "model_win_rate": 0.07, "baseline_win_rate": 0.0, "both_wrong_rate": 0.26, "resolved_truth": 61},
+                    "v5_historical_anchor": {"rollout_reason": "low_uplift", "diagnosis": {"code": "D"}, "model_win_rate": 0.33, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 61},
+                },
+                {
+                    "category": "makeup",
+                    "active": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "D"}, "model_win_rate": None, "baseline_win_rate": None, "both_wrong_rate": None, "resolved_truth": 7},
+                    "retrain_v1": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "D"}, "model_win_rate": None, "baseline_win_rate": None, "both_wrong_rate": None, "resolved_truth": 7},
+                    "v5_historical_anchor": {"rollout_reason": "sample_too_small_but_nonzero_control", "diagnosis": {"code": "D"}, "model_win_rate": None, "baseline_win_rate": None, "both_wrong_rate": None, "resolved_truth": 7},
+                },
+                {
+                    "category": "fragrance",
+                    "active": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate": 0.19, "baseline_win_rate": 0.0, "both_wrong_rate": 0.62, "resolved_truth": 16},
+                    "retrain_v1": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate": 0.0, "baseline_win_rate": 0.0, "both_wrong_rate": 0.81, "resolved_truth": 16},
+                    "v5_historical_anchor": {"rollout_reason": "category_disabled", "diagnosis": {"code": "C"}, "model_win_rate": 0.81, "baseline_win_rate": 0.0, "both_wrong_rate": 0.0, "resolved_truth": 16},
+                },
+            ],
+            "acceptance_gates": {
+                "overall_passed": False,
+                "gates": [
+                    {"name": "skincare_not_clearly_B_low_uplift", "passed": True, "reason": "passed", "details": {}},
+                    {
+                        "name": "haircare_shampoo_two_stage_truth_improves",
+                        "passed": False,
+                        "reason": "haircare_two_stage_stage2_not_improved",
+                        "details": {},
+                    },
+                    {"name": "protected_slices_non_regression", "passed": True, "reason": "passed", "details": {}},
+                    {"name": "overall_decision_quality_not_worse_than_active", "passed": True, "reason": "passed", "details": {}},
+                    {"name": "offline_eval_not_materially_worse_than_active", "passed": True, "reason": "passed", "details": {}},
+                ],
+            },
+            "targeted_truth_slices": [
+                {
+                    "category": "skincare",
+                    "truth_product_type": "mask",
+                    "active": {"model_win_rate_vs_truth": 0.0},
+                    "retrain_v1": {"model_win_rate_vs_truth": 0.24},
+                    "v5_historical_anchor": {
+                        "model_win_rate_vs_truth": 0.41,
+                        "net_wins_model_minus_baseline": 7,
+                    },
+                },
+                {
+                    "category": "skincare",
+                    "truth_product_type": "eye_cream",
+                    "active": {"model_win_rate_vs_truth": 0.0},
+                    "retrain_v1": {"model_win_rate_vs_truth": 0.0},
+                    "v5_historical_anchor": {
+                        "model_win_rate_vs_truth": 0.41,
+                        "net_wins_model_minus_baseline": 7,
+                    },
+                },
+            ],
+            "protected_truth_slices": [
+                {
+                    "category": "skincare",
+                    "truth_product_type": "essence",
+                    "active": {"model_win_rate_vs_truth": 0.0},
+                    "retrain_v1": {"model_win_rate_vs_truth": 0.0},
+                    "v5_historical_anchor": {
+                        "model_win_rate_vs_truth": 1.0,
+                        "net_wins_model_minus_baseline": 6,
+                    },
+                }
+            ],
+        }
+
+    def test_skincare_freeze_qualification_selects_skincare_as_next_lane(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cached_path = root / "comparison.json"
+            active_model_path = str((root / "active" / "model.pkl").resolve())
+            retrain_model_path = str((root / "retrain" / "model.pkl").resolve())
+            candidate_model_path = str((root / "candidate" / "model.pkl").resolve())
+            _write_json(
+                cached_path,
+                self._cached_comparison_payload(
+                    active_model_path=active_model_path,
+                    retrain_model_path=retrain_model_path,
+                    candidate_model_path=candidate_model_path,
+                ),
+            )
+
+            with override_settings(
+                ROADMAP_RUNTIME_FREEZE_ML=True,
+                ROADMAP_NEXTSTEP_V4_MODEL_PATH=active_model_path,
+            ), patch(
+                "catalog.models.Product.save",
+                side_effect=AssertionError("catalog write should not happen"),
+            ), patch(
+                "catalog.models.Product.delete",
+                side_effect=AssertionError("catalog delete should not happen"),
+            ):
+                payload = build_v5_skincare_freeze_qualification_payload(
+                    active_model_path=active_model_path,
+                    retrain_v1_model_path=retrain_model_path,
+                    candidate_model_path=candidate_model_path,
+                    source_preference="cached_artifact",
+                    cached_comparison_json_path=str(cached_path),
+                )
+
+        executive = payload["executive_verdict"]
+        self.assertEqual(executive["status"], "candidate_for_next_freeze_qualification_stage")
+        self.assertEqual(executive["recommendation_code"], "C")
+        self.assertEqual(executive["lane_category"], "skincare")
+        self.assertTrue(executive["continue_under_freeze"])
+        self.assertTrue(executive["runtime_still_frozen"])
+        self.assertFalse(executive["runtime_enablement_allowed"])
+        self.assertTrue(executive["active_runtime_artifact_unchanged"])
+        self.assertTrue(executive["haircare_blocker_still_present"])
+        self.assertEqual(executive["next_stage_focus_categories"], ["skincare"])
+        self.assertFalse(payload["read_only_guards"]["catalog_writes_performed"])
+        self.assertFalse(payload["read_only_guards"]["runtime_config_changed"])
+        self.assertEqual(payload["provenance"]["source_of_truth"], "cached_artifact")
+
+        markdown = render_v5_skincare_freeze_qualification_markdown(payload)
+        self.assertIn("Skincare is the only current next-stage focus category under recommendation `C`.", markdown)
+        self.assertIn("haircare_shampoo_two_stage_truth_improves:haircare_two_stage_stage2_not_improved", markdown)
+        self.assertIn("runtime enablement allowed: `False`", markdown)
+        self.assertIn("skincare/mask", markdown)
+
+    def test_skincare_freeze_qualification_command_writes_report(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cached_path = root / "comparison.json"
+            out_stem = root / "roadmap_nextstep_v5_skincare_freeze_qualification"
+            active_model_path = str((root / "active" / "model.pkl").resolve())
+            retrain_model_path = str((root / "retrain" / "model.pkl").resolve())
+            candidate_model_path = str((root / "candidate" / "model.pkl").resolve())
+            _write_json(
+                cached_path,
+                self._cached_comparison_payload(
+                    active_model_path=active_model_path,
+                    retrain_model_path=retrain_model_path,
+                    candidate_model_path=candidate_model_path,
+                ),
+            )
+            stdout = StringIO()
+            with override_settings(
+                ROADMAP_RUNTIME_FREEZE_ML=True,
+                ROADMAP_NEXTSTEP_V4_MODEL_PATH=active_model_path,
+            ):
+                call_command(
+                    "report_roadmap_nextstep_v5_skincare_freeze_qualification",
+                    active_model_path=active_model_path,
+                    retrain_v1_model_path=retrain_model_path,
+                    candidate_model_path=candidate_model_path,
+                    source_preference="cached_artifact",
+                    cached_comparison_json=str(cached_path),
+                    out=str(out_stem),
+                    format="both",
+                    stdout=stdout,
+                )
+
+            self.assertTrue(out_stem.with_suffix(".md").exists())
+            self.assertTrue(out_stem.with_suffix(".json").exists())
+            markdown = out_stem.with_suffix(".md").read_text(encoding="utf-8")
+            self.assertIn("lane category: `skincare`", markdown)
+            self.assertIn("continue under freeze: `True`", markdown)
+
 
 class RoadmapNextstepHaircareShampooGateTests(SimpleTestCase):
     def _model_meta(self, *, model_path: str, anchor_key: str, model_type: str, baseline_type: str) -> dict:
