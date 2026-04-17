@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
+
+from . import routine_scorer
 
 
 AM_STEPS = ["cleanser", "moisturizer", "spf"]
@@ -12,6 +14,57 @@ class Profile:
     goals: list[str]
     avoid_flags: list[str]
     budget: str
+
+
+def _profile_dict(profile: Profile) -> dict[str, Any]:
+    return asdict(profile)
+
+
+def _rule_score(product: dict[str, Any], profile: Profile) -> float:
+    """Score a product by how well it matches the user profile. Higher is better."""
+    score = 0.0
+
+    # Primary differentiator: product concerns matching user goals
+    p_concerns = set(product.get("concerns") or [])
+    for goal in (profile.goals or []):
+        if goal in p_concerns:
+            score += 10.0
+
+    # Bonus for strength level matching active-ingredient goals
+    strength = str(product.get("strength") or "").lower()
+    active_goals = {"anti_aging", "brightening", "anti_acne", "acne", "wrinkles", "hyperpigmentation"}
+    if strength == "strong" and set(profile.goals or []) & active_goals:
+        score += 3.0
+    elif strength == "medium":
+        score += 1.0
+
+    # Small tiebreaker: prefer cheaper products
+    price = product.get("price")
+    if price is not None:
+        score -= float(price) / 100_000.0
+
+    return score
+
+
+def _score_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    profile: Profile,
+    step: str,
+) -> tuple[list[float], str]:
+    """Return (scores, source). `source` is 'ml' when the ML ranker was used,
+    otherwise 'rules'. Falls back to rule-based scoring automatically.
+    """
+    if candidates:
+        ml_scores = routine_scorer.score_candidates(
+            profile=_profile_dict(profile),
+            step=step,
+            candidates=candidates,
+        )
+        if ml_scores is not None and len(ml_scores) == len(candidates):
+            return ml_scores, "ml"
+
+    return [_rule_score(p, profile) for p in candidates], "rules"
 
 
 def _fits_profile(product: dict[str, Any], profile: Profile) -> bool:
@@ -31,6 +84,15 @@ def _fits_profile(product: dict[str, Any], profile: Profile) -> bool:
         return False
 
     return True
+
+
+def _sort_by_scores(
+    items: list[dict[str, Any]],
+    scores: list[float],
+) -> list[dict[str, Any]]:
+    pairs = list(zip(items, scores))
+    pairs.sort(key=lambda pair: pair[1], reverse=True)
+    return [item for item, _ in pairs]
 
 
 def build_routine(
@@ -53,38 +115,41 @@ def build_routine(
     def pick_for_step(step: str) -> dict[str, Any]:
         candidates = [p for p in by_step.get(step, []) if _fits_profile(p, profile)]
 
-        owned_set = set(owned_product_ids or [])
-        owned_candidates = [p for p in candidates if p.get("id") in owned_set]
-        if owned_candidates:
-            chosen = owned_candidates[0]
-            return {
-                "step": step,
-                "status": "filled",
-                "source": "owned",
-                "product": chosen,
-                "why": [
-                    "already owned by user",
-                    f"matches skin_type={profile.skin_type}",
-                    "no avoided ingredients/flags",
-                ],
-                "suggestions": [c["id"] for c in candidates[:top_k]],
-            }
-
-        # простая сортировка: дешевле выше (потом улучшим)
-        candidates.sort(key=lambda x: (x.get("price") is None, x.get("price", 0)))
-
         if candidates:
-            chosen = candidates[0]
+            scores, scorer = _score_candidates(candidates, profile=profile, step=step)
+            ordered = _sort_by_scores(candidates, scores)
+
+            owned_set = set(owned_product_ids or [])
+            owned_ordered = [p for p in ordered if p.get("id") in owned_set]
+
+            if owned_ordered:
+                chosen = owned_ordered[0]
+                return {
+                    "step": step,
+                    "status": "filled",
+                    "source": "owned",
+                    "scorer": scorer,
+                    "product": chosen,
+                    "why": [
+                        "already owned by user",
+                        f"matches skin_type={profile.skin_type}",
+                        "no avoided ingredients/flags",
+                    ],
+                    "suggestions": [c["id"] for c in ordered[:top_k]],
+                }
+
+            chosen = ordered[0]
             return {
                 "step": step,
                 "status": "filled",
                 "source": "recommended",
+                "scorer": scorer,
                 "product": chosen,
                 "why": [
                     f"matches skin_type={profile.skin_type}",
                     "no avoided ingredients/flags",
                 ],
-                "suggestions": [c["id"] for c in candidates[:top_k]],
+                "suggestions": [c["id"] for c in ordered[:top_k]],
             }
 
         fallback = [
@@ -97,6 +162,7 @@ def build_routine(
             "step": step,
             "status": "missing",
             "source": "recommended",
+            "scorer": "rules",
             "product": None,
             "why": [f"no products found for skin_type={profile.skin_type} with current constraints"],
             "suggestions": [c["id"] for c in fallback[:top_k]],

@@ -359,6 +359,10 @@ ROADMAP_NEXTSTEP_V4_MODEL_PATH = os.getenv(
     "ROADMAP_NEXTSTEP_V4_MODEL_PATH",
     str((BASE_DIR.parent / "models" / "roadmap_next_step_v4" / "model.pkl").resolve()),
 )
+ROUTINE_RANKER_MODEL_PATH = os.getenv(
+    "ROUTINE_RANKER_MODEL_PATH",
+    str((BASE_DIR.parent / "models" / "routine_ranker_v1" / "model.pkl").resolve()),
+)
 ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH = os.getenv(
     "ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH",
     "",

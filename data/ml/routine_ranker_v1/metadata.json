@@ -1,0 +1,38 @@
+{
+  "version": "routine_ranker_v1",
+  "generated_at_utc": "2026-04-17T05:42:19.721933+00:00",
+  "dataset_file": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\data\\ml\\routine_ranker_v1\\dataset.parquet",
+  "rows_total": 6760,
+  "positive_rows": 464,
+  "negative_rows": 6296,
+  "unique_users": 150,
+  "unique_groups": 464,
+  "steps": [
+    "cleanser",
+    "serum",
+    "moisturizer",
+    "spf"
+  ],
+  "categorical_features": [
+    "skin_type",
+    "budget",
+    "product_type",
+    "strength",
+    "step"
+  ],
+  "numeric_features": [
+    "price",
+    "has_price",
+    "in_stock",
+    "skin_type_match",
+    "goal_concern_match_count",
+    "goals_total",
+    "avoid_flag_hit",
+    "actives_count",
+    "concerns_count"
+  ],
+  "target_column": "y",
+  "group_column": "episode_id",
+  "max_negatives_per_group": 15,
+  "seed": 42
+}
