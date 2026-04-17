@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 import random
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from django.core.management.base import BaseCommand, CommandError
+from django.utils import timezone as django_timezone
 
 try:
     import pandas as pd
@@ -73,6 +74,11 @@ def _build_row(
     product: dict[str, Any],
     profile: dict[str, Any],
     label: int,
+    user_stats: dict[str, float],
+    product_stats: dict[str, float],
+    product_in_wishlist: int,
+    product_roadmap_clicks_30d: int,
+    product_roadmap_skips_30d: int,
 ) -> dict[str, Any]:
     goals = list(profile.get("goals") or [])
     avoid_flags = list(profile.get("avoid_flags") or [])
@@ -99,7 +105,7 @@ def _build_row(
         "budget": str(profile.get("budget") or "medium"),
         "product_type": str(product.get("product_type") or step),
         "strength": str(product.get("strength") or "low"),
-        # numeric features
+        # numeric features (base)
         "price": price_val,
         "has_price": has_price,
         "in_stock": 1 if product.get("in_stock", True) else 0,
@@ -109,6 +115,13 @@ def _build_row(
         "avoid_flag_hit": _avoid_flag_hit(product, avoid_flags),
         "actives_count": len(actives),
         "concerns_count": len(concerns),
+        # behavioral features
+        "user_tx_count_90d": float(user_stats.get("tx_count_90d", 0.0)),
+        "user_owned_skincare_count": float(user_stats.get("owned_skincare_count", 0.0)),
+        "product_popularity": float(product_stats.get("popularity", 0.0)),
+        "product_in_wishlist": int(product_in_wishlist),
+        "product_roadmap_clicks_30d": int(product_roadmap_clicks_30d),
+        "product_roadmap_skips_30d": int(product_roadmap_skips_30d),
     }
 
 
@@ -144,8 +157,11 @@ class Command(BaseCommand):
         if pd is None:
             raise CommandError("pandas is required. Install with: pip install pandas pyarrow")
 
+        from django.db.models import Count
+
         from catalog.models import Product
-        from transactions.models import OwnedProduct
+        from roadmap_app.models import RoadmapEvent, RoadmapStep
+        from transactions.models import OwnedProduct, Transaction, WishlistItem
         from users_app.models import CustomerProfile
 
         output_dir = _resolve_output_dir(options["output_dir"])
@@ -208,6 +224,8 @@ class Command(BaseCommand):
         owned_qs = OwnedProduct.objects.filter(is_active=True, product__category="skincare").values(
             "user_id", "product_id"
         )
+        owned_skincare_count_by_user: dict[int, int] = defaultdict(int)
+        product_popularity: dict[int, int] = defaultdict(int)
         for row in owned_qs:
             user_id = int(row["user_id"])
             product_id = int(row["product_id"])
@@ -218,11 +236,78 @@ class Command(BaseCommand):
             if step_key is None:
                 continue
             owned_per_user_step[(user_id, step_key)].append(product)
+            owned_skincare_count_by_user[user_id] += 1
+            product_popularity[product_id] += 1
+
+        # Precompute behavioral signals.
+        now = django_timezone.now()
+        window_90d = now - timedelta(days=90)
+        window_30d = now - timedelta(days=30)
+
+        tx_count_90d_by_user: dict[int, int] = defaultdict(int)
+        for row in Transaction.objects.filter(created_at__gte=window_90d).values("user_id"):
+            tx_count_90d_by_user[int(row["user_id"])] += 1
+
+        wishlist_pairs: set[tuple[int, int]] = set()
+        for row in WishlistItem.objects.filter(product__category="skincare").values(
+            "user_id", "product_id"
+        ):
+            wishlist_pairs.add((int(row["user_id"]), int(row["product_id"])))
+
+        # RoadmapEvent → product relationship goes via step.recommended_product.
+        # Aggregate clicks/skips per product over the last 30 days.
+        roadmap_clicks_30d: dict[int, int] = defaultdict(int)
+        roadmap_skips_30d: dict[int, int] = defaultdict(int)
+        step_to_product = {
+            int(row["id"]): int(row["recommended_product_id"])
+            for row in RoadmapStep.objects.filter(
+                recommended_product__category="skincare"
+            ).values("id", "recommended_product_id")
+            if row.get("recommended_product_id") is not None
+        }
+        event_rows = RoadmapEvent.objects.filter(
+            created_at__gte=window_30d,
+            event_type__in=[
+                RoadmapEvent.Type.STEP_CLICKED,
+                RoadmapEvent.Type.STEP_SKIPPED,
+            ],
+        ).values("event_type", "step_id")
+        for row in event_rows:
+            step_id = row.get("step_id")
+            if step_id is None:
+                continue
+            product_id = step_to_product.get(int(step_id))
+            if product_id is None:
+                continue
+            if row["event_type"] == RoadmapEvent.Type.STEP_CLICKED:
+                roadmap_clicks_30d[product_id] += 1
+            elif row["event_type"] == RoadmapEvent.Type.STEP_SKIPPED:
+                roadmap_skips_30d[product_id] += 1
 
         rows: list[dict[str, Any]] = []
         positive_users: set[int] = set()
         positive_count = 0
         negative_count = 0
+
+        def _row_for(user_id: int, step: str, product: dict[str, Any], profile: dict[str, Any], label: int) -> dict[str, Any]:
+            product_id = int(product.get("id") or 0)
+            user_stats = {
+                "tx_count_90d": tx_count_90d_by_user.get(user_id, 0),
+                "owned_skincare_count": owned_skincare_count_by_user.get(user_id, 0),
+            }
+            product_stats = {"popularity": product_popularity.get(product_id, 0)}
+            return _build_row(
+                user_id=user_id,
+                step=step,
+                product=product,
+                profile=profile,
+                label=label,
+                user_stats=user_stats,
+                product_stats=product_stats,
+                product_in_wishlist=1 if (user_id, product_id) in wishlist_pairs else 0,
+                product_roadmap_clicks_30d=roadmap_clicks_30d.get(product_id, 0),
+                product_roadmap_skips_30d=roadmap_skips_30d.get(product_id, 0),
+            )
 
         for (user_id, step), owned_products in owned_per_user_step.items():
             profile = profiles_by_user.get(user_id)
@@ -237,15 +322,7 @@ class Command(BaseCommand):
             owned_ids = {int(p["id"]) for p in owned_products}
             # One positive per owned product.
             for product in owned_products:
-                rows.append(
-                    _build_row(
-                        user_id=user_id,
-                        step=step,
-                        product=product,
-                        profile=profile,
-                        label=1,
-                    )
-                )
+                rows.append(_row_for(user_id, step, product, profile, 1))
                 positive_count += 1
 
             # Sample negatives from the same step pool, excluding owned products.
@@ -254,15 +331,7 @@ class Command(BaseCommand):
                 take = min(max_negatives, len(negative_pool))
                 sampled = rng.sample(negative_pool, take)
                 for product in sampled:
-                    rows.append(
-                        _build_row(
-                            user_id=user_id,
-                            step=step,
-                            product=product,
-                            profile=profile,
-                            label=0,
-                        )
-                    )
+                    rows.append(_row_for(user_id, step, product, profile, 0))
                     negative_count += 1
 
             positive_users.add(user_id)
@@ -309,6 +378,12 @@ class Command(BaseCommand):
                 "avoid_flag_hit",
                 "actives_count",
                 "concerns_count",
+                "user_tx_count_90d",
+                "user_owned_skincare_count",
+                "product_popularity",
+                "product_in_wishlist",
+                "product_roadmap_clicks_30d",
+                "product_roadmap_skips_30d",
             ],
             "target_column": "y",
             "group_column": "episode_id",

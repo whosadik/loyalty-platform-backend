@@ -44,6 +44,12 @@ NUMERIC_FEATURES = [
     "avoid_flag_hit",
     "actives_count",
     "concerns_count",
+    "user_tx_count_90d",
+    "user_owned_skincare_count",
+    "product_popularity",
+    "product_in_wishlist",
+    "product_roadmap_clicks_30d",
+    "product_roadmap_skips_30d",
 ]
 
 

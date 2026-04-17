@@ -5,6 +5,10 @@ candidate products for a given user profile + routine step. The module is
 optional: if the model file is missing or the backend isn't installed,
 `score_candidates` returns None so the caller can fall back to rule-based
 selection.
+
+Feature computation is driven by the list stored inside the model artifact,
+so old models without behavioral features still work without changes to the
+caller.
 """
 
 from __future__ import annotations
@@ -26,8 +30,8 @@ except Exception:  # pragma: no cover
 
 DEFAULT_MODEL_RELATIVE_PATH = "models/routine_ranker_v1/model.pkl"
 
-CATEGORICAL_FEATURES = ["skin_type", "budget", "product_type", "strength", "step"]
-NUMERIC_FEATURES = [
+DEFAULT_CATEGORICAL_FEATURES = ["skin_type", "budget", "product_type", "strength", "step"]
+DEFAULT_NUMERIC_FEATURES = [
     "price",
     "has_price",
     "in_stock",
@@ -98,54 +102,107 @@ def _numeric(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _build_feature_row(
+def _compute_categorical(
     *,
+    name: str,
     profile: dict[str, Any],
     step: str,
     product: dict[str, Any],
-    maps: dict[str, dict[str, int]],
-) -> list[float]:
+) -> str:
+    if name == "skin_type":
+        return str(profile.get("skin_type") or "normal")
+    if name == "budget":
+        return str(profile.get("budget") or "medium")
+    if name == "product_type":
+        return str(product.get("product_type") or step)
+    if name == "strength":
+        return str(product.get("strength") or "low")
+    if name == "step":
+        return str(step)
+    return ""
+
+
+def _compute_numeric(
+    *,
+    name: str,
+    profile: dict[str, Any],
+    step: str,
+    product: dict[str, Any],
+    context: dict[str, Any],
+) -> float:
     goals = list(profile.get("goals") or [])
     avoid_flags = list(profile.get("avoid_flags") or [])
     concerns = list(product.get("concerns") or [])
     actives = list(product.get("actives") or [])
     supported = product.get("supported_skin_types") or []
     skin_type = str(profile.get("skin_type") or "")
+    product_id = int(product.get("id") or 0)
+    product_stats = (context.get("product_signals") or {}).get(product_id) or {}
 
-    # Categorical features (must match training order).
-    categorical_values = {
-        "skin_type": skin_type or "normal",
-        "budget": str(profile.get("budget") or "medium"),
-        "product_type": str(product.get("product_type") or step),
-        "strength": str(product.get("strength") or "low"),
-        "step": str(step),
-    }
-    row: list[float] = [
-        float(_encode_categorical(categorical_values[col], maps.get(col, {})))
-        for col in CATEGORICAL_FEATURES
-    ]
+    if name == "price":
+        return _numeric(product.get("price"), 0.0)
+    if name == "has_price":
+        return 1.0 if product.get("price") is not None else 0.0
+    if name == "in_stock":
+        return 1.0 if product.get("in_stock", True) else 0.0
+    if name == "skin_type_match":
+        if not supported:
+            return 1.0
+        return 1.0 if skin_type and skin_type in supported else 0.0
+    if name == "goal_concern_match_count":
+        if not goals or not concerns:
+            return 0.0
+        return float(len(set(goals) & set(concerns)))
+    if name == "goals_total":
+        return float(len(goals))
+    if name == "avoid_flag_hit":
+        if not avoid_flags:
+            return 0.0
+        return 1.0 if set(avoid_flags) & set(product.get("flags") or []) else 0.0
+    if name == "actives_count":
+        return float(len(actives))
+    if name == "concerns_count":
+        return float(len(concerns))
+    # Behavioral features (come from context).
+    if name == "user_tx_count_90d":
+        return _numeric(context.get("user_tx_count_90d"), 0.0)
+    if name == "user_owned_skincare_count":
+        return _numeric(context.get("user_owned_skincare_count"), 0.0)
+    if name == "product_popularity":
+        return _numeric(product_stats.get("popularity"), 0.0)
+    if name == "product_in_wishlist":
+        return 1.0 if product_stats.get("in_wishlist") else 0.0
+    if name == "product_roadmap_clicks_30d":
+        return _numeric(product_stats.get("roadmap_clicks_30d"), 0.0)
+    if name == "product_roadmap_skips_30d":
+        return _numeric(product_stats.get("roadmap_skips_30d"), 0.0)
+    return 0.0
 
-    # Numeric features.
-    price_raw = product.get("price")
-    price_val = _numeric(price_raw, 0.0)
-    has_price = 1.0 if price_raw is not None else 0.0
-    in_stock = 1.0 if product.get("in_stock", True) else 0.0
-    skin_type_match = 1.0 if not supported or (skin_type and skin_type in supported) else 0.0
-    goal_match = float(len(set(goals) & set(concerns))) if goals and concerns else 0.0
-    avoid_hit = 1.0 if avoid_flags and (set(avoid_flags) & set(product.get("flags") or [])) else 0.0
 
-    numeric_values = {
-        "price": price_val,
-        "has_price": has_price,
-        "in_stock": in_stock,
-        "skin_type_match": skin_type_match,
-        "goal_concern_match_count": goal_match,
-        "goals_total": float(len(goals)),
-        "avoid_flag_hit": avoid_hit,
-        "actives_count": float(len(actives)),
-        "concerns_count": float(len(concerns)),
-    }
-    row.extend(float(numeric_values[col]) for col in NUMERIC_FEATURES)
+def _build_feature_row(
+    *,
+    profile: dict[str, Any],
+    step: str,
+    product: dict[str, Any],
+    categorical_features: list[str],
+    numeric_features: list[str],
+    maps: dict[str, dict[str, int]],
+    context: dict[str, Any],
+) -> list[float]:
+    row: list[float] = []
+    for name in categorical_features:
+        raw = _compute_categorical(name=name, profile=profile, step=step, product=product)
+        row.append(float(_encode_categorical(raw, maps.get(name, {}))))
+    for name in numeric_features:
+        row.append(
+            _compute_numeric(
+                name=name,
+                profile=profile,
+                step=step,
+                product=product,
+                context=context,
+            )
+        )
     return row
 
 
@@ -154,9 +211,20 @@ def score_candidates(
     profile: dict[str, Any],
     step: str,
     candidates: Iterable[dict[str, Any]],
+    context: dict[str, Any] | None = None,
 ) -> list[float] | None:
     """Return a list of ranking scores aligned with `candidates`, or None if
     the model is unavailable.
+
+    Args:
+        profile: dict with keys skin_type, goals, avoid_flags, budget.
+        step: routine step name (cleanser/serum/moisturizer/spf).
+        candidates: iterable of product dicts.
+        context: optional dict with runtime signals:
+            - user_tx_count_90d: int
+            - user_owned_skincare_count: int
+            - product_signals: dict[product_id, {popularity, in_wishlist,
+                roadmap_clicks_30d, roadmap_skips_30d}]
     """
     if np is None:
         return None
@@ -173,10 +241,22 @@ def score_candidates(
     if not candidate_list:
         return []
 
+    categorical_features = list(artifact.get("categorical_features") or DEFAULT_CATEGORICAL_FEATURES)
+    numeric_features = list(artifact.get("numeric_features") or DEFAULT_NUMERIC_FEATURES)
     maps = artifact.get("categorical_maps") or {}
+    ctx = context or {}
+
     try:
         rows = [
-            _build_feature_row(profile=profile, step=step, product=candidate, maps=maps)
+            _build_feature_row(
+                profile=profile,
+                step=step,
+                product=candidate,
+                categorical_features=categorical_features,
+                numeric_features=numeric_features,
+                maps=maps,
+                context=ctx,
+            )
             for candidate in candidate_list
         ]
         X = np.array(rows, dtype=np.float32)

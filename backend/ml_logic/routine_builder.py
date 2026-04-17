@@ -51,6 +51,7 @@ def _score_candidates(
     *,
     profile: Profile,
     step: str,
+    context: dict[str, Any] | None = None,
 ) -> tuple[list[float], str]:
     """Return (scores, source). `source` is 'ml' when the ML ranker was used,
     otherwise 'rules'. Falls back to rule-based scoring automatically.
@@ -60,6 +61,7 @@ def _score_candidates(
             profile=_profile_dict(profile),
             step=step,
             candidates=candidates,
+            context=context,
         )
         if ml_scores is not None and len(ml_scores) == len(candidates):
             return ml_scores, "ml"
@@ -100,6 +102,7 @@ def build_routine(
     products: list[dict[str, Any]],
     top_k: int = 3,
     owned_product_ids: list[int] | None = None,
+    ml_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     # routine строим только из skincare
     products = [p for p in products if p.get("category") == "skincare"]
@@ -116,7 +119,9 @@ def build_routine(
         candidates = [p for p in by_step.get(step, []) if _fits_profile(p, profile)]
 
         if candidates:
-            scores, scorer = _score_candidates(candidates, profile=profile, step=step)
+            scores, scorer = _score_candidates(
+                candidates, profile=profile, step=step, context=ml_context
+            )
             ordered = _sort_by_scores(candidates, scores)
 
             owned_set = set(owned_product_ids or [])
