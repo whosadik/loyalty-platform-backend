@@ -1,0 +1,61 @@
+{
+  "generated_at_utc": "2026-04-20T05:50:34.094342Z",
+  "criteria": {
+    "min_plans_per_category": 100,
+    "required_guard_status": "ENABLE"
+  },
+  "categories": {
+    "skincare": {
+      "plan_count": 86,
+      "meets_plan_threshold": false,
+      "final_status": "HOLD",
+      "reason": "insufficient_sample",
+      "hold_reason": "insufficient_sample",
+      "recommendation_7d": "HOLD",
+      "recommendation_30d": "HOLD",
+      "meets_guard": false,
+      "rollout_eligible": false
+    },
+    "haircare": {
+      "plan_count": 33,
+      "meets_plan_threshold": false,
+      "final_status": "HOLD",
+      "reason": "insufficient_sample",
+      "hold_reason": "insufficient_sample",
+      "recommendation_7d": "HOLD",
+      "recommendation_30d": "HOLD",
+      "meets_guard": false,
+      "rollout_eligible": false
+    },
+    "makeup": {
+      "plan_count": 33,
+      "meets_plan_threshold": false,
+      "final_status": "HOLD",
+      "reason": "insufficient_sample",
+      "hold_reason": "insufficient_sample",
+      "recommendation_7d": "HOLD",
+      "recommendation_30d": "HOLD",
+      "meets_guard": false,
+      "rollout_eligible": false
+    },
+    "fragrance": {
+      "plan_count": 35,
+      "meets_plan_threshold": false,
+      "final_status": "DISABLE",
+      "reason": "category_disabled",
+      "hold_reason": null,
+      "recommendation_7d": "DISABLE",
+      "recommendation_30d": "DISABLE",
+      "meets_guard": false,
+      "rollout_eligible": false
+    }
+  },
+  "overall_verdict": "no_categories_eligible",
+  "decision": "hold_defaults",
+  "notes": [
+    "Offline artifact eval passes runtime_guard: NDCG@5 0.953 vs popularity 0.491 (test); per-category NDCG@5 0.895-0.996.",
+    "Online decision-quality guard (recovered anchors inside PLAN_REFRESHED window) returns insufficient_sample \u2014 synthetic DB lacks resolved causal truth.",
+    "Sprints.txt requires BOTH >=100 plans per category AND guard pass. All four fail at least one criterion.",
+    "Do not flip ROADMAP_RUNTIME_FREEZE_ML/V4_ENABLED/PARTIAL_PERCENT defaults. Re-run this report after real traffic accrues."
+  ]
+}
