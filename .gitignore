@@ -48,3 +48,5 @@ logs
 backups/
 tests/
 *.sql
+
+sprints.txt

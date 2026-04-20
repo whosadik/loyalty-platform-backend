@@ -1,6 +1,6 @@
 {
   "version": "routine_ranker_v1",
-  "generated_at_utc": "2026-04-17T05:42:19.721933+00:00",
+  "generated_at_utc": "2026-04-20T05:18:26.854268+00:00",
   "dataset_file": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\data\\ml\\routine_ranker_v1\\dataset.parquet",
   "rows_total": 6760,
   "positive_rows": 464,
@@ -29,7 +29,13 @@
     "goals_total",
     "avoid_flag_hit",
     "actives_count",
-    "concerns_count"
+    "concerns_count",
+    "user_tx_count_90d",
+    "user_owned_skincare_count",
+    "product_popularity",
+    "product_in_wishlist",
+    "product_roadmap_clicks_30d",
+    "product_roadmap_skips_30d"
   ],
   "target_column": "y",
   "group_column": "episode_id",

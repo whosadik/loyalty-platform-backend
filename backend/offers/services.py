@@ -14,6 +14,7 @@ from transactions.models import Transaction, TransactionItem, OwnedProduct
 from users_app.models import CustomerProfile
 from offers.models import Offer, OfferAssignment, CampaignBudget, OfferEvent
 from offers.events import record_offer_event
+from offers import ml_scorer as offer_ml_scorer
 from ml_logic.recommender import bundle as rec_bundle
 
 from ml_logic.next_best_reward import RFM, segment  # compute_rfm можно не трогать
@@ -893,11 +894,25 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
         if not offers:
             continue
 
+        # ML propensity scores per offer within this campaign. Returns None if
+        # the model is unavailable or disabled by flag; we then fall back to
+        # pure rule-based scoring for this iteration.
+        ml_enabled = bool(getattr(settings, "OFFER_REDEMPTION_ML_ENABLED", False))
+        ml_weight = float(getattr(settings, "OFFER_REDEMPTION_ML_WEIGHT", 0.0) or 0.0)
+        ml_probs: list[float] | None = None
+        if ml_enabled and ml_weight > 0.0:
+            ml_probs = offer_ml_scorer.score_offers(
+                offers=offers,
+                campaign_name=camp.name,
+                rfm=rfm,
+            )
+        algo_used = "ml+rules" if ml_probs is not None else "rules"
+
         best_offer = None
         best_score = -1e9
         best_reason = None
 
-        for o in offers:
+        for idx, o in enumerate(offers):
             # пересечение ограничений offer/campaign по категориям
             eff_cats = _effective_allowed_categories(o, camp)
             if (o.allowed_categories or []) and (camp.allowed_categories or []) and not eff_cats:
@@ -964,6 +979,15 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             if getattr(o, "target_scope", None) and o.target_scope != "cart":
                 score += 0.05
 
+            # ML propensity bonus. Model returns P(redeem | exposed, features).
+            # We blend it into the rule score so business constraints still
+            # dominate hard eligibility, but ML reshapes ties within a campaign.
+            rule_score = score
+            ml_prob: float | None = None
+            if ml_probs is not None and idx < len(ml_probs):
+                ml_prob = float(ml_probs[idx])
+                score += ml_weight * ml_prob * 10.0
+
             if score > best_score:
                 best_score = score
                 best_offer = o
@@ -990,6 +1014,10 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
                     "campaign_routing": routing,
                     "winback_eligible": winback_eligible,
                     "favorite_category": favorite_cat,
+                    "algo_used": algo_used,
+                    "rule_score": round(float(rule_score), 4),
+                    "ml_prob": round(float(ml_prob), 6) if ml_prob is not None else None,
+                    "final_score": round(float(score), 4),
                 }
 
         # если в этой кампании нашли оффер — возвращаем СРАЗУ (это и есть “сначала пробуем …”)

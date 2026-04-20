@@ -310,6 +310,9 @@ class Command(BaseCommand):
             "categorical_features": CATEGORICAL_FEATURES,
             "numeric_features": NUMERIC_FEATURES,
             "seed": int(options["seed"]),
+            "recall_at_1": float(recall_at_1),
+            "recall_at_3": float(recall_at_3),
+            "ndcg_at_5": float(ndcg_at_5),
         }
         with (output_dir / "metadata.json").open("w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=2, ensure_ascii=False)

@@ -662,6 +662,151 @@ def _brand_fallback_ids(
     return out
 
 
+USER_FEATURE_NAMES = [
+    "u_tx_count_90d",
+    "u_avg_price_90d_log",
+    "u_top_cat_match",
+    "u_top_brand_match",
+    "u_top_ptype_match",
+    "u_cat_affinity",
+    "u_price_fit",
+]
+
+
+def _reranker_model_features() -> list[str]:
+    """Return the feature list recorded in metadata.json alongside the model.
+
+    If metadata is missing or unreadable, returns an empty list so callers
+    fall back to the legacy 6-feature path.
+    """
+    path = _model_path()
+    if not path.exists() or not path.is_file():
+        return []
+    try:
+        mtime_ns = int(path.stat().st_mtime_ns)
+        meta = _load_metadata_cached(str(path.resolve()), mtime_ns) or {}
+    except Exception:
+        return []
+    return list(meta.get("features") or [])
+
+
+def _build_runtime_user_context(
+    user_id: int | str | None,
+    by_id: dict[int, dict[str, Any]],
+    *,
+    window_days: int = 90,
+) -> dict[str, Any] | None:
+    """Build the user-context dict consumed by the user-features reranker.
+
+    Derives top category / brand / product_type and average price from the
+    user's purchases in the last `window_days`. Returns None when we have
+    no user_id or no qualifying purchases — callers should then skip
+    appending user features and fall back to the 6-feature path.
+    """
+    uid = _to_int(user_id)
+    if uid is None:
+        return None
+
+    since = timezone.now() - timedelta(days=int(window_days))
+    qs = (
+        TransactionItem.objects.filter(
+            transaction__user_id=uid,
+            transaction__created_at__gte=since,
+        )
+        .values("product_id", "unit_price")
+    )
+    rows = list(qs.iterator())
+    if not rows:
+        return None
+
+    cat_counts: dict[str, int] = defaultdict(int)
+    brand_counts: dict[str, int] = defaultdict(int)
+    ptype_counts: dict[str, int] = defaultdict(int)
+    prices: list[float] = []
+    total = 0
+
+    for row in rows:
+        pid = _to_int(row.get("product_id"))
+        if pid is None:
+            continue
+        prod = by_id.get(pid)
+        if prod:
+            cat = str(prod.get("category") or "").strip().lower()
+            brand = str(prod.get("brand") or "").strip().lower()
+            ptype = str(prod.get("product_type") or "").strip().lower()
+            if cat:
+                cat_counts[cat] += 1
+            if brand:
+                brand_counts[brand] += 1
+            if ptype:
+                ptype_counts[ptype] += 1
+        price = _to_float(row.get("unit_price"), 0.0)
+        if price > 0:
+            prices.append(price)
+        total += 1
+
+    if total == 0:
+        return None
+
+    avg_price = (sum(prices) / len(prices)) if prices else 0.0
+    top_cat = max(cat_counts, key=cat_counts.get) if cat_counts else None
+    top_brand = max(brand_counts, key=brand_counts.get) if brand_counts else None
+    top_ptype = max(ptype_counts, key=ptype_counts.get) if ptype_counts else None
+    cat_total = sum(cat_counts.values()) or 1
+    cat_share = {k: float(v) / float(cat_total) for k, v in cat_counts.items()}
+
+    return {
+        "u_tx_count_90d": float(total),
+        "u_avg_price_90d": float(avg_price),
+        "u_top_cat": top_cat,
+        "u_top_brand": top_brand,
+        "u_top_ptype": top_ptype,
+        "u_cat_share": cat_share,
+    }
+
+
+def _user_feature_row(
+    *,
+    cand_cat: Any,
+    cand_brand: str,
+    cand_ptype: Any,
+    cand_price: float,
+    user_ctx: dict[str, Any] | None,
+) -> list[float]:
+    if not user_ctx:
+        return [0.0] * len(USER_FEATURE_NAMES)
+
+    tx = float(user_ctx.get("u_tx_count_90d") or 0.0)
+    avg_price = float(user_ctx.get("u_avg_price_90d") or 0.0)
+    top_cat = user_ctx.get("u_top_cat")
+    top_brand = user_ctx.get("u_top_brand")
+    top_ptype = user_ctx.get("u_top_ptype")
+    cat_share = user_ctx.get("u_cat_share") or {}
+
+    cc = str(cand_cat or "").strip().lower()
+    cb = (cand_brand or "").strip().lower()
+    cp = str(cand_ptype or "").strip().lower()
+
+    top_cat_match = 1.0 if (top_cat and cc and cc == top_cat) else 0.0
+    top_brand_match = 1.0 if (top_brand and cb and cb == top_brand) else 0.0
+    top_ptype_match = 1.0 if (top_ptype and cp and cp == top_ptype) else 0.0
+    cat_affinity = float(cat_share.get(cc, 0.0)) if cc else 0.0
+    if avg_price > 0 and cand_price > 0:
+        price_fit = 1.0 / (1.0 + abs(cand_price - avg_price) / max(avg_price, 1.0))
+    else:
+        price_fit = 0.0
+
+    return [
+        tx,
+        math.log1p(avg_price),
+        top_cat_match,
+        top_brand_match,
+        top_ptype_match,
+        cat_affinity,
+        price_fit,
+    ]
+
+
 def _build_feature_rows(
     *,
     context_product: dict[str, Any],
@@ -670,6 +815,7 @@ def _build_feature_rows(
     transitions: dict[int, float],
     rank_map: dict[int, int],
     pop_map: dict[int, float],
+    user_context: dict[str, Any] | None = None,
 ) -> tuple[list[int], list[list[float]]]:
     ctx_cat = context_product.get("category")
     ctx_brand = str(context_product.get("brand") or "").strip().lower()
@@ -677,6 +823,7 @@ def _build_feature_rows(
 
     valid_ids: list[int] = []
     feats: list[list[float]] = []
+    use_user_ctx = user_context is not None
 
     for pid in candidate_ids:
         cand = by_id.get(pid)
@@ -685,6 +832,7 @@ def _build_feature_rows(
 
         cand_cat = cand.get("category")
         cand_brand = str(cand.get("brand") or "").strip().lower()
+        cand_ptype = cand.get("product_type")
         cand_price = _to_float(cand.get("price"), 0.0)
         trans = float(transitions.get(pid, 0.0))
         rank = int(rank_map.get(pid, 9999))
@@ -694,7 +842,18 @@ def _build_feature_rows(
         price_diff = abs(cand_price - ctx_price)
         popularity = float(pop_map.get(pid, 0.0))
 
-        feats.append([trans, rank_inv, same_cat, same_brand, price_diff, math.log1p(popularity)])
+        row = [trans, rank_inv, same_cat, same_brand, price_diff, math.log1p(popularity)]
+        if use_user_ctx:
+            row.extend(
+                _user_feature_row(
+                    cand_cat=cand_cat,
+                    cand_brand=cand_brand,
+                    cand_ptype=cand_ptype,
+                    cand_price=cand_price,
+                    user_ctx=user_context,
+                )
+            )
+        feats.append(row)
         valid_ids.append(pid)
 
     return valid_ids, feats
@@ -1114,6 +1273,10 @@ def recommend_with_algo(
     route_meta["retrieval"] = retrieval_diag
 
     rank_map = {pid: idx + 1 for idx, pid in enumerate(candidate_ids)}
+    model_features = _reranker_model_features()
+    needs_user_ctx = any(f in USER_FEATURE_NAMES for f in model_features)
+    user_ctx = _build_runtime_user_context(user_id, by_id) if needs_user_ctx else None
+    route_meta["user_context_used"] = bool(user_ctx is not None)
     valid_ids, feats = _build_feature_rows(
         context_product=ctx,
         candidate_ids=candidate_ids,
@@ -1121,6 +1284,7 @@ def recommend_with_algo(
         transitions=transitions,
         rank_map=rank_map,
         pop_map=pop_map,
+        user_context=user_ctx if needs_user_ctx else None,
     )
     if not feats:
         route_meta["fallback_reason"] = "no_features"
@@ -1339,6 +1503,10 @@ def rerank_bundle_with_algo(
         return bundle_results[:limit], "cooc_fallback:no_candidates", None, route_meta
 
     rank_map = {pid: idx + 1 for idx, pid in enumerate(candidate_ids)}
+    model_features = _reranker_model_features()
+    needs_user_ctx = any(f in USER_FEATURE_NAMES for f in model_features)
+    user_ctx = _build_runtime_user_context(user_id, by_id) if needs_user_ctx else None
+    route_meta["user_context_used"] = bool(user_ctx is not None)
     valid_ids, feats = _build_feature_rows(
         context_product=ctx,
         candidate_ids=candidate_ids,
@@ -1346,6 +1514,7 @@ def rerank_bundle_with_algo(
         transitions=transitions,
         rank_map=rank_map,
         pop_map=pop_map,
+        user_context=user_ctx if needs_user_ctx else None,
     )
     if not feats:
         route_meta["fallback_reason"] = "no_features"

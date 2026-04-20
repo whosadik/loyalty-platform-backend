@@ -363,6 +363,16 @@ ROUTINE_RANKER_MODEL_PATH = os.getenv(
     "ROUTINE_RANKER_MODEL_PATH",
     str((BASE_DIR.parent / "models" / "routine_ranker_v1" / "model.pkl").resolve()),
 )
+
+# Offer redemption propensity model (LR pipeline from train_offer_redemption_lr.py).
+OFFER_REDEMPTION_MODEL_PATH = os.getenv(
+    "OFFER_REDEMPTION_MODEL_PATH",
+    str((BASE_DIR.parent / "models" / "offer_redemption_lr_synth_v1" / "model.pkl").resolve()),
+)
+OFFER_REDEMPTION_ML_ENABLED = env_bool("OFFER_REDEMPTION_ML_ENABLED", True)
+# Blend weight: final_score = rule_score + weight * ml_prob * 10.
+# 0.0 disables ML contribution (pure rules); 1.0 lets ML add up to +10 to rule score.
+OFFER_REDEMPTION_ML_WEIGHT = float(os.getenv("OFFER_REDEMPTION_ML_WEIGHT", "1.0"))
 ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH = os.getenv(
     "ROADMAP_NEXTSTEP_V4_SHADOW_MODEL_PATH",
     "",

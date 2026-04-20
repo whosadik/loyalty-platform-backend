@@ -11,6 +11,7 @@ import pandas as pd
 
 try:
     from ml.training.recs_common import (
+        USER_FEATURE_NAMES,
         build_category_popularity_map,
         build_behavior_next_item_map,
         build_brand_popularity_map,
@@ -18,6 +19,7 @@ try:
         build_feature_matrix_for_candidates,
         build_context_candidates,
         build_next_item_map,
+        build_user_context,
         brand_fallback_for_context,
         category_fallback_for_context,
         merge_top_maps,
@@ -30,6 +32,7 @@ try:
     )
 except ModuleNotFoundError:
     from recs_common import (  # type: ignore
+        USER_FEATURE_NAMES,
         build_category_popularity_map,
         build_behavior_next_item_map,
         build_brand_popularity_map,
@@ -37,6 +40,7 @@ except ModuleNotFoundError:
         build_feature_matrix_for_candidates,
         build_context_candidates,
         build_next_item_map,
+        build_user_context,
         brand_fallback_for_context,
         category_fallback_for_context,
         merge_top_maps,
@@ -114,6 +118,27 @@ def main():
     pop = pur["item_id"].value_counts().to_dict()
     fallback_items = [int(x) for x in pur["item_id"].value_counts().index.tolist()]
     model = joblib.load(args.model)
+
+    # Detect whether model was trained with user-context features by checking
+    # the adjacent metadata.json (written by train_reranker_lr.py).
+    meta_path = os.path.join(os.path.dirname(args.model), "metadata.json")
+    model_features: list[str] = []
+    user_feature_window_days = 90
+    if os.path.exists(meta_path):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                _meta = json.load(f)
+            model_features = list(_meta.get("features") or [])
+            user_feature_window_days = int(_meta.get("user_feature_window_days") or 90)
+        except Exception:
+            pass
+    with_user_features = any(f in USER_FEATURE_NAMES for f in model_features)
+
+    # Pre-group user purchase history for per-row user_context lookups.
+    user_purchases_by_id: dict[str, pd.DataFrame] = {}
+    if with_user_features:
+        for uid, grp in pur.groupby("user_id", sort=False):
+            user_purchases_by_id[str(uid)] = grp[["item_id", "ts"]].reset_index(drop=True)
     behavior_event_types = [
         x.strip().lower()
         for x in str(args.behavior_event_types or "").split(",")
@@ -206,6 +231,16 @@ def main():
         )
         if not candidate_items:
             continue
+        user_ctx = None
+        if with_user_features:
+            uid_raw = getattr(r, "user_id", None)
+            uid = normalize_user_id(uid_raw)
+            user_ctx = build_user_context(
+                user_purchases=user_purchases_by_id.get(uid, pd.DataFrame()),
+                items_lookup=items,
+                cutoff_ts=getattr(r, "label_ts", None),
+                window_days=user_feature_window_days,
+            )
         X = build_feature_matrix_for_candidates(
             context_item=int(ctx_items[-1]),
             candidate_items=candidate_items,
@@ -213,6 +248,7 @@ def main():
             candidate_ranks=ranks,
             items_lookup=items,
             popularity_map=popularity_map,
+            user_context=user_ctx,
         )
         if X.shape[0] == 0:
             continue

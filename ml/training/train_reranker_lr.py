@@ -14,6 +14,8 @@ from sklearn.model_selection import train_test_split
 
 try:
     from ml.training.recs_common import (
+        BASE_FEATURE_NAMES,
+        USER_FEATURE_NAMES,
         build_category_popularity_map,
         build_behavior_next_item_map,
         build_brand_popularity_map,
@@ -21,6 +23,7 @@ try:
         build_feature_matrix_for_candidates,
         build_context_candidates,
         build_next_item_map,
+        build_user_context,
         brand_fallback_for_context,
         category_fallback_for_context,
         merge_top_maps,
@@ -33,6 +36,8 @@ try:
     )
 except ModuleNotFoundError:
     from recs_common import (  # type: ignore
+        BASE_FEATURE_NAMES,
+        USER_FEATURE_NAMES,
         build_category_popularity_map,
         build_behavior_next_item_map,
         build_brand_popularity_map,
@@ -40,6 +45,7 @@ except ModuleNotFoundError:
         build_feature_matrix_for_candidates,
         build_context_candidates,
         build_next_item_map,
+        build_user_context,
         brand_fallback_for_context,
         category_fallback_for_context,
         merge_top_maps,
@@ -89,6 +95,12 @@ def main():
     ap.add_argument("--model_version", default="recs_reranker_v3")
     ap.add_argument("--test_size", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument(
+        "--with_user_features",
+        action="store_true",
+        help="Append per-user context features (tx_count_90d, top_cat/brand/ptype match, cat_affinity, price_fit).",
+    )
+    ap.add_argument("--user_feature_window_days", type=int, default=90)
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -168,12 +180,20 @@ def main():
 
     ds_train = ds[ds["user_id"].isin(train_users)].copy()
     rng = np.random.default_rng(args.seed)
-    rows: list[tuple[str, int, int, int, float, int]] = []
+    rows: list[tuple[str, int, int, int, float, int, Any]] = []
+
+    # Pre-group user purchase history for fast per-row slicing in the
+    # feature loop. Only needed when user features are requested.
+    user_purchases_by_id: dict[str, pd.DataFrame] = {}
+    if args.with_user_features:
+        for uid, grp in pur.groupby("user_id", sort=False):
+            user_purchases_by_id[str(uid)] = grp[["item_id", "ts"]].reset_index(drop=True)
 
     for r in ds_train.itertuples(index=False):
         user = str(r.user_id)
         ctx = to_item_id(getattr(r, "context_last_item", None))
         label = to_item_id(getattr(r, "label_item", None))
+        label_ts = getattr(r, "label_ts", None)
         if ctx is None or label is None:
             continue
 
@@ -214,7 +234,7 @@ def main():
         if len(cands) < 2:
             continue
 
-        rows.append((user, ctx, label, 1, float(scores.get(label, 0.0)), ranks.get(label, 9999)))
+        rows.append((user, ctx, label, 1, float(scores.get(label, 0.0)), ranks.get(label, 9999), label_ts))
 
         negs = _sample_negatives(
             label=label,
@@ -224,19 +244,37 @@ def main():
         )
         for n in negs:
             nn = int(n)
-            rows.append((user, ctx, nn, 0, float(scores.get(nn, 0.0)), ranks.get(nn, 9999)))
+            rows.append((user, ctx, nn, 0, float(scores.get(nn, 0.0)), ranks.get(nn, 9999), label_ts))
 
     if not rows:
         raise SystemExit("No training rows were generated")
 
     df = pd.DataFrame(
         rows,
-        columns=["user_id", "context_item", "candidate_item", "y", "transition_count", "candidate_rank"],
+        columns=["user_id", "context_item", "candidate_item", "y", "transition_count", "candidate_rank", "label_ts"],
     )
 
     pop_map = {int(k): float(v) for k, v in pop.items()}
+    # Cache user_context per (user_id, label_ts) because rows for the same
+    # (user, label_ts) share identical user context (1 positive + N negatives).
+    user_ctx_cache: dict[tuple[str, Any], dict[str, Any]] = {}
+
     feat_rows = []
     for rr in df.itertuples(index=False):
+        user_ctx = None
+        if args.with_user_features:
+            key = (str(rr.user_id), rr.label_ts)
+            cached = user_ctx_cache.get(key)
+            if cached is None:
+                cached = build_user_context(
+                    user_purchases=user_purchases_by_id.get(str(rr.user_id), pd.DataFrame()),
+                    items_lookup=items_lookup,
+                    cutoff_ts=rr.label_ts,
+                    window_days=int(args.user_feature_window_days),
+                )
+                user_ctx_cache[key] = cached
+            user_ctx = cached
+
         X = build_feature_matrix_for_candidates(
             context_item=int(rr.context_item),
             candidate_items=[int(rr.candidate_item)],
@@ -244,6 +282,7 @@ def main():
             candidate_ranks={int(rr.candidate_item): int(rr.candidate_rank)},
             items_lookup=items_lookup,
             popularity_map=pop_map,
+            user_context=user_ctx,
         )
         if X.shape[0] != 1:
             continue
@@ -308,14 +347,9 @@ def main():
         "behavior_event_types": behavior_event_types,
         "behavior_weight": float(args.behavior_weight),
         "test_size_users": float(args.test_size),
-        "features": [
-            "transition_count",
-            "rank_inv",
-            "same_category",
-            "same_brand",
-            "price_diff",
-            "log_popularity",
-        ],
+        "with_user_features": bool(args.with_user_features),
+        "user_feature_window_days": int(args.user_feature_window_days),
+        "features": list(BASE_FEATURE_NAMES) + (list(USER_FEATURE_NAMES) if args.with_user_features else []),
         "train_rows": int(len(df)),
         "train_pos_rate": round(float(df["y"].mean()), 6),
         "train_auc": round(float(auc), 6),

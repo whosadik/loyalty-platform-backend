@@ -568,6 +568,153 @@ def prepare_items_lookup(items_df: pd.DataFrame) -> pd.DataFrame:
     return out.drop_duplicates("item_id").set_index("item_id")
 
 
+BASE_FEATURE_NAMES: list[str] = [
+    "transition_count",
+    "rank_inv",
+    "same_category",
+    "same_brand",
+    "price_diff",
+    "log_popularity",
+]
+USER_FEATURE_NAMES: list[str] = [
+    "u_tx_count_90d",
+    "u_avg_price_90d_log",
+    "u_top_cat_match",
+    "u_top_brand_match",
+    "u_top_ptype_match",
+    "u_cat_affinity",
+    "u_price_fit",
+]
+
+
+def build_user_context(
+    *,
+    user_purchases: pd.DataFrame,
+    items_lookup: pd.DataFrame,
+    cutoff_ts: Any,
+    window_days: int = 90,
+) -> dict[str, Any]:
+    """Summarize a single user's purchase history up to `cutoff_ts`.
+
+    Returns a plain dict with numeric + categorical summary fields. Used
+    by `build_feature_matrix_for_candidates` to derive per-candidate
+    user-context features (top-category match, price fit, etc.).
+
+    All values default to neutrals when the user has no qualifying
+    history, so the downstream feature matrix never needs to special-case
+    cold-start users.
+    """
+    ctx = {
+        "u_tx_count_90d": 0.0,
+        "u_avg_price_90d": 0.0,
+        "u_top_cat": None,
+        "u_top_brand": None,
+        "u_top_ptype": None,
+        "u_cat_share": {},
+    }
+    if user_purchases is None or user_purchases.empty:
+        return ctx
+
+    try:
+        cutoff = pd.Timestamp(cutoff_ts)
+    except Exception:
+        return ctx
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.tz_localize("UTC")
+    window_start = cutoff - pd.Timedelta(days=int(window_days))
+
+    df = user_purchases.copy()
+    if "ts" not in df.columns or "item_id" not in df.columns:
+        return ctx
+    df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
+    df = df[df["ts"].notna()].copy()
+    df = df[(df["ts"] >= window_start) & (df["ts"] < cutoff)]
+    if df.empty:
+        return ctx
+
+    df["item_id"] = df["item_id"].map(to_item_id)
+    df = df[df["item_id"].notna()].copy()
+    df["item_id"] = df["item_id"].astype(int)
+    if df.empty:
+        return ctx
+
+    joined = df.join(items_lookup, on="item_id", how="left", rsuffix="_i")
+    prices = pd.to_numeric(joined.get("price"), errors="coerce")
+    prices = prices[prices.notna()]
+    avg_price = float(prices.mean()) if not prices.empty else 0.0
+
+    cats = joined["category"].dropna().astype(str).str.lower()
+    brands = joined["brand"].dropna().astype(str).str.lower()
+    ptypes = (
+        joined["product_type"].dropna().astype(str).str.lower()
+        if "product_type" in joined.columns else pd.Series(dtype=str)
+    )
+
+    top_cat = cats.value_counts().idxmax() if not cats.empty else None
+    top_brand = brands.value_counts().idxmax() if not brands.empty else None
+    top_ptype = ptypes.value_counts().idxmax() if not ptypes.empty else None
+
+    cat_total = int(cats.count())
+    cat_share: dict[str, float] = {}
+    if cat_total > 0:
+        cat_share = {
+            str(k): float(v) / float(cat_total)
+            for k, v in cats.value_counts().to_dict().items()
+        }
+
+    ctx.update(
+        u_tx_count_90d=float(len(df)),
+        u_avg_price_90d=avg_price,
+        u_top_cat=top_cat,
+        u_top_brand=top_brand,
+        u_top_ptype=top_ptype,
+        u_cat_share=cat_share,
+    )
+    return ctx
+
+
+def _user_feature_row(
+    *,
+    cand_cat: Any,
+    cand_brand: Any,
+    cand_ptype: Any,
+    cand_price: float,
+    user_ctx: dict[str, Any] | None,
+) -> list[float]:
+    if not user_ctx:
+        return [0.0] * len(USER_FEATURE_NAMES)
+    tx = float(user_ctx.get("u_tx_count_90d") or 0.0)
+    avg_price = float(user_ctx.get("u_avg_price_90d") or 0.0)
+    top_cat = user_ctx.get("u_top_cat")
+    top_brand = user_ctx.get("u_top_brand")
+    top_ptype = user_ctx.get("u_top_ptype")
+    cat_share = user_ctx.get("u_cat_share") or {}
+
+    cc = str(cand_cat).lower() if cand_cat is not None else ""
+    cb = str(cand_brand).lower() if cand_brand is not None else ""
+    cp = str(cand_ptype).lower() if cand_ptype is not None else ""
+
+    top_cat_match = 1.0 if (top_cat and cc and cc == top_cat) else 0.0
+    top_brand_match = 1.0 if (top_brand and cb and cb == top_brand) else 0.0
+    top_ptype_match = 1.0 if (top_ptype and cp and cp == top_ptype) else 0.0
+    cat_affinity = float(cat_share.get(cc, 0.0)) if cc else 0.0
+
+    if avg_price > 0 and cand_price > 0:
+        price_fit = 1.0 / (1.0 + abs(cand_price - avg_price) / max(avg_price, 1.0))
+    else:
+        price_fit = 0.0
+
+    return [
+        tx,
+        float(np.log1p(avg_price)),
+        top_cat_match,
+        top_brand_match,
+        top_ptype_match,
+        cat_affinity,
+        price_fit,
+    ]
+
+
 def build_feature_matrix_for_candidates(
     *,
     context_item: int,
@@ -576,7 +723,19 @@ def build_feature_matrix_for_candidates(
     candidate_ranks: dict[int, int] | None,
     items_lookup: pd.DataFrame,
     popularity_map: dict[int, float],
+    user_context: dict[str, Any] | None = None,
 ) -> np.ndarray:
+    """Build the feature matrix for a list of candidate items.
+
+    When `user_context` is None (legacy behavior), returns a 6-column
+    matrix with the classic co-occurrence features. When `user_context`
+    is provided, appends 7 user-context features so the learned model
+    can personalize beyond item→item co-occurrence.
+
+    The column order is `BASE_FEATURE_NAMES + USER_FEATURE_NAMES` and is
+    locked — runtime inference matches the model's trained feature list
+    via metadata.json.
+    """
     ctx_row = items_lookup.loc[context_item] if context_item in items_lookup.index else None
     ctx_cat = (ctx_row.get("category") if ctx_row is not None else None)
     ctx_brand = (ctx_row.get("brand") if ctx_row is not None else None)
@@ -586,11 +745,15 @@ def build_feature_matrix_for_candidates(
         else 0.0
     )
 
+    use_user_ctx = user_context is not None
+    n_cols = len(BASE_FEATURE_NAMES) + (len(USER_FEATURE_NAMES) if use_user_ctx else 0)
+
     feats: list[list[float]] = []
     for it in candidate_items:
         row = items_lookup.loc[it] if it in items_lookup.index else None
         cand_cat = (row.get("category") if row is not None else None)
         cand_brand = (row.get("brand") if row is not None else None)
+        cand_ptype = (row.get("product_type") if row is not None else None)
         cand_price = (
             float(row.get("price"))
             if row is not None and pd.notna(row.get("price"))
@@ -603,10 +766,22 @@ def build_feature_matrix_for_candidates(
         trans = float(transition_counts.get(int(it), 0.0))
         rank = int((candidate_ranks or {}).get(int(it), 9999))
         rank_inv = 1.0 / float(rank + 1)
-        feats.append([trans, rank_inv, same_cat, same_brand, price_diff, np.log1p(popularity)])
+
+        base = [trans, rank_inv, same_cat, same_brand, price_diff, np.log1p(popularity)]
+        if use_user_ctx:
+            base.extend(
+                _user_feature_row(
+                    cand_cat=cand_cat,
+                    cand_brand=cand_brand,
+                    cand_ptype=cand_ptype,
+                    cand_price=cand_price,
+                    user_ctx=user_context,
+                )
+            )
+        feats.append(base)
 
     if not feats:
-        return np.empty((0, 6), dtype=float)
+        return np.empty((0, n_cols), dtype=float)
     return np.array(feats, dtype=float)
 
 
