@@ -3943,3 +3943,312 @@ class RoadmapRuntimeConfigCommandTests(TestCase):
         self._call("--set", "k=v")
         out = self._call()
         self.assertIn("k=v", out)
+
+
+class RoadmapMLRollbackGuardTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = get_user_model().objects.create_user(
+            username="guard_user",
+            email="guard@example.com",
+            password="x",
+        )
+        cls.plan = RoadmapPlan.objects.create(
+            user=cls.user,
+            category=RoadmapPlan.Category.SKINCARE,
+            is_active=True,
+            version=1,
+        )
+
+    def setUp(self):
+        from roadmap_app import runtime_config
+        from roadmap_app.models import RoadmapRuntimeConfig
+
+        RoadmapRuntimeConfig.objects.all().delete()
+        runtime_config.invalidate_cache()
+        RoadmapMLInvocation.objects.all().delete()
+
+    def _make(self, *, category="skincare", decision="model_used", predict_ms=None, predict_error="", created_at=None):
+        row = RoadmapMLInvocation.objects.create(
+            user=self.user,
+            plan=self.plan,
+            category=category,
+            decision=decision,
+            predict_ms=predict_ms,
+            predict_error=predict_error,
+        )
+        if created_at is not None:
+            RoadmapMLInvocation.objects.filter(pk=row.pk).update(created_at=created_at)
+            row.refresh_from_db()
+        return row
+
+    def _seed(self, count, *, category="skincare", decision="model_used", predict_ms=50.0, predict_error=""):
+        for _ in range(count):
+            self._make(
+                category=category,
+                decision=decision,
+                predict_ms=predict_ms,
+                predict_error=predict_error,
+            )
+
+    def test_empty_db_no_breach(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        report = evaluate_rollback_guard()
+        self.assertFalse(report["any_breach"])
+        self.assertEqual(report["per_category"], {})
+
+    def test_healthy_traffic_no_breach(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        self._seed(80, predict_ms=40.0)
+        report = evaluate_rollback_guard()
+        payload = report["per_category"]["skincare"]
+        self.assertEqual(payload["total"], 80)
+        self.assertEqual(payload["predict_attempts"], 80)
+        self.assertEqual(payload["errors"], 0)
+        self.assertFalse(payload.get("insufficient_sample"))
+        self.assertFalse(payload["breaches"])
+        self.assertFalse(report["any_breach"])
+
+    def test_high_error_rate_breaches(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        self._seed(80, predict_ms=40.0)
+        self._seed(20, predict_ms=None, predict_error="predict crashed")
+        report = evaluate_rollback_guard()
+        payload = report["per_category"]["skincare"]
+        self.assertEqual(payload["predict_attempts"], 100)
+        self.assertEqual(payload["errors"], 20)
+        self.assertAlmostEqual(payload["error_rate_pct"], 20.0, places=2)
+        breach_metrics = {b["metric"] for b in payload["breaches"]}
+        self.assertIn("error_rate_pct", breach_metrics)
+        self.assertTrue(report["any_breach"])
+
+    def test_high_p95_latency_breaches(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        for ms in list(range(50, 150)):
+            self._make(predict_ms=float(ms + 500))
+        report = evaluate_rollback_guard()
+        payload = report["per_category"]["skincare"]
+        self.assertIsNotNone(payload["p95_latency_ms"])
+        self.assertGreater(payload["p95_latency_ms"], 500.0)
+        breach_metrics = {b["metric"] for b in payload["breaches"]}
+        self.assertIn("p95_latency_ms", breach_metrics)
+
+    def test_high_fallback_rate_breaches(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        self._seed(40, decision="model_used", predict_ms=30.0)
+        self._seed(60, decision="fallback", predict_ms=30.0)
+        report = evaluate_rollback_guard()
+        payload = report["per_category"]["skincare"]
+        self.assertEqual(payload["fallbacks"], 60)
+        self.assertAlmostEqual(payload["fallback_rate_pct"], 60.0, places=2)
+        breach_metrics = {b["metric"] for b in payload["breaches"]}
+        self.assertIn("fallback_rate_pct", breach_metrics)
+
+    def test_insufficient_sample_suppresses_breach(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        self._seed(10, predict_ms=None, predict_error="boom")
+        report = evaluate_rollback_guard()
+        payload = report["per_category"]["skincare"]
+        self.assertTrue(payload["insufficient_sample"])
+        self.assertEqual(payload["breaches"], [])
+        self.assertFalse(report["any_breach"])
+
+    def test_disabled_invocations_do_not_count_as_attempts(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        self._seed(100, decision="disabled", predict_ms=None, predict_error="")
+        report = evaluate_rollback_guard()
+        payload = report["per_category"]["skincare"]
+        self.assertEqual(payload["total"], 100)
+        self.assertEqual(payload["predict_attempts"], 0)
+        self.assertTrue(payload["insufficient_sample"])
+        self.assertFalse(report["any_breach"])
+
+    def test_window_excludes_old_rows(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        now = timezone.now()
+        for _ in range(100):
+            self._make(
+                predict_ms=None,
+                predict_error="old boom",
+                created_at=now - timedelta(hours=2),
+            )
+        self._seed(10, predict_ms=20.0)
+        report = evaluate_rollback_guard(window_minutes=15, now=now)
+        payload = report["per_category"]["skincare"]
+        self.assertEqual(payload["total"], 10)
+        self.assertEqual(payload["errors"], 0)
+        self.assertFalse(report["any_breach"])
+
+    def test_per_category_isolation(self):
+        from roadmap_app.ml_rollback_guard import evaluate_rollback_guard
+
+        self._seed(80, category="skincare", predict_ms=30.0)
+        self._seed(20, category="skincare", predict_ms=None, predict_error="boom")
+        self._seed(80, category="haircare", predict_ms=30.0)
+        report = evaluate_rollback_guard()
+        self.assertTrue(report["per_category"]["skincare"]["breaches"])
+        self.assertFalse(report["per_category"]["haircare"]["breaches"])
+        self.assertTrue(report["any_breach"])
+
+    def test_enforce_flips_freeze_on_breach(self):
+        from roadmap_app import runtime_config
+        from roadmap_app.ml_rollback_guard import enforce_rollback_guard
+
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=False):
+            runtime_config.invalidate_cache()
+            self._seed(80, predict_ms=40.0)
+            self._seed(20, predict_ms=None, predict_error="boom")
+            report = enforce_rollback_guard()
+            self.assertFalse(report["frozen_before"])
+            self.assertTrue(report["frozen_after"])
+            self.assertEqual(report["action_taken"], "freeze_set")
+            self.assertIn("skincare:error_rate_pct", report["freeze_note"])
+            self.assertTrue(runtime_config.is_runtime_ml_frozen())
+
+    def test_enforce_no_action_when_already_frozen(self):
+        from roadmap_app import runtime_config
+        from roadmap_app.ml_rollback_guard import enforce_rollback_guard
+
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=True):
+            runtime_config.invalidate_cache()
+            self._seed(80, predict_ms=40.0)
+            self._seed(20, predict_ms=None, predict_error="boom")
+            report = enforce_rollback_guard()
+            self.assertTrue(report["frozen_before"])
+            self.assertTrue(report["frozen_after"])
+            self.assertEqual(report["action_taken"], "already_frozen")
+            self.assertNotIn("freeze_note", report)
+
+    def test_enforce_no_action_when_no_breach(self):
+        from roadmap_app import runtime_config
+        from roadmap_app.ml_rollback_guard import enforce_rollback_guard
+
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=False):
+            runtime_config.invalidate_cache()
+            self._seed(80, predict_ms=40.0)
+            report = enforce_rollback_guard()
+            self.assertFalse(report["frozen_before"])
+            self.assertFalse(report["frozen_after"])
+            self.assertEqual(report["action_taken"], "none")
+            self.assertFalse(runtime_config.is_runtime_ml_frozen())
+
+    def test_custom_thresholds_propagated(self):
+        from roadmap_app.ml_rollback_guard import GuardThresholds, evaluate_rollback_guard
+
+        self._seed(40, predict_ms=40.0)
+        self._seed(10, predict_ms=None, predict_error="boom")
+        report = evaluate_rollback_guard(
+            thresholds=GuardThresholds(
+                max_error_rate_pct=30.0,
+                min_sample_size=20,
+            )
+        )
+        payload = report["per_category"]["skincare"]
+        self.assertFalse(payload["insufficient_sample"])
+        self.assertEqual(payload["breaches"], [])
+        self.assertFalse(report["any_breach"])
+
+
+class RoadmapMLRollbackGuardCommandTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = get_user_model().objects.create_user(
+            username="guard_cmd_user",
+            email="guard_cmd@example.com",
+            password="x",
+        )
+        cls.plan = RoadmapPlan.objects.create(
+            user=cls.user,
+            category=RoadmapPlan.Category.SKINCARE,
+            is_active=True,
+        )
+
+    def setUp(self):
+        from roadmap_app import runtime_config
+        from roadmap_app.models import RoadmapRuntimeConfig
+
+        RoadmapRuntimeConfig.objects.all().delete()
+        runtime_config.invalidate_cache()
+        RoadmapMLInvocation.objects.all().delete()
+
+    def _seed_breach(self):
+        for _ in range(80):
+            RoadmapMLInvocation.objects.create(
+                user=self.user, plan=self.plan, category="skincare",
+                decision="model_used", predict_ms=40.0,
+            )
+        for _ in range(20):
+            RoadmapMLInvocation.objects.create(
+                user=self.user, plan=self.plan, category="skincare",
+                decision="fallback", predict_error="boom",
+            )
+
+    def _call(self, *args):
+        stdout = StringIO()
+        call_command("roadmap_ml_rollback_guard", *args, stdout=stdout)
+        return stdout.getvalue()
+
+    def test_command_dry_run_does_not_mutate(self):
+        from roadmap_app import runtime_config
+
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=False):
+            runtime_config.invalidate_cache()
+            self._seed_breach()
+            out = self._call()
+            self.assertIn("action=dry_run", out)
+            self.assertIn("BREACH error_rate_pct", out)
+            self.assertFalse(runtime_config.is_runtime_ml_frozen())
+
+    def test_command_enforce_flips_freeze(self):
+        from roadmap_app import runtime_config
+
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=False):
+            runtime_config.invalidate_cache()
+            self._seed_breach()
+            out = self._call("--enforce", "--actor", "cron_guard")
+            self.assertIn("action=freeze_set", out)
+            self.assertTrue(runtime_config.is_runtime_ml_frozen())
+            from roadmap_app.models import RoadmapRuntimeConfig
+
+            row = RoadmapRuntimeConfig.objects.get(key=runtime_config.FREEZE_KEY)
+            self.assertEqual(row.value, "true")
+            self.assertEqual(row.updated_by, "cron_guard")
+
+    def test_command_json_output(self):
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=True):
+            from roadmap_app import runtime_config
+
+            runtime_config.invalidate_cache()
+            self._seed_breach()
+            out = self._call("--json")
+            parsed = json.loads(out)
+            self.assertIn("per_category", parsed)
+            self.assertIn("thresholds", parsed)
+            self.assertTrue(parsed["any_breach"])
+
+    def test_command_no_invocations_message(self):
+        out = self._call()
+        self.assertIn("(no invocations in window)", out)
+
+    def test_command_custom_thresholds(self):
+        for _ in range(40):
+            RoadmapMLInvocation.objects.create(
+                user=self.user, plan=self.plan, category="skincare",
+                decision="model_used", predict_ms=40.0,
+            )
+        for _ in range(10):
+            RoadmapMLInvocation.objects.create(
+                user=self.user, plan=self.plan, category="skincare",
+                decision="fallback", predict_error="boom",
+            )
+        out = self._call("--min-sample-size", "20", "--max-error-rate-pct", "30.0")
+        self.assertIn("action=dry_run", out)
+        self.assertNotIn("BREACH error_rate_pct", out)
