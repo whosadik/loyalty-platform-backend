@@ -34,6 +34,7 @@ from roadmap_app.ml_planner import (
     planner_model_artifact_summary,
     planner_runtime_guard_status,
 )
+from roadmap_app import runtime_config
 
 RUNTIME_CATEGORIES = ["skincare", "haircare", "makeup", "fragrance"]
 PASS = "PASS"
@@ -444,14 +445,14 @@ def freeze_candidate_promotion_manifest() -> dict[str, Any]:
                     "model_path": candidate_model_path,
                 },
                 "runtime_serve": {
-                    "runtime_freeze_ml": bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)),
+                    "runtime_freeze_ml": runtime_config.is_runtime_ml_frozen(),
                     "serve_enabled": False,
                 },
             },
             "executive_verdict": {
                 "status": "promotion_status_unavailable",
                 "canonical_freeze_candidate": False,
-                "runtime_still_frozen": bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)),
+                "runtime_still_frozen": runtime_config.is_runtime_ml_frozen(),
                 "active_runtime_artifact_unchanged": True,
             },
             "provenance": {
@@ -510,7 +511,7 @@ def build_roadmap_ml_artifact_qualification_payload() -> dict[str, Any]:
 
     return {
         "generated_at_utc": datetime.now(dt_timezone.utc).isoformat(),
-        "runtime_freeze_ml": bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)),
+        "runtime_freeze_ml": runtime_config.is_runtime_ml_frozen(),
         "configured_artifacts": artifacts,
         "per_category_manifest": {
             "planner_v1": planner_manifest,

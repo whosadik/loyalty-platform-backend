@@ -42,6 +42,7 @@ from roadmap_app.content_features import (
     product_signature,
     profile_signature,
 )
+from roadmap_app import runtime_config
 from transactions.models import TransactionItem
 from users_app.models import CustomerProfile
 
@@ -70,7 +71,7 @@ def _unique(values: list[str]) -> list[str]:
 
 
 def planner_runtime_mode() -> str:
-    if bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)):
+    if runtime_config.is_runtime_ml_frozen():
         return "off"
     raw = str(getattr(settings, "ROADMAP_PLANNER_V1_MODE", "off") or "off").strip().lower()
     if raw in {"off", "shadow", "serve"}:

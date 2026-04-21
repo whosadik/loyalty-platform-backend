@@ -21,6 +21,7 @@ from roadmap_app.ml_artifact_proof import (
     proof_bundle_status,
 )
 from roadmap_app.ml_next_step import nextstep_model_artifact_summary
+from roadmap_app import runtime_config
 from roadmap_app.nextstep_decision_quality import build_nextstep_v4_decision_quality_payload
 from roadmap_app.nextstep_historical_anchor_context import build_historical_anchor_read_context
 from roadmap_app.nextstep_haircare_shampoo_truth_design import (
@@ -944,7 +945,7 @@ def _acceptance_gates(artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
 
 def _runtime_config_snapshot() -> dict[str, Any]:
     return {
-        "runtime_freeze_ml": bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True)),
+        "runtime_freeze_ml": runtime_config.is_runtime_ml_frozen(),
         "roadmap_nextstep_model_path": str(getattr(settings, "ROADMAP_NEXTSTEP_MODEL_PATH", "") or ""),
         "roadmap_nextstep_v3_model_path": str(getattr(settings, "ROADMAP_NEXTSTEP_V3_MODEL_PATH", "") or ""),
         "roadmap_nextstep_v4_model_path": str(getattr(settings, "ROADMAP_NEXTSTEP_V4_MODEL_PATH", "") or ""),

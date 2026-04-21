@@ -30,6 +30,7 @@ from roadmap_app.ml_next_step import (
     v4_min_lift_guard_status,
 )
 from roadmap_app.models import RoadmapMLInvocation, RoadmapPlan, RoadmapStep
+from roadmap_app import runtime_config
 from roadmap_app.sku_ranking import rerank_roadmap_candidate_rows
 from transactions.models import OwnedProduct, TransactionItem
 from users_app.models import CustomerProfile
@@ -257,7 +258,7 @@ def _record_ml_invocation(
     refresh_caller: str,
     meta: dict[str, Any] | None,
 ) -> None:
-    if not bool(getattr(settings, "ROADMAP_ML_INVOCATION_LOG_ENABLED", True)):
+    if not runtime_config.is_ml_invocation_log_enabled():
         return
     try:
         meta_dict = meta if isinstance(meta, dict) else {}
@@ -527,7 +528,7 @@ def _partial_active_model_product_types(category: str | None = None) -> set[str]
 
 
 def _default_ml_mode_and_path() -> tuple[str, str]:
-    runtime_frozen = bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True))
+    runtime_frozen = runtime_config.is_runtime_ml_frozen()
     use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False)) and not runtime_frozen
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
     if use_v4:
@@ -1532,7 +1533,7 @@ def _build_chain(
             planned_target_step_index = int(idx)
             break
 
-    runtime_frozen = bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True))
+    runtime_frozen = runtime_config.is_runtime_ml_frozen()
     use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False)) and not runtime_frozen
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not use_v4
     ml_runtime: dict[str, Any] = {
@@ -2284,7 +2285,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             }
         )
 
-    runtime_frozen = bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True))
+    runtime_frozen = runtime_config.is_runtime_ml_frozen()
     use_v4 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V4_ENABLED", False)) and not runtime_frozen
     use_v3 = bool(getattr(settings, "ROADMAP_NEXTSTEP_V3_ENABLED", False)) and not runtime_frozen
     threshold = float(

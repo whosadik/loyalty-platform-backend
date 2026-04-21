@@ -4,6 +4,8 @@ from typing import Any
 
 from django.conf import settings
 
+from roadmap_app import runtime_config
+
 ROADMAP_PICKED_VIA_RULES = "rules"
 ROADMAP_PICKED_VIA_TEACHER = "teacher"
 ROADMAP_PICKED_VIA_RUNTIME_CONTINUATION = "runtime_continuation_rules"
@@ -66,7 +68,7 @@ ROADMAP_FROZEN_ARCHITECTURE: dict[str, Any] = {
 
 
 def roadmap_runtime_ml_flags() -> dict[str, Any]:
-    runtime_freeze_ml = bool(getattr(settings, "ROADMAP_RUNTIME_FREEZE_ML", True))
+    runtime_freeze_ml = runtime_config.is_runtime_ml_frozen()
     planner_mode = str(getattr(settings, "ROADMAP_PLANNER_V1_MODE", "off") or "off").strip().lower()
     planner_categories = [
         str(item).strip().lower()

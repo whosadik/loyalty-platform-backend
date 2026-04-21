@@ -3713,3 +3713,233 @@ class RoadmapMLInvocationRecordTests(TestCase):
                 meta=self._sample_meta(),
             )
         self.assertEqual(RoadmapMLInvocation.objects.count(), 0)
+
+
+class RoadmapRuntimeConfigTests(TestCase):
+    """Runtime config table + helper functions in roadmap_app.runtime_config."""
+
+    def setUp(self):
+        from roadmap_app import runtime_config
+
+        runtime_config.invalidate_cache()
+        from roadmap_app.models import RoadmapRuntimeConfig
+
+        RoadmapRuntimeConfig.objects.all().delete()
+
+    def test_get_bool_returns_default_when_no_override(self):
+        from roadmap_app import runtime_config
+
+        self.assertTrue(runtime_config.get_bool("missing_key", default=True))
+        self.assertFalse(runtime_config.get_bool("missing_key", default=False))
+
+    def test_set_and_read_bool_value_overrides_default(self):
+        from roadmap_app import runtime_config
+
+        runtime_config.set_value("feature_x", "false")
+        self.assertFalse(runtime_config.get_bool("feature_x", default=True))
+        runtime_config.set_value("feature_x", "true")
+        self.assertTrue(runtime_config.get_bool("feature_x", default=False))
+
+    def test_get_bool_accepts_various_truthy_tokens(self):
+        from roadmap_app import runtime_config
+
+        for token in ["1", "true", "YES", " on ", "T", "y"]:
+            runtime_config.set_value("flag", token)
+            self.assertTrue(
+                runtime_config.get_bool("flag", default=False),
+                f"expected truthy for {token!r}",
+            )
+
+    def test_get_bool_invalid_value_returns_default(self):
+        from roadmap_app import runtime_config
+
+        runtime_config.set_value("flag", "banana")
+        self.assertTrue(runtime_config.get_bool("flag", default=True))
+        self.assertFalse(runtime_config.get_bool("flag", default=False))
+
+    def test_get_int_parses_and_falls_back(self):
+        from roadmap_app import runtime_config
+
+        runtime_config.set_value("percent", "42")
+        self.assertEqual(runtime_config.get_int("percent", default=0), 42)
+        runtime_config.set_value("percent", "nope")
+        self.assertEqual(runtime_config.get_int("percent", default=7), 7)
+        self.assertEqual(runtime_config.get_int("missing", default=9), 9)
+
+    def test_unset_removes_override(self):
+        from roadmap_app import runtime_config
+
+        runtime_config.set_value("k", "v")
+        self.assertEqual(runtime_config.get_str("k", default=""), "v")
+        self.assertTrue(runtime_config.unset_value("k"))
+        self.assertEqual(runtime_config.get_str("k", default="default"), "default")
+        self.assertFalse(runtime_config.unset_value("k"))
+
+    def test_list_values_reflects_writes(self):
+        from roadmap_app import runtime_config
+
+        runtime_config.set_value("a", "1")
+        runtime_config.set_value("b", "2")
+        self.assertEqual(runtime_config.list_values(), {"a": "1", "b": "2"})
+
+    def test_set_value_rejects_empty_key(self):
+        from roadmap_app import runtime_config
+
+        with self.assertRaises(ValueError):
+            runtime_config.set_value("", "value")
+        with self.assertRaises(ValueError):
+            runtime_config.set_value("   ", "value")
+
+    def test_set_value_rejects_key_over_64_chars(self):
+        from roadmap_app import runtime_config
+
+        with self.assertRaises(ValueError):
+            runtime_config.set_value("x" * 65, "value")
+
+    def test_set_value_truncates_updated_by_and_note(self):
+        from roadmap_app import runtime_config
+        from roadmap_app.models import RoadmapRuntimeConfig
+
+        runtime_config.set_value(
+            "k",
+            "v",
+            updated_by="u" * 300,
+            note="n" * 400,
+        )
+        row = RoadmapRuntimeConfig.objects.get(key="k")
+        self.assertEqual(len(row.updated_by), 128)
+        self.assertEqual(len(row.note), 256)
+
+    def test_cache_invalidated_on_set_and_unset(self):
+        from roadmap_app import runtime_config
+
+        runtime_config.set_value("k", "1")
+        self.assertEqual(runtime_config.get_str("k"), "1")
+        runtime_config.set_value("k", "2")
+        self.assertEqual(runtime_config.get_str("k"), "2")
+        runtime_config.unset_value("k")
+        self.assertEqual(runtime_config.get_str("k", default="gone"), "gone")
+
+    def test_is_runtime_ml_frozen_prefers_override_over_settings(self):
+        from roadmap_app import runtime_config
+
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=True):
+            runtime_config.invalidate_cache()
+            self.assertTrue(runtime_config.is_runtime_ml_frozen())
+            runtime_config.set_value(runtime_config.FREEZE_KEY, "false")
+            self.assertFalse(runtime_config.is_runtime_ml_frozen())
+            runtime_config.set_value(runtime_config.FREEZE_KEY, "true")
+            self.assertTrue(runtime_config.is_runtime_ml_frozen())
+
+    def test_is_runtime_ml_frozen_falls_back_to_settings_when_no_override(self):
+        from roadmap_app import runtime_config
+
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=False):
+            runtime_config.invalidate_cache()
+            self.assertFalse(runtime_config.is_runtime_ml_frozen())
+        with override_settings(ROADMAP_RUNTIME_FREEZE_ML=True):
+            runtime_config.invalidate_cache()
+            self.assertTrue(runtime_config.is_runtime_ml_frozen())
+
+    def test_is_ml_invocation_log_enabled_prefers_override(self):
+        from roadmap_app import runtime_config
+
+        with override_settings(ROADMAP_ML_INVOCATION_LOG_ENABLED=True):
+            runtime_config.invalidate_cache()
+            self.assertTrue(runtime_config.is_ml_invocation_log_enabled())
+            runtime_config.set_value(runtime_config.LOG_ENABLED_KEY, "false")
+            self.assertFalse(runtime_config.is_ml_invocation_log_enabled())
+
+    def test_services_freeze_reads_runtime_config_override(self):
+        from roadmap_app import runtime_config, services as services_module
+
+        with override_settings(
+            ROADMAP_RUNTIME_FREEZE_ML=True,
+            ROADMAP_NEXTSTEP_V4_ENABLED=True,
+            ROADMAP_NEXTSTEP_V4_MODEL_PATH="models/fake/model.pkl",
+        ):
+            runtime_config.invalidate_cache()
+            mode, _ = services_module._default_ml_mode_and_path()
+            self.assertEqual(mode, "legacy")
+
+            runtime_config.set_value(runtime_config.FREEZE_KEY, "false")
+            mode_after, _ = services_module._default_ml_mode_and_path()
+            self.assertEqual(mode_after, "v4_ranking")
+
+
+class RoadmapRuntimeConfigCommandTests(TestCase):
+    def setUp(self):
+        from roadmap_app import runtime_config
+        from roadmap_app.models import RoadmapRuntimeConfig
+
+        RoadmapRuntimeConfig.objects.all().delete()
+        runtime_config.invalidate_cache()
+
+    def _call(self, *args):
+        stdout = StringIO()
+        call_command("roadmap_runtime_config", *args, stdout=stdout)
+        return stdout.getvalue()
+
+    def test_list_empty_prints_placeholder(self):
+        out = self._call("--list")
+        self.assertIn("(no runtime overrides set)", out)
+
+    def test_set_writes_row_and_invalidates_cache(self):
+        from roadmap_app import runtime_config
+
+        out = self._call("--set", "runtime_freeze_ml=false", "--by", "ops", "--note", "rollback test")
+        self.assertIn("set   runtime_freeze_ml=false", out)
+        self.assertEqual(runtime_config.get_str("runtime_freeze_ml"), "false")
+
+        from roadmap_app.models import RoadmapRuntimeConfig
+
+        row = RoadmapRuntimeConfig.objects.get(key="runtime_freeze_ml")
+        self.assertEqual(row.value, "false")
+        self.assertEqual(row.updated_by, "ops")
+        self.assertEqual(row.note, "rollback test")
+
+    def test_set_multiple_keys_at_once(self):
+        self._call("--set", "a=1", "b=two", "c=on")
+        from roadmap_app import runtime_config
+
+        values = runtime_config.list_values()
+        self.assertEqual(values, {"a": "1", "b": "two", "c": "on"})
+
+    def test_unset_removes_row(self):
+        self._call("--set", "k=v")
+        out = self._call("--unset", "k")
+        self.assertIn("unset k", out)
+        from roadmap_app.models import RoadmapRuntimeConfig
+
+        self.assertFalse(RoadmapRuntimeConfig.objects.filter(key="k").exists())
+
+    def test_unset_missing_key_is_noop(self):
+        out = self._call("--unset", "nope")
+        self.assertIn("noop", out)
+        self.assertIn("nope", out)
+
+    def test_set_without_equals_raises(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self._call("--set", "not_a_pair")
+
+    def test_set_with_empty_key_raises(self):
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            self._call("--set", "=value")
+
+    def test_list_shows_sorted_keys(self):
+        self._call("--set", "zebra=1", "apple=2", "mango=3")
+        out = self._call("--list")
+        apple_idx = out.index("apple=")
+        mango_idx = out.index("mango=")
+        zebra_idx = out.index("zebra=")
+        self.assertLess(apple_idx, mango_idx)
+        self.assertLess(mango_idx, zebra_idx)
+
+    def test_no_args_prints_current_values(self):
+        self._call("--set", "k=v")
+        out = self._call()
+        self.assertIn("k=v", out)

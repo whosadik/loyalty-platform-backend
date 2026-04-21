@@ -188,3 +188,14 @@ class RoadmapMLInvocation(models.Model):
 
     def __str__(self) -> str:
         return f"RoadmapMLInvocation(category={self.category}, decision={self.decision}, plan={self.plan_id})"
+
+
+class RoadmapRuntimeConfig(models.Model):
+    key = models.CharField(max_length=64, unique=True)
+    value = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.CharField(max_length=128, blank=True, default="")
+    note = models.CharField(max_length=256, blank=True, default="")
+
+    def __str__(self) -> str:
+        return f"RoadmapRuntimeConfig(key={self.key})"
