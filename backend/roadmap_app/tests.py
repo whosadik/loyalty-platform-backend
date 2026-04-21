@@ -60,6 +60,7 @@ from roadmap_app.ml_next_step import (
 from roadmap_app.ml_planner import planner_runtime_guard_status
 from roadmap_app.models import RoadmapPlan, RoadmapStep
 from roadmap_app.models import RoadmapEvent
+from roadmap_app.models import RoadmapMLInvocation
 from roadmap_app.shadow_evidence import (
     HISTORICAL_CONTROL_EVIDENCE_KEY,
     HISTORICAL_SHADOW_EVIDENCE_KEY,
@@ -3417,3 +3418,298 @@ class RoadmapNextstepHaircareShampooTruthDesignTests(SimpleTestCase):
             1,
         )
         self.assertFalse(payload["catalog_safety"]["catalog_writes_performed"])
+
+
+class RoadmapMLPredictTimingTests(SimpleTestCase):
+    def test_timed_predict_success_returns_ms_and_no_error(self):
+        from roadmap_app.services import _timed_predict
+
+        result, ms, error = _timed_predict(lambda: [{"product_type": "shampoo", "score": 0.7}])
+        self.assertEqual(result, [{"product_type": "shampoo", "score": 0.7}])
+        self.assertIsNone(error)
+        self.assertIsInstance(ms, float)
+        self.assertGreaterEqual(ms, 0.0)
+
+    def test_timed_predict_exception_returns_none_with_error(self):
+        from roadmap_app.services import _timed_predict
+
+        def boom():
+            raise RuntimeError("predict blew up")
+
+        result, ms, error = _timed_predict(boom)
+        self.assertIsNone(result)
+        self.assertEqual(error, "predict blew up")
+        self.assertIsInstance(ms, float)
+        self.assertGreaterEqual(ms, 0.0)
+
+    def test_timed_predict_truncates_long_error_to_500_chars(self):
+        from roadmap_app.services import _timed_predict
+
+        long_message = "x" * 2000
+
+        def boom():
+            raise ValueError(long_message)
+
+        _, _, error = _timed_predict(boom)
+        self.assertIsNotNone(error)
+        self.assertEqual(len(error), 500)
+        self.assertEqual(error, "x" * 500)
+
+    def test_normalize_plan_meta_fills_timing_defaults_on_legacy_meta(self):
+        from roadmap_app.services import _normalize_plan_meta
+
+        legacy_meta = {
+            "ml": {
+                "mode": "v4_ranking",
+                "model_path": "/fake/model.pkl",
+                "decision": "model_used",
+                "used": True,
+                "shadow": {
+                    "enabled": False,
+                    "reason": "shadow_not_configured",
+                },
+            }
+        }
+        normalized = _normalize_plan_meta(legacy_meta)
+        self.assertIsNone(normalized["ml"]["predict_ms"])
+        self.assertIsNone(normalized["ml"]["predict_error"])
+        self.assertIsNone(normalized["ml"]["shadow"]["predict_ms"])
+        self.assertIsNone(normalized["ml"]["shadow"]["predict_error"])
+
+    def test_normalize_plan_meta_preserves_timing_values_when_present(self):
+        from roadmap_app.services import _normalize_plan_meta
+
+        meta = {
+            "ml": {
+                "mode": "v4_ranking",
+                "model_path": "/fake/model.pkl",
+                "decision": "model_used",
+                "used": True,
+                "predict_ms": 12.5,
+                "predict_error": None,
+                "shadow": {
+                    "enabled": True,
+                    "reason": "ok",
+                    "predict_ms": 9.25,
+                    "predict_error": "timeout",
+                },
+            }
+        }
+        normalized = _normalize_plan_meta(meta)
+        self.assertEqual(normalized["ml"]["predict_ms"], 12.5)
+        self.assertIsNone(normalized["ml"]["predict_error"])
+        self.assertEqual(normalized["ml"]["shadow"]["predict_ms"], 9.25)
+        self.assertEqual(normalized["ml"]["shadow"]["predict_error"], "timeout")
+
+
+class RoadmapMLInvocationRecordTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        User = get_user_model()
+        cls.user = User.objects.create(username="ml_invocation_user_1")
+        cls.plan = RoadmapPlan.objects.create(
+            user=cls.user,
+            category=RoadmapPlan.Category.SKINCARE,
+            is_active=True,
+            meta={},
+        )
+
+    def _sample_meta(self, **overrides):
+        base = {
+            "ml": {
+                "mode": "v4_ranking",
+                "decision": "model_used",
+                "fallback_reason": None,
+                "disabled_reason": None,
+                "model_path": "/models/roadmap_next_step_v4/model.pkl",
+                "model_version": "roadmap_next_step_v4",
+                "selected_feature_set": "full",
+                "model_slot": "active",
+                "predict_ms": 12.5,
+                "predict_error": None,
+                "rollout_mode": "partial",
+                "rollout_selected": True,
+                "rollout_bucket": 17,
+                "rollout_percent": 20,
+                "planned_target_product_type": "moisturizer",
+                "planned_target_step_index": 3,
+                "predictions": [
+                    {"product_type": "moisturizer", "score": 0.82},
+                    {"product_type": "serum", "score": 0.55},
+                ],
+                "shadow": {
+                    "enabled": True,
+                    "reason": "ok",
+                    "model_path": "/models/shadow/model.pkl",
+                    "model_version": "shadow_v1",
+                    "predict_ms": 9.1,
+                    "predict_error": None,
+                    "predictions": [{"product_type": "serum", "score": 0.71}],
+                },
+            },
+            "planner": {
+                "mode": "serve",
+                "served": True,
+                "decision": "model_used",
+                "model_path": "/models/roadmap_planner_v1/model.pkl",
+                "predict_ms": 6.4,
+                "predict_error": None,
+            },
+        }
+        ml = base["ml"]
+        for k, v in overrides.items():
+            ml[k] = v
+        return base
+
+    def test_records_model_used_decision_with_shadow_and_planner(self):
+        from roadmap_app.services import _record_ml_invocation
+
+        _record_ml_invocation(
+            user=self.user,
+            plan=self.plan,
+            category="skincare",
+            refresh_caller="refresh_roadmap",
+            meta=self._sample_meta(),
+        )
+        row = RoadmapMLInvocation.objects.get()
+        self.assertEqual(row.user_id, self.user.id)
+        self.assertEqual(row.plan_id, self.plan.id)
+        self.assertEqual(row.category, "skincare")
+        self.assertEqual(row.refresh_caller, "refresh_roadmap")
+        self.assertEqual(row.ml_mode, "v4_ranking")
+        self.assertEqual(row.decision, "model_used")
+        self.assertEqual(row.fallback_reason, "")
+        self.assertEqual(row.disabled_reason, "")
+        self.assertEqual(row.model_version, "roadmap_next_step_v4")
+        self.assertEqual(row.predict_ms, 12.5)
+        self.assertEqual(row.predict_error, "")
+        self.assertEqual(row.active_top_product_type, "moisturizer")
+        self.assertAlmostEqual(row.active_top_score, 0.82)
+        self.assertTrue(row.shadow_enabled)
+        self.assertEqual(row.shadow_reason, "ok")
+        self.assertEqual(row.shadow_model_version, "shadow_v1")
+        self.assertEqual(row.shadow_predict_ms, 9.1)
+        self.assertEqual(row.shadow_top_product_type, "serum")
+        self.assertAlmostEqual(row.shadow_top_score, 0.71)
+        self.assertEqual(row.planner_mode, "serve")
+        self.assertTrue(row.planner_served)
+        self.assertEqual(row.planner_decision, "model_used")
+        self.assertEqual(row.planner_predict_ms, 6.4)
+        self.assertEqual(row.rollout_mode, "partial")
+        self.assertTrue(row.rollout_selected)
+        self.assertEqual(row.rollout_bucket, 17)
+        self.assertEqual(row.rollout_percent, 20)
+        self.assertEqual(row.planned_target_product_type, "moisturizer")
+        self.assertEqual(row.planned_target_step_index, 3)
+
+    def test_records_fallback_with_predict_error(self):
+        from roadmap_app.services import _record_ml_invocation
+
+        meta = self._sample_meta(
+            decision="fallback",
+            fallback_reason="predict_error",
+            predict_error="RuntimeError: boom",
+            predict_ms=4.2,
+            predictions=[],
+        )
+        _record_ml_invocation(
+            user=self.user,
+            plan=self.plan,
+            category="skincare",
+            refresh_caller="update_roadmap_from_purchase",
+            meta=meta,
+        )
+        row = RoadmapMLInvocation.objects.get()
+        self.assertEqual(row.decision, "fallback")
+        self.assertEqual(row.fallback_reason, "predict_error")
+        self.assertEqual(row.predict_error, "RuntimeError: boom")
+        self.assertEqual(row.predict_ms, 4.2)
+        self.assertEqual(row.active_top_product_type, "")
+        self.assertIsNone(row.active_top_score)
+
+    def test_records_disabled_when_frozen(self):
+        from roadmap_app.services import _record_ml_invocation
+
+        meta = self._sample_meta(
+            decision="disabled",
+            disabled_reason="roadmap_ml_frozen",
+            predictions=[],
+        )
+        meta["ml"]["shadow"] = {"enabled": False, "reason": "disabled"}
+        _record_ml_invocation(
+            user=self.user,
+            plan=self.plan,
+            category="skincare",
+            refresh_caller="refresh_roadmap",
+            meta=meta,
+        )
+        row = RoadmapMLInvocation.objects.get()
+        self.assertEqual(row.decision, "disabled")
+        self.assertEqual(row.disabled_reason, "roadmap_ml_frozen")
+        self.assertFalse(row.shadow_enabled)
+        self.assertEqual(row.shadow_reason, "disabled")
+
+    def test_feature_flag_off_skips_write(self):
+        from roadmap_app.services import _record_ml_invocation
+
+        with override_settings(ROADMAP_ML_INVOCATION_LOG_ENABLED=False):
+            _record_ml_invocation(
+                user=self.user,
+                plan=self.plan,
+                category="skincare",
+                refresh_caller="refresh_roadmap",
+                meta=self._sample_meta(),
+            )
+        self.assertEqual(RoadmapMLInvocation.objects.count(), 0)
+
+    def test_handles_empty_or_missing_meta_without_crashing(self):
+        from roadmap_app.services import _record_ml_invocation
+
+        _record_ml_invocation(
+            user=self.user,
+            plan=self.plan,
+            category="haircare",
+            refresh_caller="",
+            meta=None,
+        )
+        row = RoadmapMLInvocation.objects.get()
+        self.assertEqual(row.category, "haircare")
+        self.assertEqual(row.decision, "")
+        self.assertEqual(row.ml_mode, "")
+        self.assertIsNone(row.predict_ms)
+        self.assertFalse(row.shadow_enabled)
+        self.assertFalse(row.planner_served)
+
+    def test_truncates_overly_long_string_fields(self):
+        from roadmap_app.services import _record_ml_invocation
+
+        meta = self._sample_meta(
+            predict_error="x" * 1000,
+            model_path="y" * 1000,
+        )
+        _record_ml_invocation(
+            user=self.user,
+            plan=self.plan,
+            category="skincare",
+            refresh_caller="refresh_roadmap",
+            meta=meta,
+        )
+        row = RoadmapMLInvocation.objects.get()
+        self.assertEqual(len(row.predict_error), 512)
+        self.assertEqual(len(row.model_path), 512)
+
+    def test_telemetry_failure_does_not_raise(self):
+        from roadmap_app import services as services_module
+
+        def boom(**kwargs):
+            raise RuntimeError("db unreachable")
+
+        with patch.object(services_module.RoadmapMLInvocation.objects, "create", side_effect=boom):
+            services_module._record_ml_invocation(
+                user=self.user,
+                plan=self.plan,
+                category="skincare",
+                refresh_caller="refresh_roadmap",
+                meta=self._sample_meta(),
+            )
+        self.assertEqual(RoadmapMLInvocation.objects.count(), 0)

@@ -123,3 +123,68 @@ class RoadmapEvent(models.Model):
 
     def __str__(self) -> str:
         return f"RoadmapEvent(user={self.user_id}, event={self.event_type}, step={self.step_id})"
+
+
+class RoadmapMLInvocation(models.Model):
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="roadmap_ml_invocations",
+    )
+    plan = models.ForeignKey(
+        "roadmap_app.RoadmapPlan",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="ml_invocations",
+    )
+    category = models.CharField(max_length=20, db_index=True)
+    refresh_caller = models.CharField(max_length=64, blank=True, default="")
+    ml_mode = models.CharField(max_length=32, blank=True, default="")
+
+    decision = models.CharField(max_length=20, blank=True, default="", db_index=True)
+    fallback_reason = models.CharField(max_length=64, blank=True, default="")
+    disabled_reason = models.CharField(max_length=64, blank=True, default="")
+    model_path = models.CharField(max_length=512, blank=True, default="")
+    model_version = models.CharField(max_length=128, blank=True, default="")
+    model_slot = models.CharField(max_length=32, blank=True, default="")
+    predict_ms = models.FloatField(null=True, blank=True)
+    predict_error = models.CharField(max_length=512, blank=True, default="")
+    active_top_product_type = models.CharField(max_length=64, blank=True, default="")
+    active_top_score = models.FloatField(null=True, blank=True)
+
+    shadow_enabled = models.BooleanField(default=False)
+    shadow_reason = models.CharField(max_length=64, blank=True, default="")
+    shadow_model_path = models.CharField(max_length=512, blank=True, default="")
+    shadow_model_version = models.CharField(max_length=128, blank=True, default="")
+    shadow_predict_ms = models.FloatField(null=True, blank=True)
+    shadow_predict_error = models.CharField(max_length=512, blank=True, default="")
+    shadow_top_product_type = models.CharField(max_length=64, blank=True, default="")
+    shadow_top_score = models.FloatField(null=True, blank=True)
+
+    planner_mode = models.CharField(max_length=32, blank=True, default="")
+    planner_served = models.BooleanField(default=False)
+    planner_decision = models.CharField(max_length=20, blank=True, default="")
+    planner_model_path = models.CharField(max_length=512, blank=True, default="")
+    planner_predict_ms = models.FloatField(null=True, blank=True)
+    planner_predict_error = models.CharField(max_length=512, blank=True, default="")
+
+    rollout_mode = models.CharField(max_length=16, blank=True, default="")
+    rollout_selected = models.BooleanField(default=False)
+    rollout_bucket = models.IntegerField(null=True, blank=True)
+    rollout_percent = models.IntegerField(null=True, blank=True)
+
+    planned_target_product_type = models.CharField(max_length=64, blank=True, default="")
+    planned_target_step_index = models.PositiveIntegerField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["category", "created_at"]),
+            models.Index(fields=["decision", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"RoadmapMLInvocation(category={self.category}, decision={self.decision}, plan={self.plan_id})"

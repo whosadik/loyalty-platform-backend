@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections import defaultdict
-from typing import Any
+from typing import Any, Callable
 
 from django.conf import settings
 from django.db import transaction as db_tx
@@ -28,7 +29,7 @@ from roadmap_app.ml_next_step import (
     v4_category_staged_rollout_status,
     v4_min_lift_guard_status,
 )
-from roadmap_app.models import RoadmapPlan, RoadmapStep
+from roadmap_app.models import RoadmapMLInvocation, RoadmapPlan, RoadmapStep
 from roadmap_app.sku_ranking import rerank_roadmap_candidate_rows
 from transactions.models import OwnedProduct, TransactionItem
 from users_app.models import CustomerProfile
@@ -220,6 +221,101 @@ def _default_rollout_meta() -> dict[str, Any]:
         "partial_match_product_type": None,
         "partial_match_step_index": None,
     }
+
+
+def _timed_predict(fn: Callable[[], Any]) -> tuple[Any, float, str | None]:
+    t0 = time.perf_counter()
+    try:
+        result = fn()
+    except Exception as exc:
+        return None, round((time.perf_counter() - t0) * 1000.0, 3), str(exc)[:500]
+    return result, round((time.perf_counter() - t0) * 1000.0, 3), None
+
+
+def _top_prediction_row(rows: Any) -> tuple[str, float | None]:
+    if not isinstance(rows, list):
+        return "", None
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pt = str(row.get("product_type") or row.get("candidate_type") or "").strip()
+        if not pt:
+            continue
+        try:
+            score = float(row.get("score") or 0.0)
+        except Exception:
+            score = None
+        return pt, score
+    return "", None
+
+
+def _record_ml_invocation(
+    *,
+    user,
+    plan,
+    category: str,
+    refresh_caller: str,
+    meta: dict[str, Any] | None,
+) -> None:
+    if not bool(getattr(settings, "ROADMAP_ML_INVOCATION_LOG_ENABLED", True)):
+        return
+    try:
+        meta_dict = meta if isinstance(meta, dict) else {}
+        ml = meta_dict.get("ml") if isinstance(meta_dict.get("ml"), dict) else {}
+        shadow = ml.get("shadow") if isinstance(ml.get("shadow"), dict) else {}
+        planner = meta_dict.get("planner") if isinstance(meta_dict.get("planner"), dict) else {}
+
+        active_top_pt, active_top_score = _top_prediction_row(ml.get("predictions"))
+        shadow_top_pt, shadow_top_score = _top_prediction_row(shadow.get("predictions"))
+
+        step_index_raw = ml.get("planned_target_step_index")
+        try:
+            step_index = int(step_index_raw) if step_index_raw is not None else None
+        except Exception:
+            step_index = None
+        if step_index is not None and step_index <= 0:
+            step_index = None
+
+        RoadmapMLInvocation.objects.create(
+            user=user,
+            plan=plan,
+            category=str(category or "").strip().lower()[:20],
+            refresh_caller=str(refresh_caller or "")[:64],
+            ml_mode=str(ml.get("mode") or "")[:32],
+            decision=str(ml.get("decision") or "")[:20],
+            fallback_reason=str(ml.get("fallback_reason") or "")[:64],
+            disabled_reason=str(ml.get("disabled_reason") or "")[:64],
+            model_path=str(ml.get("model_path") or "")[:512],
+            model_version=str(ml.get("model_version") or "")[:128],
+            model_slot=str(ml.get("model_slot") or "")[:32],
+            predict_ms=ml.get("predict_ms"),
+            predict_error=str(ml.get("predict_error") or "")[:512],
+            active_top_product_type=active_top_pt[:64],
+            active_top_score=active_top_score,
+            shadow_enabled=bool(shadow.get("enabled")),
+            shadow_reason=str(shadow.get("reason") or "")[:64],
+            shadow_model_path=str(shadow.get("model_path") or "")[:512],
+            shadow_model_version=str(shadow.get("model_version") or "")[:128],
+            shadow_predict_ms=shadow.get("predict_ms"),
+            shadow_predict_error=str(shadow.get("predict_error") or "")[:512],
+            shadow_top_product_type=shadow_top_pt[:64],
+            shadow_top_score=shadow_top_score,
+            planner_mode=str(planner.get("mode") or "")[:32],
+            planner_served=bool(planner.get("served")),
+            planner_decision=str(planner.get("decision") or "")[:20],
+            planner_model_path=str(planner.get("model_path") or "")[:512],
+            planner_predict_ms=planner.get("predict_ms"),
+            planner_predict_error=str(planner.get("predict_error") or "")[:512],
+            rollout_mode=str(ml.get("rollout_mode") or "")[:16],
+            rollout_selected=bool(ml.get("rollout_selected")),
+            rollout_bucket=ml.get("rollout_bucket"),
+            rollout_percent=ml.get("rollout_percent"),
+            planned_target_product_type=str(ml.get("planned_target_product_type") or "")[:64],
+            planned_target_step_index=step_index,
+        )
+    except Exception:
+        # Telemetry must never break plan generation.
+        pass
 
 
 def _roadmap_owned_freshness_days(category: str, product_type: str) -> int | None:
@@ -545,6 +641,19 @@ def _normalize_plan_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     if partial_match_step_index is not None and partial_match_step_index <= 0:
         partial_match_step_index = None
     ml_out["partial_match_step_index"] = partial_match_step_index
+
+    if "predict_ms" not in ml_out:
+        ml_out["predict_ms"] = None
+    if "predict_error" not in ml_out:
+        ml_out["predict_error"] = None
+    shadow_out = ml_out.get("shadow")
+    if isinstance(shadow_out, dict):
+        shadow_norm = dict(shadow_out)
+        if "predict_ms" not in shadow_norm:
+            shadow_norm["predict_ms"] = None
+        if "predict_error" not in shadow_norm:
+            shadow_norm["predict_error"] = None
+        ml_out["shadow"] = shadow_norm
 
     out["ml"] = ml_out
     return _json_safe_meta_value(out)
@@ -1435,6 +1544,8 @@ def _build_chain(
         "continuation_rule": continuation_rule,
         "planned_target_product_type": planned_target_product_type,
         "planned_target_step_index": planned_target_step_index,
+        "predict_ms": None,
+        "predict_error": None,
         **default_rollout_meta,
     }
     if not planned_target_product_type:
@@ -1614,24 +1725,34 @@ def _build_chain(
             ml_runtime["fallback_reason"] = str(guard.get("reason") or "min_lift_guard_blocked")
             return chain, source_by_type, ml_predictions, ml_runtime
         if served_model_slot == "partial_candidate":
-            ml_predictions = predict_next_product_types_for_model_path(
-                served_model_path,
-                user=user,
-                context_product_ids=context_product_ids,
-                category=category,
-                planned_target_product_type=planned_target_product_type,
-                planned_target_step_index=planned_target_step_index,
-                candidate_types=chain,
+            ml_predictions, predict_ms, predict_error = _timed_predict(
+                lambda: predict_next_product_types_for_model_path(
+                    served_model_path,
+                    user=user,
+                    context_product_ids=context_product_ids,
+                    category=category,
+                    planned_target_product_type=planned_target_product_type,
+                    planned_target_step_index=planned_target_step_index,
+                    candidate_types=chain,
+                )
             )
         else:
-            ml_predictions = predict_next_product_types(
-                user,
-                context_product_ids,
-                category,
-                planned_target_product_type=planned_target_product_type,
-                planned_target_step_index=planned_target_step_index,
-                candidate_types=chain,
+            ml_predictions, predict_ms, predict_error = _timed_predict(
+                lambda: predict_next_product_types(
+                    user,
+                    context_product_ids,
+                    category,
+                    planned_target_product_type=planned_target_product_type,
+                    planned_target_step_index=planned_target_step_index,
+                    candidate_types=chain,
+                )
             )
+        ml_runtime["predict_ms"] = predict_ms
+        ml_runtime["predict_error"] = predict_error
+        if predict_error is not None:
+            ml_predictions = []
+            ml_runtime["fallback_reason"] = "predict_error"
+            return chain, source_by_type, ml_predictions, ml_runtime
         if not ml_predictions:
             ml_runtime["fallback_reason"] = "no_predictions"
             return chain, source_by_type, ml_predictions, ml_runtime
@@ -1672,16 +1793,26 @@ def _build_chain(
         "category_guard": None,
         "planned_target_product_type": planned_target_product_type,
         "planned_target_step_index": planned_target_step_index,
+        "predict_ms": None,
+        "predict_error": None,
         **_default_rollout_meta(),
     }
-    ml_predictions = predict_next_product_types(
-        user,
-        context_product_ids,
-        category,
-        planned_target_product_type=planned_target_product_type,
-        planned_target_step_index=planned_target_step_index,
-        candidate_types=chain,
+    ml_predictions, predict_ms, predict_error = _timed_predict(
+        lambda: predict_next_product_types(
+            user,
+            context_product_ids,
+            category,
+            planned_target_product_type=planned_target_product_type,
+            planned_target_step_index=planned_target_step_index,
+            candidate_types=chain,
+        )
     )
+    ml_runtime["predict_ms"] = predict_ms
+    ml_runtime["predict_error"] = predict_error
+    if predict_error is not None:
+        ml_predictions = []
+        ml_runtime["fallback_reason"] = "predict_error"
+        return chain, source_by_type, ml_predictions, ml_runtime
     if not ml_predictions:
         ml_runtime["fallback_reason"] = "no_predictions"
         return chain, source_by_type, ml_predictions, ml_runtime
@@ -1943,20 +2074,38 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         )
         rules = CATEGORY_RULES[category]
         if bool((planner_guard or {}).get("passed")):
-            planner_result = generate_planner_chain(
-                user=user,
-                category=category,
-                candidate_types=_planner_candidate_universe(
+            planner_result, planner_predict_ms, planner_predict_error = _timed_predict(
+                lambda: generate_planner_chain(
+                    user=user,
                     category=category,
+                    candidate_types=_planner_candidate_universe(
+                        category=category,
+                        purchased_types=purchased_types,
+                        owned_types_ordered=owned_types_ordered,
+                    ),
                     purchased_types=purchased_types,
                     owned_types_ordered=owned_types_ordered,
-                ),
-                purchased_types=purchased_types,
-                owned_types_ordered=owned_types_ordered,
-                min_steps=int(rules["min_steps"]),
-                max_steps=int(rules["max_steps"]),
-                refresh_caller=refresh_caller,
+                    min_steps=int(rules["min_steps"]),
+                    max_steps=int(rules["max_steps"]),
+                    refresh_caller=refresh_caller,
+                )
             )
+            if planner_predict_error is not None:
+                planner_result = {
+                    "category": category,
+                    "decision": "fallback",
+                    "fallback_reason": "predict_error",
+                    "disabled_reason": None,
+                    "chain": [],
+                    "source_by_type": {},
+                    "trace": [],
+                    "model_path": str((planner_guard or {}).get("model_path") or ""),
+                    "model_version": None,
+                    "selected_feature_set": None,
+                    "guard": planner_guard,
+                }
+            planner_result["predict_ms"] = planner_predict_ms
+            planner_result["predict_error"] = planner_predict_error
         else:
             planner_result = {
                 "category": category,
@@ -1970,6 +2119,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
                 "model_version": None,
                 "selected_feature_set": None,
                 "guard": planner_guard,
+                "predict_ms": None,
+                "predict_error": None,
             }
 
     if planner_mode == "serve" and planner_result and planner_result.get("decision") == "model_used":
@@ -2166,6 +2317,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     shadow_reason = "disabled"
     shadow_predictions: list[dict[str, Any]] = []
     shadow_artifact = None
+    shadow_predict_ms: float | None = None
+    shadow_predict_error: str | None = None
     active_planned_target_product_type = str(ml_runtime.get("planned_target_product_type") or "")
     active_planned_target_step_index = int(ml_runtime.get("planned_target_step_index") or 0)
     shadow_planned_target_product_type = active_planned_target_product_type
@@ -2173,16 +2326,21 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     if shadow_enabled:
         shadow_reason = "ok"
         shadow_artifact = nextstep_model_artifact_summary(shadow_model_path)
-        shadow_predictions = predict_next_product_types_for_model_path(
-            shadow_model_path,
-            user=user,
-            context_product_ids=context_product_ids,
-            category=category,
-            planned_target_product_type=shadow_planned_target_product_type,
-            planned_target_step_index=shadow_planned_target_step_index,
-            candidate_types=chain,
+        shadow_predictions, shadow_predict_ms, shadow_predict_error = _timed_predict(
+            lambda: predict_next_product_types_for_model_path(
+                shadow_model_path,
+                user=user,
+                context_product_ids=context_product_ids,
+                category=category,
+                planned_target_product_type=shadow_planned_target_product_type,
+                planned_target_step_index=shadow_planned_target_step_index,
+                candidate_types=chain,
+            )
         )
-        if not shadow_predictions:
+        if shadow_predict_error is not None:
+            shadow_predictions = []
+            shadow_reason = "predict_error"
+        elif not shadow_predictions:
             shadow_reason = "no_predictions_or_model_unavailable"
     elif not use_v4:
         shadow_reason = "shadow_supported_for_v4_only"
@@ -2203,6 +2361,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         "selected_feature_set": str((planner_result or {}).get("selected_feature_set") or ""),
         "chain": list((planner_result or {}).get("chain") or []),
         "trace": list((planner_result or {}).get("trace") or [])[:10],
+        "predict_ms": (planner_result or {}).get("predict_ms"),
+        "predict_error": (planner_result or {}).get("predict_error"),
     }
     runtime_policy_names: set[str] = set()
     runtime_policy_max_abs_bias: dict[str, float] = {}
@@ -2281,6 +2441,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "partial_model_override_reason": ml_runtime.get("partial_model_override_reason"),
             "planned_target_product_type": active_planned_target_product_type,
             "planned_target_step_index": active_planned_target_step_index,
+            "predict_ms": ml_runtime.get("predict_ms"),
+            "predict_error": ml_runtime.get("predict_error"),
             "runtime_policies": sorted(runtime_policy_names),
             "runtime_policy_max_abs_bias": {
                 str(k): float(v)
@@ -2296,6 +2458,8 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
                 "selected_feature_set": str((shadow_artifact or {}).get("selected_feature_set") or ""),
                 "planned_target_product_type": shadow_planned_target_product_type,
                 "planned_target_step_index": shadow_planned_target_step_index,
+                "predict_ms": shadow_predict_ms,
+                "predict_error": shadow_predict_error,
                 "runtime_policies": sorted(shadow_runtime_policy_names),
                 "runtime_policy_max_abs_bias": {
                     str(k): float(v)
@@ -2317,6 +2481,13 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
     }
 
     plan = _upsert_plan_with_steps(user=user, category=category, meta=meta, step_payloads=step_payloads)
+    _record_ml_invocation(
+        user=user,
+        plan=plan,
+        category=category,
+        refresh_caller=refresh_caller,
+        meta=meta,
+    )
     emit_plan_refresh_events(user=user, plan=plan, request_id=None)
     return plan
 
