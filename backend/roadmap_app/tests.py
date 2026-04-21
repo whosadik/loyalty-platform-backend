@@ -4252,3 +4252,250 @@ class RoadmapMLRollbackGuardCommandTests(TestCase):
         out = self._call("--min-sample-size", "20", "--max-error-rate-pct", "30.0")
         self.assertIn("action=dry_run", out)
         self.assertNotIn("BREACH error_rate_pct", out)
+
+
+class RoadmapMLDiffReportTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = get_user_model().objects.create_user(
+            username="diff_user", email="diff@example.com", password="x",
+        )
+        cls.plan = RoadmapPlan.objects.create(
+            user=cls.user, category=RoadmapPlan.Category.SKINCARE, is_active=True,
+        )
+
+    def setUp(self):
+        RoadmapMLInvocation.objects.all().delete()
+
+    def _make(self, **kwargs):
+        defaults = dict(
+            user=self.user,
+            plan=self.plan,
+            category="skincare",
+            decision="model_used",
+            fallback_reason="",
+            ml_mode="v4_ranking",
+            rollout_selected=False,
+            active_top_product_type="",
+            shadow_top_product_type="",
+            planned_target_product_type="",
+        )
+        defaults.update(kwargs)
+        created_at = defaults.pop("created_at", None)
+        row = RoadmapMLInvocation.objects.create(**defaults)
+        if created_at is not None:
+            RoadmapMLInvocation.objects.filter(pk=row.pk).update(created_at=created_at)
+            row.refresh_from_db()
+        return row
+
+    def test_empty_db_returns_empty_report(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        report = build_control_vs_ml_diff_report()
+        self.assertEqual(report["total_invocations"], 0)
+        self.assertEqual(report["per_category"], {})
+
+    def test_served_vs_active_agreement_rate(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        for _ in range(7):
+            self._make(
+                planned_target_product_type="serum",
+                active_top_product_type="serum",
+            )
+        for _ in range(3):
+            self._make(
+                planned_target_product_type="moisturizer",
+                active_top_product_type="serum",
+            )
+        report = build_control_vs_ml_diff_report()
+        payload = report["per_category"]["skincare"]
+        agr = payload["agreement"]["served_vs_active"]
+        self.assertEqual(agr["compared"], 10)
+        self.assertEqual(agr["matches"], 7)
+        self.assertAlmostEqual(agr["agreement_pct"], 70.0, places=2)
+
+    def test_skips_pairs_with_missing_side(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        self._make(planned_target_product_type="serum", active_top_product_type="")
+        self._make(planned_target_product_type="", active_top_product_type="serum")
+        self._make(planned_target_product_type="serum", active_top_product_type="serum")
+        report = build_control_vs_ml_diff_report()
+        agr = report["per_category"]["skincare"]["agreement"]["served_vs_active"]
+        self.assertEqual(agr["compared"], 1)
+        self.assertEqual(agr["matches"], 1)
+
+    def test_top_divergences_ranked_and_limited(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        for _ in range(5):
+            self._make(
+                planned_target_product_type="moisturizer",
+                active_top_product_type="serum",
+            )
+        for _ in range(3):
+            self._make(
+                planned_target_product_type="cleanser",
+                active_top_product_type="toner",
+            )
+        for _ in range(1):
+            self._make(
+                planned_target_product_type="spf",
+                active_top_product_type="essence",
+            )
+        report = build_control_vs_ml_diff_report(top_divergences=2)
+        top = report["per_category"]["skincare"]["top_divergences"]["served_vs_active"]
+        self.assertEqual(len(top), 2)
+        self.assertEqual(top[0], {"served": "moisturizer", "active": "serum", "count": 5})
+        self.assertEqual(top[1], {"served": "cleanser", "active": "toner", "count": 3})
+
+    def test_decision_and_fallback_reason_distribution(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        for _ in range(6):
+            self._make(decision="model_used")
+        for _ in range(3):
+            self._make(decision="fallback", fallback_reason="predict_error")
+        for _ in range(2):
+            self._make(decision="fallback", fallback_reason="empty_candidates")
+        for _ in range(4):
+            self._make(decision="disabled")
+        report = build_control_vs_ml_diff_report()
+        payload = report["per_category"]["skincare"]
+        self.assertEqual(payload["decision_counts"], {
+            "model_used": 6, "fallback": 5, "disabled": 4,
+        })
+        self.assertEqual(payload["fallback_reason_counts"], {
+            "predict_error": 3, "empty_candidates": 2,
+        })
+
+    def test_rollout_selected_counter(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        for _ in range(3):
+            self._make(rollout_selected=True)
+        for _ in range(7):
+            self._make(rollout_selected=False)
+        report = build_control_vs_ml_diff_report()
+        self.assertEqual(report["per_category"]["skincare"]["rollout_selected_count"], 3)
+
+    def test_window_excludes_old_rows(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        now = timezone.now()
+        for _ in range(10):
+            self._make(
+                planned_target_product_type="old",
+                active_top_product_type="old",
+                created_at=now - timedelta(days=2),
+            )
+        for _ in range(3):
+            self._make(
+                planned_target_product_type="new",
+                active_top_product_type="new",
+            )
+        report = build_control_vs_ml_diff_report(window_minutes=60, now=now)
+        payload = report["per_category"]["skincare"]
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(payload["agreement"]["served_vs_active"]["compared"], 3)
+
+    def test_category_filter(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        self._make(category="skincare", planned_target_product_type="a", active_top_product_type="a")
+        self._make(category="haircare", planned_target_product_type="b", active_top_product_type="b")
+        self._make(category="makeup", planned_target_product_type="c", active_top_product_type="c")
+        report = build_control_vs_ml_diff_report(categories=["skincare", "makeup"])
+        self.assertEqual(set(report["per_category"].keys()), {"skincare", "makeup"})
+        self.assertEqual(report["category_filter"], ["skincare", "makeup"])
+
+    def test_served_vs_shadow_and_active_vs_shadow_agreements(self):
+        from roadmap_app.ml_diff_report import build_control_vs_ml_diff_report
+
+        for _ in range(4):
+            self._make(
+                planned_target_product_type="x",
+                active_top_product_type="x",
+                shadow_top_product_type="x",
+            )
+        for _ in range(6):
+            self._make(
+                planned_target_product_type="x",
+                active_top_product_type="x",
+                shadow_top_product_type="y",
+            )
+        report = build_control_vs_ml_diff_report()
+        agrs = report["per_category"]["skincare"]["agreement"]
+        self.assertEqual(agrs["served_vs_active"]["agreement_pct"], 100.0)
+        self.assertEqual(agrs["served_vs_shadow"]["matches"], 4)
+        self.assertEqual(agrs["served_vs_shadow"]["compared"], 10)
+        self.assertEqual(agrs["active_vs_shadow"]["matches"], 4)
+        self.assertEqual(agrs["active_vs_shadow"]["compared"], 10)
+
+
+class RoadmapMLDiffReportCommandTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = get_user_model().objects.create_user(
+            username="diff_cmd_user", email="diff_cmd@example.com", password="x",
+        )
+        cls.plan = RoadmapPlan.objects.create(
+            user=cls.user, category=RoadmapPlan.Category.SKINCARE, is_active=True,
+        )
+
+    def setUp(self):
+        RoadmapMLInvocation.objects.all().delete()
+
+    def _call(self, *args):
+        stdout = StringIO()
+        call_command("roadmap_ml_diff_report", *args, stdout=stdout)
+        return stdout.getvalue()
+
+    def _seed(self):
+        for _ in range(7):
+            RoadmapMLInvocation.objects.create(
+                user=self.user, plan=self.plan, category="skincare",
+                decision="model_used", ml_mode="v4_ranking",
+                planned_target_product_type="serum",
+                active_top_product_type="serum",
+                shadow_top_product_type="serum",
+            )
+        for _ in range(3):
+            RoadmapMLInvocation.objects.create(
+                user=self.user, plan=self.plan, category="skincare",
+                decision="model_used", ml_mode="v4_ranking",
+                planned_target_product_type="moisturizer",
+                active_top_product_type="serum",
+                shadow_top_product_type="toner",
+            )
+
+    def test_empty_db_prints_placeholder(self):
+        out = self._call()
+        self.assertIn("(no invocations in window)", out)
+
+    def test_text_output_contains_agreement_rates(self):
+        self._seed()
+        out = self._call()
+        self.assertIn("[skincare]", out)
+        self.assertIn("served vs active:", out)
+        self.assertIn("70.00%", out)
+
+    def test_json_output_is_parseable(self):
+        self._seed()
+        out = self._call("--json")
+        parsed = json.loads(out)
+        self.assertEqual(parsed["total_invocations"], 10)
+        self.assertIn("skincare", parsed["per_category"])
+
+    def test_category_filter_narrows_output(self):
+        RoadmapMLInvocation.objects.create(
+            user=self.user, plan=self.plan, category="haircare",
+            decision="model_used", planned_target_product_type="shampoo",
+            active_top_product_type="shampoo",
+        )
+        self._seed()
+        out = self._call("--category", "skincare", "--json")
+        parsed = json.loads(out)
+        self.assertEqual(list(parsed["per_category"].keys()), ["skincare"])
+        self.assertEqual(parsed["category_filter"], ["skincare"])
