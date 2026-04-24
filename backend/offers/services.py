@@ -7,7 +7,7 @@ from typing import Any
 
 from django.db import transaction as db_tx, connection
 from django.utils import timezone
-from django.db.models import Sum, Max
+from django.db.models import Sum, Max, Q
 
 from catalog.models import Product
 from transactions.models import Transaction, TransactionItem, OwnedProduct
@@ -73,7 +73,13 @@ def _campaign_candidates(context_steps: list[str] | None, post_ctx: dict | None)
         preferred.append("makeup_push")
     preferred.append("default")
 
-    qs = list(CampaignBudget.objects.filter(is_active=True).order_by("priority", "id"))
+    today = timezone.now().date()
+    qs = list(
+        CampaignBudget.objects.filter(is_active=True)
+        .filter(Q(start_date__isnull=True) | Q(start_date__lte=today))
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
+        .order_by("priority", "id")
+    )
     by_name = {c.name: c for c in qs}
 
     def passes_gates(c: CampaignBudget) -> bool:

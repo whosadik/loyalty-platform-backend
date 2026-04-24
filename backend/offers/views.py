@@ -2,9 +2,10 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 from collections import defaultdict
 from django.utils import timezone as dj_timezone
 from django.db import transaction as db_tx
+from django.db.models import Q
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from catalog.models import Product
 from users_app.models import CustomerProfile
@@ -699,3 +700,93 @@ class OfferClickView(APIView):
                 "clicked_recorded": bool(created),
             }
         )
+
+
+class PromotionBannerDetailView(APIView):
+    """
+    Public details for a single active campaign — used by /promotions/:id page.
+    Returns campaign info + a summary of its active offers.
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        tags=["Offers"],
+        description="Public campaign details with active offer summaries.",
+        responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+    )
+    def get(self, request, pk: int):
+        try:
+            campaign = CampaignBudget.objects.get(pk=pk, is_active=True)
+        except CampaignBudget.DoesNotExist:
+            return Response({"ok": False, "message": "Campaign not found"}, status=404)
+
+        offers = Offer.objects.filter(campaign=campaign, is_active=True).order_by("id")
+        offer_payload = [
+            {
+                "id": o.id,
+                "name": o.name,
+                "offer_type": o.offer_type,
+                "value": str(o.value),
+                "target_scope": o.target_scope,
+                "allowed_categories": list(o.allowed_categories or []),
+                "allowed_product_types": list(o.allowed_product_types or []),
+            }
+            for o in offers
+        ]
+
+        return Response(
+            {
+                "ok": True,
+                "campaign": {
+                    "id": campaign.id,
+                    "name": campaign.name,
+                    "banner_url": campaign.banner_url,
+                    "promo_text": campaign.promo_text,
+                    "start_date": campaign.start_date.isoformat() if campaign.start_date else None,
+                    "end_date": campaign.end_date.isoformat() if campaign.end_date else None,
+                    "allowed_categories": list(campaign.allowed_categories or []),
+                    "allowed_steps": list(campaign.allowed_steps or []),
+                },
+                "offers": offer_payload,
+            }
+        )
+
+
+class PromotionBannersView(APIView):
+    """
+    Public list of active campaigns that have a banner configured.
+    Used by the /promotions page to render admin-managed banners regardless
+    of whether the viewing user has a personal offer from the campaign.
+    """
+
+    permission_classes = [AllowAny]
+
+    @extend_schema(
+        tags=["Offers"],
+        description="Public list of active campaigns with banners, filtered by date window.",
+        responses={200: OpenApiTypes.OBJECT},
+    )
+    def get(self, request):
+        today = dj_timezone.now().date()
+        qs = (
+            CampaignBudget.objects.filter(is_active=True)
+            .exclude(banner_url="")
+            .filter(Q(start_date__isnull=True) | Q(start_date__lte=today))
+            .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
+            .order_by("priority", "id")
+        )
+
+        banners = [
+            {
+                "id": c.id,
+                "name": c.name,
+                "banner_url": c.banner_url,
+                "promo_text": c.promo_text,
+                "start_date": c.start_date.isoformat() if c.start_date else None,
+                "end_date": c.end_date.isoformat() if c.end_date else None,
+                "allowed_categories": list(c.allowed_categories or []),
+            }
+            for c in qs
+        ]
+        return Response({"ok": True, "count": len(banners), "banners": banners})

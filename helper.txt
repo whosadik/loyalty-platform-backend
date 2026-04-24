@@ -15,11 +15,3 @@ python manage.py migrate
 # ----CHECK FOR NEW MIGRATIONS----- #
 python manage.py check
 python manage.py makemigrations --check --dry-run
-
-
-.\.venv\Scripts\python.exe backend/manage.py simulate_roadmap_sessions `
-  --days 60 --start-date 2026-01-03 `
-  --users 12000 --seed 42 --avg-sessions 0.45 `
-  --p-roadmap-get 0.95 --p-next-offer-get 0.55 --p-step-click 0.18 --p-step-skip 0.05 `
-  --p-complete-next-step 0.50 --p-redeem-offer 0.10 `
-  --batch-users 200 --progress-every 200 --disable-throttle --max-errors 2000

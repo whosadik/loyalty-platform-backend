@@ -326,7 +326,20 @@ def build_offer_presentation(
     offer = assignment.offer
     promo_type = _to_promotion_type(getattr(offer, "offer_type", None))
     offer_value = _to_number(getattr(offer, "value", None))
-    image_url = _pick_product_image(_resolve_target_product(target, product_cache=product_cache))
+
+    campaign = getattr(offer, "campaign", None)
+    campaign_banner = _first_string(getattr(campaign, "banner_url", None)) if campaign else None
+    campaign_text = _first_string(getattr(campaign, "promo_text", None)) if campaign else None
+
+    # Campaign banner wins over the target product image when it is set by the admin.
+    image_url = campaign_banner or _pick_product_image(
+        _resolve_target_product(target, product_cache=product_cache)
+    )
+
+    description = (
+        campaign_text
+        or _build_description(promo_type, target, reason, offer_value, language)
+    )
 
     return {
         "title": _build_title(
@@ -336,7 +349,7 @@ def build_offer_presentation(
             target,
             language,
         ),
-        "description": _build_description(promo_type, target, reason, offer_value, language),
+        "description": description,
         "badge": _to_badge(promo_type, language),
         "cta_label": OFFER_COPY[language]["cta"],
         "image_url": image_url,

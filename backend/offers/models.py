@@ -67,6 +67,7 @@ class CampaignBudget(models.Model):
     weekly_spent = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     week_start_date = models.DateField(null=True, blank=True)
+    start_date = models.DateField(null=True, blank=True)
     end_date = models.DateField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 

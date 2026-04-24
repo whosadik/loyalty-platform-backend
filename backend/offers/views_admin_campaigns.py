@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import os
+import uuid
+
+from django.conf import settings
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
 from django.db import transaction as db_tx
 from django.utils import timezone
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import serializers, status
+from rest_framework.parsers import MultiPartParser, FormParser
 
 from drf_spectacular.utils import OpenApiParameter, OpenApiResponse, extend_schema, inline_serializer
 
@@ -38,8 +45,7 @@ CampaignPatchRequestSerializer = inline_serializer(
         "is_active": serializers.BooleanField(required=False),
         "priority": serializers.IntegerField(required=False),
         "weekly_limit": serializers.DecimalField(required=False, max_digits=12, decimal_places=2),
-        "weekly_spent": serializers.DecimalField(required=False, max_digits=12, decimal_places=2),
-        "week_start_date": serializers.DateField(required=False, allow_null=True),
+        "start_date": serializers.DateField(required=False, allow_null=True),
         "end_date": serializers.DateField(required=False, allow_null=True),
         "allowed_categories": serializers.ListField(child=serializers.CharField(), required=False),
         "allowed_steps": serializers.ListField(child=serializers.CharField(), required=False),
@@ -163,6 +169,62 @@ class AdminCampaignDetailView(APIView):
             c = s.save()
 
         return Response({"ok": True, "campaign": CampaignSerializer(c).data})
+
+
+ALLOWED_BANNER_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+MAX_BANNER_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+class AdminCampaignBannerUploadView(APIView):
+    """
+    POST multipart/form-data with field `file` — saves image to MEDIA_ROOT/campaign_banners/
+    and sets campaign.banner_url to its URL.
+    """
+
+    permission_classes = [HasStaffPermission.with_perm("manage_campaigns")]
+    parser_classes = [MultiPartParser, FormParser]
+
+    @extend_schema(
+        tags=["Admin"],
+        description="Upload campaign banner image. Returns updated campaign.",
+        responses={
+            200: CampaignDetailResponseSerializer,
+            400: OpenApiResponse(response=ApiErrorSerializer),
+        },
+    )
+    def post(self, request, pk: int):
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response({"ok": False, "message": "file is required"}, status=400)
+
+        ext = os.path.splitext(upload.name)[1].lower()
+        if ext not in ALLOWED_BANNER_EXTENSIONS:
+            return Response(
+                {"ok": False, "message": f"unsupported extension {ext}; allowed: {sorted(ALLOWED_BANNER_EXTENSIONS)}"},
+                status=400,
+            )
+
+        if upload.size > MAX_BANNER_SIZE_BYTES:
+            return Response(
+                {"ok": False, "message": f"file too large ({upload.size} bytes); max {MAX_BANNER_SIZE_BYTES}"},
+                status=400,
+            )
+
+        with db_tx.atomic():
+            campaign = CampaignBudget.objects.select_for_update().get(pk=pk)
+            filename = f"campaign_banners/{pk}_{uuid.uuid4().hex}{ext}"
+            saved_path = default_storage.save(filename, ContentFile(upload.read()))
+
+            media_url = settings.MEDIA_URL
+            if not media_url.endswith("/"):
+                media_url += "/"
+            relative_url = f"{media_url}{saved_path}"
+            absolute_url = request.build_absolute_uri(relative_url)
+
+            campaign.banner_url = absolute_url
+            campaign.save(update_fields=["banner_url"])
+
+        return Response({"ok": True, "campaign": CampaignSerializer(campaign).data})
 
 
 class AdminCampaignPublishView(APIView):
