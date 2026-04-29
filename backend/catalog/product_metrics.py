@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Mapping
 
+from django.db.models import Avg, Count
 from django.utils.text import slugify
 
 
@@ -59,6 +60,43 @@ def _pick_int(mapping: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
     return None
 
 
+def _normalize_rating(rating: Decimal) -> float:
+    normalized = rating.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+    value = float(normalized)
+    if value < 0:
+        return 0.0
+    if value > 5:
+        return 5.0
+    return value
+
+
+def _get_imported_review_stats(product: Any) -> tuple[Decimal | None, int]:
+    raw_meta = _as_mapping(getattr(product, "raw_meta", {}))
+    attrs = _as_mapping(getattr(product, "attrs", {}))
+
+    rating = _pick_decimal(raw_meta, RATING_KEYS) or _pick_decimal(attrs, RATING_KEYS)
+
+    reviews_count = _pick_int(raw_meta, REVIEWS_KEYS)
+    if reviews_count is None:
+        reviews_count = _pick_int(attrs, REVIEWS_KEYS)
+
+    return rating, max(0, reviews_count or 0)
+
+
+def _get_customer_review_stats(product: Any) -> tuple[Decimal | None, int | None]:
+    annotated_count = _to_int(getattr(product, "customer_reviews_count", None))
+    annotated_rating = _to_decimal(getattr(product, "customer_rating_avg", None))
+    if annotated_count is not None:
+        return annotated_rating, max(0, annotated_count)
+
+    reviews = getattr(product, "reviews", None)
+    if reviews is None or not hasattr(reviews, "aggregate"):
+        return None, None
+
+    stats = reviews.aggregate(customer_rating_avg=Avg("rating"), customer_reviews_count=Count("id"))
+    return _to_decimal(stats.get("customer_rating_avg")), max(0, _to_int(stats.get("customer_reviews_count")) or 0)
+
+
 def get_product_brand_slug(product: Any) -> str:
     return slugify(str(getattr(product, "brand", "") or "").strip(), allow_unicode=True)
 
@@ -70,27 +108,30 @@ def get_product_points_earned(product: Any) -> int:
 
 
 def get_product_rating(product: Any) -> float | None:
-    raw_meta = _as_mapping(getattr(product, "raw_meta", {}))
-    attrs = _as_mapping(getattr(product, "attrs", {}))
+    imported_rating, imported_reviews_count = _get_imported_review_stats(product)
+    customer_rating, customer_reviews_count = _get_customer_review_stats(product)
 
-    rating = _pick_decimal(raw_meta, RATING_KEYS) or _pick_decimal(attrs, RATING_KEYS)
-    if rating is None:
+    if customer_reviews_count and customer_reviews_count > 0 and customer_rating is not None:
+        if imported_rating is not None and imported_reviews_count > 0:
+            total_count = imported_reviews_count + customer_reviews_count
+            combined_rating = (
+                (imported_rating * Decimal(imported_reviews_count))
+                + (customer_rating * Decimal(customer_reviews_count))
+            ) / Decimal(total_count)
+            return _normalize_rating(combined_rating)
+        return _normalize_rating(customer_rating)
+
+    if imported_rating is None:
         return None
 
-    normalized = rating.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-    value = float(normalized)
-    if value < 0:
-        return 0.0
-    if value > 5:
-        return 5.0
-    return value
+    return _normalize_rating(imported_rating)
 
 
 def get_product_reviews_count(product: Any) -> int:
-    raw_meta = _as_mapping(getattr(product, "raw_meta", {}))
-    attrs = _as_mapping(getattr(product, "attrs", {}))
+    _, imported_reviews_count = _get_imported_review_stats(product)
+    _, customer_reviews_count = _get_customer_review_stats(product)
 
-    reviews_count = _pick_int(raw_meta, REVIEWS_KEYS)
-    if reviews_count is None:
-        reviews_count = _pick_int(attrs, REVIEWS_KEYS)
-    return max(0, reviews_count or 0)
+    if customer_reviews_count and customer_reviews_count > 0:
+        return imported_reviews_count + customer_reviews_count
+
+    return imported_reviews_count

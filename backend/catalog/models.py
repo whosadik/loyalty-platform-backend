@@ -1,3 +1,5 @@
+from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 
@@ -59,3 +61,26 @@ class Product(models.Model):
 
     def __str__(self) -> str:
         return f"{self.brand} {self.name}".strip()
+
+
+class ProductReview(models.Model):
+    product = models.ForeignKey(Product, related_name="reviews", on_delete=models.CASCADE)
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, related_name="product_reviews", on_delete=models.CASCADE)
+    rating = models.PositiveSmallIntegerField(validators=[MinValueValidator(1), MaxValueValidator(5)])
+    title = models.CharField(max_length=120, blank=True, default="")
+    body = models.TextField(max_length=2000, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        constraints = [
+            models.UniqueConstraint(fields=["product", "user"], name="cat_review_one_per_user"),
+        ]
+        indexes = [
+            models.Index(fields=["product", "-created_at"], name="cat_rev_product_created_idx"),
+            models.Index(fields=["user", "-created_at"], name="cat_rev_user_created_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"ProductReview(product_id={self.product_id}, user_id={self.user_id}, rating={self.rating})"

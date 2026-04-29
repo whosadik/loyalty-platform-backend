@@ -11,7 +11,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APITestCase
 
-from catalog.models import Product
+from catalog.models import Product, ProductReview
 
 try:
     from openpyxl import Workbook
@@ -368,6 +368,116 @@ class ProductSaleApiTests(APITestCase):
 
         names = {item["name"] for item in resp.data}
         self.assertEqual(names, {"Sale Serum", "Discount Mask"})
+
+
+class ProductReviewApiTests(APITestCase):
+    def setUp(self):
+        user_model = get_user_model()
+        self.user = user_model.objects.create_user(username="catalog_review_u1", password="pass12345")
+        self.other_user = user_model.objects.create_user(username="catalog_review_u2", password="pass12345")
+        self.product = Product.objects.create(
+            name="Review Serum",
+            brand="DermaLab",
+            price=Decimal("100.00"),
+            category=Product.Category.SKINCARE,
+            product_type="serum",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+            raw_meta={"rating": "4.0", "reviews_count": 4},
+        )
+
+    def test_reviews_are_public_and_post_requires_authentication(self):
+        resp = self.client.get(f"/api/products/{self.product.id}/reviews/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["summary"]["rating"], 4.0)
+        self.assertEqual(resp.data["summary"]["reviews_count"], 4)
+        self.assertEqual(resp.data["results"], [])
+        self.assertIsNone(resp.data["my_review"])
+
+        resp = self.client.post(
+            f"/api/products/{self.product.id}/reviews/",
+            {"rating": 5, "body": "Works well."},
+            format="json",
+        )
+        self.assertIn(resp.status_code, {401, 403})
+        self.assertEqual(ProductReview.objects.count(), 0)
+
+    def test_authenticated_user_can_create_and_update_one_review(self):
+        self.client.force_authenticate(self.user)
+
+        resp = self.client.post(
+            f"/api/products/{self.product.id}/reviews/",
+            {"rating": 5, "title": "Great", "body": "Works well."},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(ProductReview.objects.count(), 1)
+        self.assertEqual(resp.data["summary"]["rating"], 4.2)
+        self.assertEqual(resp.data["summary"]["reviews_count"], 5)
+        self.assertEqual(resp.data["summary"]["customer_reviews_count"], 1)
+        self.assertEqual(resp.data["my_review"]["rating"], 5)
+        self.assertTrue(resp.data["my_review"]["is_mine"])
+
+        detail_resp = self.client.get(f"/api/products/{self.product.id}/")
+        self.assertEqual(detail_resp.status_code, 200)
+        self.assertEqual(detail_resp.data["rating"], 4.2)
+        self.assertEqual(detail_resp.data["reviews_count"], 5)
+
+        resp = self.client.post(
+            f"/api/products/{self.product.id}/reviews/",
+            {"rating": 3, "title": "Updated", "body": "Changed my mind."},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(ProductReview.objects.count(), 1)
+        self.assertEqual(resp.data["summary"]["rating"], 3.8)
+        self.assertEqual(resp.data["summary"]["reviews_count"], 5)
+        self.assertEqual(resp.data["my_review"]["rating"], 3)
+
+    def test_reviews_list_marks_only_current_users_review(self):
+        user_model = get_user_model()
+        third_user = user_model.objects.create_user(username="catalog_review_u3", password="pass12345")
+        ProductReview.objects.create(product=self.product, user=self.user, rating=5, body="Mine")
+        ProductReview.objects.create(product=self.product, user=self.other_user, rating=4, body="Other")
+        ProductReview.objects.create(product=self.product, user=third_user, rating=5, body="Also five")
+
+        self.client.force_authenticate(self.other_user)
+        resp = self.client.get(f"/api/products/{self.product.id}/reviews/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["summary"]["customer_reviews_count"], 3)
+        self.assertEqual(resp.data["summary"]["rating_counts"]["5"], 2)
+        self.assertEqual(resp.data["summary"]["rating_counts"]["4"], 1)
+        self.assertEqual(resp.data["my_review"]["body"], "Other")
+        self.assertTrue(any(item["body"] == "Other" and item["is_mine"] for item in resp.data["results"]))
+        self.assertTrue(any(item["body"] == "Mine" and not item["is_mine"] for item in resp.data["results"]))
+
+    def test_delete_my_review_refreshes_summary(self):
+        ProductReview.objects.create(product=self.product, user=self.user, rating=5, body="Mine")
+        self.client.force_authenticate(self.user)
+
+        resp = self.client.delete(f"/api/products/{self.product.id}/reviews/mine/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(ProductReview.objects.count(), 0)
+        self.assertEqual(resp.data["summary"]["rating"], 4.0)
+        self.assertEqual(resp.data["summary"]["reviews_count"], 4)
+        self.assertEqual(resp.data["summary"]["customer_reviews_count"], 0)
+        self.assertIsNone(resp.data["my_review"])
+
+    def test_review_rating_is_validated(self):
+        self.client.force_authenticate(self.user)
+
+        resp = self.client.post(
+            f"/api/products/{self.product.id}/reviews/",
+            {"rating": 6, "body": "Too much."},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(ProductReview.objects.count(), 0)
 
 
 class BrandApiTests(APITestCase):

@@ -1,18 +1,26 @@
-from rest_framework.exceptions import NotFound
+from django.db.models import Avg, Count, Q
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import NotAuthenticated, NotFound
 from rest_framework.pagination import PageNumberPagination
-from rest_framework.response import Response
-from rest_framework import viewsets
-from django.db.models import Q
 from rest_framework.permissions import AllowAny, IsAdminUser, SAFE_METHODS
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from backend.request_language import get_request_language
 from .brand_payloads import get_brand_detail_payload, list_brand_summary_payloads
 from .home_hero import get_home_hero_payload
-from .models import Product
+from .models import Product, ProductReview
 from .new_fields import get_new_products_cutoff
+from .product_metrics import get_product_rating, get_product_reviews_count
 from .sale_fields import product_has_discount
-from .serializers import BrandDetailSerializer, BrandSummarySerializer, HomeHeroSerializer, ProductSerializer
+from .serializers import (
+    BrandDetailSerializer,
+    BrandSummarySerializer,
+    HomeHeroSerializer,
+    ProductReviewSerializer,
+    ProductSerializer,
+)
 
 
 class ProductPagination(PageNumberPagination):
@@ -26,12 +34,17 @@ class ProductViewSet(viewsets.ModelViewSet):
     pagination_class = ProductPagination
 
     def get_permissions(self):
+        if getattr(self, "action", None) in {"reviews", "delete_my_review"}:
+            return [AllowAny()]
         if self.request.method in SAFE_METHODS:
             return [AllowAny()]
         return [IsAdminUser()]
 
     def get_queryset(self):
-        qs = Product.objects.all().order_by("-id")
+        qs = Product.objects.annotate(
+            customer_rating_avg=Avg("reviews__rating"),
+            customer_reviews_count=Count("reviews", distinct=True),
+        ).order_by("-id")
 
         category = self.request.query_params.get("category")
         if category:
@@ -73,6 +86,74 @@ class ProductViewSet(viewsets.ModelViewSet):
             qs = qs.filter(id__in=sale_ids)
 
         return qs
+
+    def _reviews_payload(self, product: Product) -> dict:
+        reviews_qs = product.reviews.select_related("user").order_by("-created_at", "-id")
+        rating_counts_raw = product.reviews.order_by().values("rating").annotate(count=Count("id"))
+        rating_counts = {str(rating): 0 for rating in range(1, 6)}
+        for item in rating_counts_raw:
+            rating_counts[str(item["rating"])] += item["count"]
+
+        my_review = None
+        request_user = getattr(self.request, "user", None)
+        if request_user and request_user.is_authenticated:
+            my_review = reviews_qs.filter(user=request_user).first()
+
+        return {
+            "summary": {
+                "product_id": product.id,
+                "rating": get_product_rating(product),
+                "reviews_count": get_product_reviews_count(product),
+                "customer_reviews_count": sum(rating_counts.values()),
+                "rating_counts": rating_counts,
+            },
+            "results": ProductReviewSerializer(
+                reviews_qs,
+                many=True,
+                context={"request": self.request},
+            ).data,
+            "my_review": ProductReviewSerializer(
+                my_review,
+                context={"request": self.request},
+            ).data
+            if my_review is not None
+            else None,
+        }
+
+    @action(detail=True, methods=["get", "post"], url_path="reviews", permission_classes=[AllowAny])
+    def reviews(self, request, pk=None):
+        product = self.get_object()
+
+        if request.method == "GET":
+            return Response(self._reviews_payload(product))
+
+        if not request.user or not request.user.is_authenticated:
+            raise NotAuthenticated("Authentication is required to leave a review.")
+
+        instance = ProductReview.objects.filter(product=product, user=request.user).first()
+        serializer = ProductReviewSerializer(
+            instance,
+            data=request.data,
+            partial=instance is not None,
+            context={"request": request},
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(product=product, user=request.user)
+
+        product = self.get_queryset().get(pk=product.pk)
+        response_status = status.HTTP_200_OK if instance else status.HTTP_201_CREATED
+        return Response(self._reviews_payload(product), status=response_status)
+
+    @action(detail=True, methods=["delete"], url_path="reviews/mine", permission_classes=[AllowAny])
+    def delete_my_review(self, request, pk=None):
+        product = self.get_object()
+
+        if not request.user or not request.user.is_authenticated:
+            raise NotAuthenticated("Authentication is required to delete a review.")
+
+        ProductReview.objects.filter(product=product, user=request.user).delete()
+        product = self.get_queryset().get(pk=product.pk)
+        return Response(self._reviews_payload(product))
 
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())

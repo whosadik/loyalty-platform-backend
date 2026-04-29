@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .new_fields import created_at_is_new
-from .models import Product
+from .models import Product, ProductReview
 from .product_metrics import (
     get_product_brand_slug,
     get_product_points_earned,
@@ -84,6 +84,41 @@ class ProductSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class ProductReviewSerializer(serializers.ModelSerializer):
+    author_name = serializers.SerializerMethodField()
+    is_mine = serializers.SerializerMethodField()
+    rating = serializers.IntegerField(min_value=1, max_value=5)
+    title = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    body = serializers.CharField(required=False, allow_blank=True, max_length=2000)
+
+    def get_author_name(self, obj: ProductReview) -> str:
+        full_name = obj.user.get_full_name().strip()
+        if full_name:
+            return full_name
+        username = (getattr(obj.user, "username", "") or "").strip()
+        return username or f"User {obj.user_id}"
+
+    def get_is_mine(self, obj: ProductReview) -> bool:
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        return bool(user and user.is_authenticated and obj.user_id == user.id)
+
+    class Meta:
+        model = ProductReview
+        fields = [
+            "id",
+            "product",
+            "rating",
+            "title",
+            "body",
+            "author_name",
+            "is_mine",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "product", "author_name", "is_mine", "created_at", "updated_at"]
 
 
 class BrandSummarySerializer(serializers.Serializer):
