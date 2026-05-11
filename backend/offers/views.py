@@ -496,6 +496,50 @@ class MeOffersView(APIView):
             )
         )
 
+
+class MeOfferDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        tags=["Offers"],
+        description="Get one active personal offer assignment for the current user.",
+        responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT, 410: OpenApiTypes.OBJECT},
+    )
+    def get(self, request, assignment_id: int):
+        now = dj_timezone.now()
+        assignment = (
+            OfferAssignment.objects.select_related("offer", "offer__campaign")
+            .filter(id=assignment_id, user=request.user)
+            .first()
+        )
+
+        if assignment is None:
+            return Response({"ok": False, "message": "Offer not found"}, status=404)
+
+        request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
+        if assignment.is_redeemed:
+            return Response({"ok": False, "message": "Offer already redeemed"}, status=410)
+        if expire_assignment_if_needed(
+            assignment,
+            now=now,
+            source="me_offer_detail_validation",
+            request_id=request_id,
+        ):
+            return Response({"ok": False, "message": "Offer expired"}, status=410)
+        if deactivate_stale_roadmap_assignment(assignment, now=now):
+            return Response({"ok": False, "message": "Offer is no longer active"}, status=410)
+        if not assignment.is_active:
+            return Response({"ok": False, "message": "Offer is no longer active"}, status=410)
+
+        payload = _serialize_offer_assignments(
+            request,
+            [assignment],
+            endpoint="GET /api/me/offers/<id>",
+            include_assigned_at=True,
+        )[0]
+        return Response({"ok": True, "assignment": payload})
+
+
 class OfferPreviewView(APIView):
     permission_classes = [IsAuthenticated]
 

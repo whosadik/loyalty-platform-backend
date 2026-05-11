@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import (
     HomePromotionsView,
+    MeOfferDetailView,
     MeNextOfferView,
     RedeemOfferView,
     MeOffersView,
@@ -18,6 +19,7 @@ urlpatterns = [
     path("offers/redeem", RedeemOfferView.as_view(), name="offers-redeem"),
     path("offers/click", OfferClickView.as_view(), name="offers-click"),
     path("me/offers", MeOffersView.as_view(), name="me-offers"),
+    path("me/offers/<int:assignment_id>", MeOfferDetailView.as_view(), name="me-offer-detail"),
     path("offers/preview", OfferPreviewView.as_view(), name="offers-preview"),
     path("admin/cache/invalidate", AdminCacheInvalidateView.as_view(), name="admin-cache-invalidate"),
 ]
