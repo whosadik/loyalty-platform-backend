@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 from django.db import transaction as db_tx
 from django.utils import timezone
-from django.db.models import Sum
+from django.db.models import Q, Sum
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -23,7 +23,7 @@ from checkout_app.serializers import (
 from checkout_app.pricing import Line, apply_offer_to_totals
 from transactions.models import CartItem, OwnedProduct, Transaction, TransactionItem
 from transactions.serializers import TransactionSerializer
-from offers.models import OfferAssignment, OfferEvent
+from offers.models import CampaignBudget, Offer, OfferAssignment, OfferEvent
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate
 from catalog.models import Product
@@ -125,6 +125,145 @@ def _load_redeemable_gift_card_or_raise(code: str, *, lock: bool = False, now=No
     if gift_card.remaining_amount <= 0:
         _raise_validation("Gift card balance is empty")
     return gift_card
+
+
+def _active_public_campaigns_qs(now, *, lock: bool = False):
+    today = now.date()
+    qs = (
+        CampaignBudget.objects.filter(is_active=True)
+        .exclude(banner_url="")
+        .filter(Q(start_date__isnull=True) | Q(start_date__lte=today))
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
+        .order_by("priority", "id")
+    )
+    return qs.select_for_update() if lock else qs
+
+
+def _public_offer_targets(offer: Offer, lines: list[Line]) -> list[dict]:
+    categories = [str(x).strip() for x in (offer.allowed_categories or []) if str(x).strip()]
+    product_types = [str(x).strip() for x in (offer.allowed_product_types or []) if str(x).strip()]
+    line_categories = sorted({str(ln.product.category) for ln in lines if getattr(ln.product, "category", None)})
+
+    if offer.target_scope == "cart":
+        return [{"scope": "cart"}]
+
+    if offer.target_scope == "category":
+        target_categories = categories or line_categories
+        return [{"scope": "category", "value": category} for category in target_categories]
+
+    if offer.target_scope == "product_type":
+        if product_types:
+            category_options = categories or [None]
+            return [
+                {
+                    "scope": "product_type",
+                    "value": product_type,
+                    **({"category": category} if category else {}),
+                }
+                for category in category_options
+                for product_type in product_types
+            ]
+        return [
+            {"scope": "product_type", "category": category}
+            for category in (categories or line_categories)
+        ]
+
+    if offer.target_scope == "product_id":
+        targets = []
+        for line in lines:
+            product = line.product
+            if categories and product.category not in categories:
+                continue
+            if product_types and product.product_type not in product_types:
+                continue
+            targets.append(
+                {
+                    "scope": "product_id",
+                    "value": product.id,
+                    "category": product.category,
+                    "product_type": product.product_type,
+                }
+            )
+        return targets
+
+    return []
+
+
+def _public_offer_payload(offer: Offer, campaign: CampaignBudget, target: dict) -> dict:
+    return {
+        "assignment_id": None,
+        "public_campaign": True,
+        "campaign": {
+            "id": campaign.id,
+            "name": campaign.name,
+        },
+        "offer": {
+            "id": offer.id,
+            "name": offer.name,
+            "type": offer.offer_type,
+            "value": str(offer.value),
+        },
+        "target": target,
+    }
+
+
+def _find_public_campaign_offer(
+    *,
+    lines: list[Line],
+    points_rate: Decimal,
+    redeem_points: int = 0,
+    gift_card_balance: Decimal = Decimal("0"),
+    now,
+    lock: bool = False,
+) -> tuple[Offer | None, CampaignBudget | None, dict | None, dict | None]:
+    campaigns = list(_active_public_campaigns_qs(now, lock=lock).prefetch_related("offers"))
+    best: tuple[Decimal, int, int, Offer, CampaignBudget, dict, dict] | None = None
+
+    for campaign in campaigns:
+        left = Decimal(str(campaign.weekly_limit)) - Decimal(str(campaign.weekly_spent))
+        if left <= 0:
+            continue
+
+        offers = [
+            offer
+            for offer in campaign.offers.all()
+            if offer.is_active and offer.offer_type == Offer.Type.DISCOUNT
+        ]
+        for offer in offers:
+            for target in _public_offer_targets(offer, lines):
+                calc = apply_offer_to_totals(
+                    offer_type=offer.offer_type,
+                    offer_value=Decimal(str(offer.value)),
+                    target=target,
+                    lines=lines,
+                    points_rate=points_rate,
+                    redeem_points=redeem_points,
+                    gift_card_balance=gift_card_balance,
+                )
+                if not calc.get("ok"):
+                    continue
+
+                discount_amount = Decimal(str(calc.get("discount_amount") or "0"))
+                if discount_amount <= 0 or discount_amount > left:
+                    continue
+
+                candidate = (
+                    discount_amount,
+                    -int(campaign.priority),
+                    -int(offer.id),
+                    offer,
+                    campaign,
+                    target,
+                    calc,
+                )
+                if best is None or candidate[:3] > best[:3]:
+                    best = candidate
+
+    if best is None:
+        return None, None, None, None
+
+    _, _, _, offer, campaign, target, calc = best
+    return offer, campaign, target, calc
 
 
 class CheckoutView(APIView):
@@ -253,10 +392,16 @@ class CheckoutView(APIView):
             # 2) optional offer apply (discount / points_multiplier) via shared pricing
             applied_assignment_id = None
             applied_target = None
+            applied_offer_payload = None
+            applied_public_offer_id = None
+            applied_public_campaign_id = None
             offer_type = "discount"
             offer_value = Decimal("0")
             target = {"scope": "cart"}
             assignment = None
+            public_offer = None
+            public_campaign = None
+            public_calc = None
 
             apply_assignment_id = data.get("apply_assignment_id")
             if apply_assignment_id is not None:
@@ -283,16 +428,43 @@ class CheckoutView(APIView):
                 offer_value = Decimal(str(assignment.offer.value))
                 target = assignment.target or {"scope": "cart"}
                 applied_target = target
+                applied_offer_payload = {
+                    "assignment_id": assignment.id,
+                    "offer": {
+                        "id": assignment.offer.id,
+                        "name": assignment.offer.name,
+                        "type": assignment.offer.offer_type,
+                        "value": str(assignment.offer.value),
+                    },
+                    "target": target,
+                }
+            else:
+                public_offer, public_campaign, public_target, public_calc = _find_public_campaign_offer(
+                    lines=lines,
+                    points_rate=points_rate,
+                    redeem_points=requested_redeem_points,
+                    gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
+                    now=now,
+                    lock=True,
+                )
+                if public_offer is not None and public_campaign is not None and public_target is not None:
+                    offer_type = public_offer.offer_type
+                    offer_value = Decimal(str(public_offer.value))
+                    target = public_target
+                    applied_target = target
+                    applied_public_offer_id = public_offer.id
+                    applied_public_campaign_id = public_campaign.id
+                    applied_offer_payload = _public_offer_payload(public_offer, public_campaign, target)
 
-            calc = apply_offer_to_totals(
-                offer_type=offer_type,
-                offer_value=offer_value,
-                target=target,
-                lines=lines,
-                points_rate=points_rate,
-                redeem_points=requested_redeem_points,
-                gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
-            )
+            calc = public_calc or apply_offer_to_totals(
+                    offer_type=offer_type,
+                    offer_value=offer_value,
+                    target=target,
+                    lines=lines,
+                    points_rate=points_rate,
+                    redeem_points=requested_redeem_points,
+                    gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
+                )
 
             if not calc["ok"]:
                 _raise_validation(calc.get("message", "Offer not applicable"))
@@ -328,6 +500,10 @@ class CheckoutView(APIView):
                     context={"endpoint": "POST /api/checkout", "variant": "v1"},
                 )
                 applied_assignment_id = assignment.id
+
+            if public_campaign is not None and public_offer is not None and discount_amount > 0:
+                public_campaign.weekly_spent = Decimal(str(public_campaign.weekly_spent)) + discount_amount
+                public_campaign.save(update_fields=["weekly_spent"] + (["week_start_date"] if hasattr(public_campaign, "week_start_date") else []))
 
             if points_redeemed > 0:
                 LoyaltyLedgerEntry.objects.create(
