@@ -54,6 +54,9 @@ class TransactionSnapshotMixin(serializers.Serializer):
     net_total = serializers.SerializerMethodField()
     offer_applied = serializers.SerializerMethodField()
     offer_assignment_id = serializers.SerializerMethodField()
+    public_campaign_id = serializers.SerializerMethodField()
+    public_offer_id = serializers.SerializerMethodField()
+    applied_offer = serializers.SerializerMethodField()
     target = serializers.SerializerMethodField()
     eligible_total = serializers.SerializerMethodField()
     points_earned = serializers.SerializerMethodField()
@@ -115,6 +118,15 @@ class TransactionSnapshotMixin(serializers.Serializer):
 
     def get_offer_assignment_id(self, obj: Transaction):
         return self._meta(obj).get("offer_assignment_id")
+
+    def get_public_campaign_id(self, obj: Transaction):
+        return self._meta(obj).get("public_campaign_id")
+
+    def get_public_offer_id(self, obj: Transaction):
+        return self._meta(obj).get("public_offer_id")
+
+    def get_applied_offer(self, obj: Transaction):
+        return self._meta(obj).get("applied_offer")
 
     def get_target(self, obj: Transaction):
         return self._meta(obj).get("target")
@@ -191,6 +203,9 @@ class TransactionSerializer(TransactionSnapshotMixin, serializers.ModelSerialize
             "net_total",
             "offer_applied",
             "offer_assignment_id",
+            "public_campaign_id",
+            "public_offer_id",
+            "applied_offer",
             "target",
             "eligible_total",
             "points_earned",
@@ -218,6 +233,9 @@ class TransactionSerializer(TransactionSnapshotMixin, serializers.ModelSerialize
             "net_total",
             "offer_applied",
             "offer_assignment_id",
+            "public_campaign_id",
+            "public_offer_id",
+            "applied_offer",
             "target",
             "eligible_total",
             "points_earned",

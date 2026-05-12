@@ -139,6 +139,22 @@ def _active_public_campaigns_qs(now, *, lock: bool = False):
     return qs.select_for_update() if lock else qs
 
 
+def _week_start_date(now):
+    return (now - timedelta(days=now.weekday())).date()
+
+
+def _public_campaign_weekly_spent(campaign: CampaignBudget, now, *, reset: bool = False) -> Decimal:
+    if hasattr(campaign, "week_start_date"):
+        week_start = _week_start_date(now)
+        if campaign.week_start_date != week_start:
+            if reset:
+                campaign.week_start_date = week_start
+                campaign.weekly_spent = Decimal("0.00")
+                campaign.save(update_fields=["week_start_date", "weekly_spent"])
+            return Decimal("0.00")
+    return Decimal(str(campaign.weekly_spent))
+
+
 def _public_offer_targets(offer: Offer, lines: list[Line]) -> list[dict]:
     categories = [str(x).strip() for x in (offer.allowed_categories or []) if str(x).strip()]
     product_types = [str(x).strip() for x in (offer.allowed_product_types or []) if str(x).strip()]
@@ -220,7 +236,11 @@ def _find_public_campaign_offer(
     best: tuple[Decimal, int, int, Offer, CampaignBudget, dict, dict] | None = None
 
     for campaign in campaigns:
-        left = Decimal(str(campaign.weekly_limit)) - Decimal(str(campaign.weekly_spent))
+        left = Decimal(str(campaign.weekly_limit)) - _public_campaign_weekly_spent(
+            campaign,
+            now,
+            reset=lock,
+        )
         if left <= 0:
             continue
 
@@ -557,6 +577,8 @@ class CheckoutView(APIView):
                     "base_points": base_points,
                     "multiplier": str(points_multiplier),
                     "offer_assignment_id": applied_assignment_id,
+                    "public_campaign_id": applied_public_campaign_id,
+                    "public_offer_id": applied_public_offer_id,
                     "target": applied_target,
                     "eligible_total": str(eligible_total),
                     "points_redeemed": points_redeemed,
@@ -680,8 +702,11 @@ class CheckoutView(APIView):
                 "gross_total": str(gross_total),
                 "discount_amount": str(discount_amount),
                 "net_total": str(net_total),
-                "offer_applied": applied_assignment_id is not None,
+                "offer_applied": applied_assignment_id is not None or applied_public_offer_id is not None,
                 "offer_assignment_id": applied_assignment_id,
+                "public_campaign_id": applied_public_campaign_id,
+                "public_offer_id": applied_public_offer_id,
+                "applied_offer": applied_offer_payload,
                 "target": applied_target,
                 "eligible_total": str(eligible_total),
                 "points_redeemed": points_redeemed,
@@ -727,8 +752,10 @@ class CheckoutView(APIView):
                     "gross_total": str(gross_total),
                     "net_total": str(net_total),
                     "discount_amount": str(discount_amount),
-                    "offer_applied": bool(applied_assignment_id),
+                    "offer_applied": bool(applied_assignment_id or applied_public_offer_id),
                     "offer_assignment_id": applied_assignment_id,
+                    "public_campaign_id": applied_public_campaign_id,
+                    "public_offer_id": applied_public_offer_id,
                     "points_redeemed": points_redeemed,
                     "gift_card_applied_amount": str(gift_card_applied_amount),
                     "points_earned": points_earned,
@@ -885,6 +912,7 @@ class CheckoutPreviewView(APIView):
         offer_payload = None
         offer_type = "discount"
         offer_value = Decimal("0")
+        public_calc = None
 
         apply_id = data.get("apply_assignment_id")
         if apply_id is not None:
@@ -926,7 +954,23 @@ class CheckoutPreviewView(APIView):
                     status=400,
                 )
 
-        calc = apply_offer_to_totals(
+        if apply_id is None:
+            public_offer, public_campaign, public_target, public_calc = _find_public_campaign_offer(
+                lines=lines,
+                points_rate=points_rate,
+                redeem_points=redeem_points,
+                gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
+                now=timezone.now(),
+                lock=False,
+            )
+            if public_offer is not None and public_campaign is not None and public_target is not None:
+                target = public_target
+                offer_type = public_offer.offer_type
+                offer_value = Decimal(str(public_offer.value))
+                offer_applied = True
+                offer_payload = _public_offer_payload(public_offer, public_campaign, target)
+
+        calc = public_calc or apply_offer_to_totals(
             offer_type=offer_type,
             offer_value=offer_value,
             target=target,

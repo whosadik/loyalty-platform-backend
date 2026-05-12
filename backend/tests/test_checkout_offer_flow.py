@@ -74,3 +74,79 @@ class CheckoutOfferFlowTests(APITestCase):
         self.assertEqual(r1.status_code, 200)
         self.assertEqual(r2.status_code, 200)
         self.assertEqual(r1.data.get("assignment_id"), r2.data.get("assignment_id"))
+
+    def test_public_campaign_discount_preview_and_checkout_without_assignment(self):
+        fragrance = Product.objects.create(
+            name="Perfume",
+            brand="B",
+            price=Decimal("100.00"),
+            category="fragrance",
+            product_type="edp",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="low",
+            in_stock=True,
+        )
+        public_campaign = CampaignBudget.objects.create(
+            name="summer_public",
+            weekly_limit=Decimal("100.00"),
+            weekly_spent=Decimal("0.00"),
+            priority=1,
+            is_active=True,
+            allowed_categories=["skincare", "makeup"],
+            banner_url="https://cdn.example.com/campaigns/summer.jpg",
+        )
+        Offer.objects.create(
+            name="11 percent fragrance",
+            offer_type="discount",
+            value=Decimal("11.00"),
+            estimated_cost=Decimal("0.00"),
+            is_active=True,
+            target_scope="category",
+            cooldown_days=0,
+            expires_in_days=7,
+            allowed_categories=["fragrance"],
+            allowed_product_types=[],
+            campaign=public_campaign,
+        )
+        payload = {
+            "channel": "online",
+            "items": [{"product": fragrance.id, "quantity": 1}],
+        }
+
+        preview = self.client.post("/api/checkout/preview", payload, format="json")
+        self.assertEqual(preview.status_code, 200)
+        self.assertTrue(preview.data["offer_applied"])
+        self.assertEqual(preview.data["gross_total"], "100.00")
+        self.assertEqual(preview.data["discount_amount"], "11.00")
+        self.assertEqual(preview.data["net_total"], "89.00")
+        self.assertEqual(preview.data["target"], {"scope": "category", "value": "fragrance"})
+        self.assertIsNone(preview.data["applied_offer"]["assignment_id"])
+        self.assertTrue(preview.data["applied_offer"]["public_campaign"])
+
+        public_campaign.refresh_from_db()
+        self.assertEqual(public_campaign.weekly_spent, Decimal("0.00"))
+
+        checkout = self.client.post("/api/checkout", payload, format="json")
+        self.assertEqual(checkout.status_code, 201)
+        self.assertTrue(checkout.data["offer_applied"])
+        self.assertIsNone(checkout.data["offer_assignment_id"])
+        self.assertEqual(checkout.data["public_campaign_id"], public_campaign.id)
+        self.assertEqual(checkout.data["discount_amount"], "11.00")
+        self.assertEqual(checkout.data["net_total"], "89.00")
+        self.assertEqual(checkout.data["target"], {"scope": "category", "value": "fragrance"})
+        self.assertTrue(checkout.data["applied_offer"]["public_campaign"])
+
+        public_campaign.refresh_from_db()
+        self.assertEqual(public_campaign.weekly_spent, Decimal("11.00"))
+
+    def test_campaign_without_banner_is_hidden_from_public_promotions(self):
+        listing = self.client.get("/api/promotions/banners")
+        self.assertEqual(listing.status_code, 200)
+        self.assertNotIn(self.camp.id, [item["id"] for item in listing.data["banners"]])
+
+        detail = self.client.get(f"/api/promotions/banners/{self.camp.id}")
+        self.assertEqual(detail.status_code, 404)

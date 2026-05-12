@@ -43,6 +43,18 @@ from roadmap_app.events import record_exposed_from_offer_assignment
 HOME_PROMO_BANNERS_DEFAULT_LIMIT = 6
 HOME_PROMO_BANNERS_MAX_LIMIT = 8
 
+
+def _public_campaigns_qs(now):
+    today = now.date()
+    return (
+        CampaignBudget.objects.filter(is_active=True)
+        .exclude(banner_url="")
+        .filter(Q(start_date__isnull=True) | Q(start_date__lte=today))
+        .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
+        .order_by("priority", "id")
+    )
+
+
 def _ensure_loyalty_account(user):
     account, created = LoyaltyAccount.objects.get_or_create(user=user)
     if account.tier_id is None:
@@ -760,9 +772,8 @@ class PromotionBannerDetailView(APIView):
         responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
     )
     def get(self, request, pk: int):
-        try:
-            campaign = CampaignBudget.objects.get(pk=pk, is_active=True)
-        except CampaignBudget.DoesNotExist:
+        campaign = _public_campaigns_qs(dj_timezone.now()).filter(pk=pk).first()
+        if campaign is None:
             return Response({"ok": False, "message": "Campaign not found"}, status=404)
 
         offers = Offer.objects.filter(campaign=campaign, is_active=True).order_by("id")
@@ -812,14 +823,7 @@ class PromotionBannersView(APIView):
         responses={200: OpenApiTypes.OBJECT},
     )
     def get(self, request):
-        today = dj_timezone.now().date()
-        qs = (
-            CampaignBudget.objects.filter(is_active=True)
-            .exclude(banner_url="")
-            .filter(Q(start_date__isnull=True) | Q(start_date__lte=today))
-            .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
-            .order_by("priority", "id")
-        )
+        qs = _public_campaigns_qs(dj_timezone.now())
 
         banners = [
             {
