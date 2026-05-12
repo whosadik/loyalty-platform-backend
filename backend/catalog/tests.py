@@ -341,7 +341,7 @@ class ProductSaleApiTests(APITestCase):
         self.assertEqual(resp.data["discount"], 20)
         self.assertTrue(resp.data["has_discount"])
         self.assertEqual(resp.data["brand_slug"], "dermalab")
-        self.assertEqual(resp.data["points_earned"], 10)
+        self.assertEqual(resp.data["points_earned"], 1)
 
         resp = self.client.get(f"/api/products/{self.discount_only.id}/")
         self.assertEqual(resp.status_code, 200)

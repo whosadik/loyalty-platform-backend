@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
 from backend.request_language import AppLanguage, get_context_language
 from catalog.models import Product
 from catalog.serializers import ProductSerializer
+from loyalty.points import DEFAULT_POINTS_RATE
 from roadmap_app.serializers import serialize_roadmap_step_snapshot
 from .models import CartItem, OwnedProduct, Transaction, TransactionItem, WishlistItem
 
@@ -323,7 +324,8 @@ class ProductSummarySerializer(serializers.ModelSerializer):
             price = Decimal(str(obj.price or "0"))
         except Exception:
             price = Decimal("0")
-        return int(max(0, round(float(price) * 0.1)))
+        points = (price * DEFAULT_POINTS_RATE).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        return max(0, int(points))
 
 
 class WishlistItemSerializer(serializers.ModelSerializer):

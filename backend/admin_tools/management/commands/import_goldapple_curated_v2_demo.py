@@ -25,6 +25,7 @@ from admin_tools.goldapple_curated_v2_runtime import (
 from admin_tools.management.commands.fresh_rebuild_demo_catalog import Command as FreshRebuildCommand
 from catalog.models import Product
 from loyalty.models import LoyaltyAccount, Tier
+from loyalty.points import DEFAULT_POINTS_RATE
 from offers.models import CampaignBudget, Offer
 from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
 from roadmap_app.models import RoadmapPlan
@@ -310,7 +311,7 @@ class Command(FreshRebuildCommand):
 
         bronze, _ = Tier.objects.get_or_create(
             name="Bronze",
-            defaults={"threshold_spend_90d": 0, "points_rate": Decimal("0.10")},
+            defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE},
         )
         LoyaltyAccount.objects.get_or_create(user=user, defaults={"tier": bronze, "points_balance": 0})
 

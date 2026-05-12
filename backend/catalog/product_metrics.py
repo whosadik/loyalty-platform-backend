@@ -6,6 +6,8 @@ from typing import Any, Mapping
 from django.db.models import Avg, Count
 from django.utils.text import slugify
 
+from loyalty.points import DEFAULT_POINTS_RATE
+
 
 RATING_KEYS = ("rating", "avg_rating")
 REVIEWS_KEYS = ("reviews_count", "reviews", "ratings_count")
@@ -103,7 +105,7 @@ def get_product_brand_slug(product: Any) -> str:
 
 def get_product_points_earned(product: Any) -> int:
     price = _to_decimal(getattr(product, "price", None)) or Decimal("0")
-    points = (price * Decimal("0.10")).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    points = (price * DEFAULT_POINTS_RATE).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
     return max(0, int(points))
 
 

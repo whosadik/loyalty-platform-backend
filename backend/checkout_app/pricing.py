@@ -5,7 +5,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Iterable
 
 from catalog.models import Product
-from loyalty.points import clamp_redeem_points, get_effective_points_rate
+from loyalty.points import cap_earned_points, clamp_redeem_points, get_effective_points_rate
 
 
 @dataclass
@@ -17,6 +17,24 @@ class Line:
 
 def d2(x: Decimal) -> Decimal:
     return x.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _round_points(value: Decimal) -> int:
+    return max(0, int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
+
+
+def _normalize_multiplier(value: Decimal) -> Decimal:
+    try:
+        multiplier = Decimal(str(value))
+    except Exception:
+        return Decimal("1")
+    if not multiplier.is_finite() or multiplier <= 0:
+        return Decimal("1")
+    return multiplier
+
+
+def _points_for_amount(amount: Decimal, points_rate: Decimal) -> int:
+    return _round_points(max(amount, Decimal("0")) * points_rate)
 
 
 def calc_gross(lines: Iterable[Line]) -> Decimal:
@@ -97,10 +115,12 @@ def apply_offer_to_totals(
     target: dict,
     lines: list[Line],
     points_rate: Decimal,
+    tier_points_multiplier: Decimal = Decimal("1"),
     redeem_points: int = 0,
     gift_card_balance: Decimal = Decimal("0"),
 ) -> dict[str, Any]:
     normalized_points_rate = get_effective_points_rate(points_rate)
+    normalized_tier_multiplier = _normalize_multiplier(tier_points_multiplier)
     gross_total = calc_gross(lines)
     eligible_total, eligible_item_ids = calc_eligible(lines, target)
 
@@ -154,16 +174,21 @@ def apply_offer_to_totals(
     payable_total = d2(eligible_payable_total + rest_payable_total)
 
     # Points are earned from the amount the customer actually pays after all deductions.
-    base_points = int(round(float(payable_total * normalized_points_rate)))
-    est_points = base_points
+    base_points = _points_for_amount(payable_total, normalized_points_rate)
+    tier_adjusted_points = _round_points(Decimal(base_points) * normalized_tier_multiplier)
+    est_points = tier_adjusted_points
 
     if offer_type == "points_multiplier" and multiplier != Decimal("1"):
         if scope == "cart":
-            est_points = int(round(float(Decimal(base_points) * multiplier)))
+            est_points = _round_points(Decimal(tier_adjusted_points) * multiplier)
         else:
-            eligible_points = int(round(float(eligible_payable_total * normalized_points_rate)))
-            rest_points = int(round(float(rest_payable_total * normalized_points_rate)))
-            est_points = rest_points + int(round(float(Decimal(eligible_points) * multiplier)))
+            eligible_base_points = _points_for_amount(eligible_payable_total, normalized_points_rate)
+            rest_base_points = _points_for_amount(rest_payable_total, normalized_points_rate)
+            eligible_tier_points = _round_points(Decimal(eligible_base_points) * normalized_tier_multiplier)
+            rest_tier_points = _round_points(Decimal(rest_base_points) * normalized_tier_multiplier)
+            est_points = rest_tier_points + _round_points(Decimal(eligible_tier_points) * multiplier)
+
+    est_points = cap_earned_points(est_points, payable_total)
 
     return {
         "ok": True,
@@ -176,7 +201,9 @@ def apply_offer_to_totals(
         "gift_card_applied_amount": str(gift_card_applied_amount),
         "points_redeemed": points_redeemed,
         "points_multiplier": str(multiplier),
+        "tier_points_multiplier": str(normalized_tier_multiplier),
         "base_points": base_points,
+        "tier_adjusted_points": tier_adjusted_points,
         "estimated_points_earned": est_points,
         "points_rate": str(normalized_points_rate),
     }

@@ -11,7 +11,7 @@ class Tier(models.Model):
     """
     name = models.CharField(max_length=50, unique=True)  # Bronze/Silver/Gold
     threshold_spend_90d = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    points_rate = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.10"))  # 10% earn rate
+    points_rate = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal("0.01"))  # 1% earn rate
 
     def __str__(self) -> str:
         return self.name

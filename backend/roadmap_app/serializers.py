@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from rest_framework import serializers
 
 from backend.request_language import AppLanguage, get_context_language
+from loyalty.points import DEFAULT_POINTS_RATE
 from roadmap_app.models import RoadmapPlan, RoadmapStep
 from roadmap_app.runtime_status import roadmap_step_explainability
 from roadmap_app.services import build_plan_summary, get_next_missing_step, is_base_roadmap_step
@@ -26,7 +27,8 @@ def _coerce_points_earned(price) -> int:
         normalized = Decimal(str(price or "0"))
     except Exception:
         normalized = Decimal("0")
-    return int(max(0, round(float(normalized) * 0.1)))
+    points = (normalized * DEFAULT_POINTS_RATE).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return max(0, int(points))
 
 
 def _coerce_int(value) -> int | None:

@@ -51,6 +51,7 @@ class CheckoutCommitResponseSerializer(serializers.Serializer):
     eligible_total = serializers.CharField()
     points_redeemed = serializers.IntegerField()
     points_earned = serializers.IntegerField()
+    tier_points_multiplier = serializers.CharField(required=False)
     new_balance = serializers.IntegerField()
     gift_card = GiftCardSnapshotSerializer(required=False, allow_null=True)
     tier = serializers.CharField(required=False, allow_null=True)

@@ -34,6 +34,7 @@ from admin_tools.postgres_sequences import apply_postgres_sequences, inspect_pos
 from catalog.models import Product
 from checkout_app.pricing import is_eligible
 from loyalty.models import LoyaltyAccount, Tier
+from loyalty.points import DEFAULT_POINTS_RATE
 from offers.models import OfferAssignment
 from roadmap_app.fragrance_slots import SLOTS, slot_of_fragrance
 from roadmap_app.models import RoadmapEvent, RoadmapStep
@@ -979,7 +980,7 @@ class Command(BaseCommand):
             tier = Tier.objects.create(
                 name="Bronze",
                 threshold_spend_90d=Decimal("0.00"),
-                points_rate=Decimal("0.10"),
+                points_rate=DEFAULT_POINTS_RATE,
             )
 
         existing_profile_ids = set(

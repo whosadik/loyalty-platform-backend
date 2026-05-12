@@ -25,7 +25,7 @@ from transactions.models import CartItem, OwnedProduct, Transaction, Transaction
 from transactions.serializers import TransactionSerializer
 from offers.models import CampaignBudget, Offer, OfferAssignment, OfferEvent
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
-from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate
+from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate, get_tier_points_multiplier
 from catalog.models import Product
 from offers.services import expire_assignment_if_needed, get_or_assign_next_offer
 from offers.events import record_offer_event
@@ -227,6 +227,7 @@ def _find_public_campaign_offer(
     *,
     lines: list[Line],
     points_rate: Decimal,
+    tier_points_multiplier: Decimal = Decimal("1"),
     redeem_points: int = 0,
     gift_card_balance: Decimal = Decimal("0"),
     now,
@@ -257,6 +258,7 @@ def _find_public_campaign_offer(
                     target=target,
                     lines=lines,
                     points_rate=points_rate,
+                    tier_points_multiplier=tier_points_multiplier,
                     redeem_points=redeem_points,
                     gift_card_balance=gift_card_balance,
                 )
@@ -408,6 +410,7 @@ class CheckoutView(APIView):
             points_rate = get_effective_points_rate(
                 account.tier.points_rate if account.tier else DEFAULT_POINTS_RATE
             )
+            tier_points_multiplier = get_tier_points_multiplier(account.tier.name if account.tier else None)
 
             # 2) optional offer apply (discount / points_multiplier) via shared pricing
             applied_assignment_id = None
@@ -462,6 +465,7 @@ class CheckoutView(APIView):
                 public_offer, public_campaign, public_target, public_calc = _find_public_campaign_offer(
                     lines=lines,
                     points_rate=points_rate,
+                    tier_points_multiplier=tier_points_multiplier,
                     redeem_points=requested_redeem_points,
                     gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
                     now=now,
@@ -482,6 +486,7 @@ class CheckoutView(APIView):
                     target=target,
                     lines=lines,
                     points_rate=points_rate,
+                    tier_points_multiplier=tier_points_multiplier,
                     redeem_points=requested_redeem_points,
                     gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
                 )
@@ -498,6 +503,7 @@ class CheckoutView(APIView):
             base_points = int(calc["base_points"])
             points_earned = int(calc["estimated_points_earned"])
             points_multiplier = Decimal(calc["points_multiplier"])
+            tier_points_multiplier = Decimal(calc["tier_points_multiplier"])
             gift_card_payload = None
 
             txn.total_amount = net_total
@@ -506,6 +512,37 @@ class CheckoutView(APIView):
             # 3) recalc tier (based on actual paid amount over the last 90 days, including this txn)
             account = _recalculate_tier(request.user, now)
             account = LoyaltyAccount.objects.select_for_update().get(id=account.id)
+            recalculated_points_rate = get_effective_points_rate(
+                account.tier.points_rate if account.tier else DEFAULT_POINTS_RATE
+            )
+            recalculated_tier_points_multiplier = get_tier_points_multiplier(account.tier.name if account.tier else None)
+            if (
+                recalculated_points_rate != points_rate
+                or recalculated_tier_points_multiplier != tier_points_multiplier
+            ):
+                points_rate = recalculated_points_rate
+                tier_points_multiplier = recalculated_tier_points_multiplier
+                calc = apply_offer_to_totals(
+                    offer_type=offer_type,
+                    offer_value=offer_value,
+                    target=target,
+                    lines=lines,
+                    points_rate=points_rate,
+                    tier_points_multiplier=tier_points_multiplier,
+                    redeem_points=requested_redeem_points,
+                    gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
+                )
+                if not calc["ok"]:
+                    _raise_validation(calc.get("message", "Offer not applicable"))
+                gross_total = Decimal(calc["gross_total"])
+                discount_amount = Decimal(calc["discount_amount"])
+                net_total = Decimal(calc["net_total"])
+                eligible_total = Decimal(calc["eligible_total"])
+                gift_card_applied_amount = Decimal(calc["gift_card_applied_amount"])
+                points_redeemed = int(calc["points_redeemed"])
+                base_points = int(calc["base_points"])
+                points_earned = int(calc["estimated_points_earned"])
+                points_multiplier = Decimal(calc["points_multiplier"])
 
             if assignment is not None:
                 assignment.is_redeemed = True
@@ -576,6 +613,8 @@ class CheckoutView(APIView):
                     "points_rate": str(points_rate),
                     "base_points": base_points,
                     "multiplier": str(points_multiplier),
+                    "tier_points_multiplier": str(tier_points_multiplier),
+                    "tier_adjusted_points": int(calc.get("tier_adjusted_points") or 0),
                     "offer_assignment_id": applied_assignment_id,
                     "public_campaign_id": applied_public_campaign_id,
                     "public_offer_id": applied_public_offer_id,
@@ -711,6 +750,7 @@ class CheckoutView(APIView):
                 "eligible_total": str(eligible_total),
                 "points_redeemed": points_redeemed,
                 "points_earned": points_earned,
+                "tier_points_multiplier": str(tier_points_multiplier),
                 "new_balance": account.points_balance,
                 "gift_card": gift_card_payload,
                 "tier": account.tier.name if account.tier else None,
@@ -826,6 +866,7 @@ class CheckoutPreviewView(APIView):
                     "applied_offer": serializers.DictField(allow_null=True),
                     "eligible_total": serializers.CharField(),
                     "estimated_points_earned": serializers.IntegerField(),
+                    "tier_points_multiplier": serializers.CharField(),
                     "points_redeemed": serializers.IntegerField(),
                     "gift_card": serializers.JSONField(allow_null=True, required=False),
                     "balance_before": serializers.IntegerField(),
@@ -863,10 +904,10 @@ class CheckoutPreviewView(APIView):
                         "target": {"scope": "product_id", "value": 330},
                     },
                     "eligible_total": "12.99",
-                    "estimated_points_earned": 25,
+                    "estimated_points_earned": 0,
                     "points_redeemed": 10,
                     "balance_before": 121,
-                    "balance_after_estimated": 136,
+                    "balance_after_estimated": 111,
                     "tier": "Bronze",
                 },
             ),
@@ -906,6 +947,7 @@ class CheckoutPreviewView(APIView):
         points_rate = get_effective_points_rate(
             account.tier.points_rate if account.tier else DEFAULT_POINTS_RATE
         )
+        tier_points_multiplier = get_tier_points_multiplier(account.tier.name if account.tier else None)
 
         target = {"scope": "cart"}
         offer_applied = False
@@ -958,6 +1000,7 @@ class CheckoutPreviewView(APIView):
             public_offer, public_campaign, public_target, public_calc = _find_public_campaign_offer(
                 lines=lines,
                 points_rate=points_rate,
+                tier_points_multiplier=tier_points_multiplier,
                 redeem_points=redeem_points,
                 gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
                 now=timezone.now(),
@@ -976,6 +1019,7 @@ class CheckoutPreviewView(APIView):
             target=target,
             lines=lines,
             points_rate=points_rate,
+            tier_points_multiplier=tier_points_multiplier,
             redeem_points=redeem_points,
             gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
         )
@@ -1012,6 +1056,7 @@ class CheckoutPreviewView(APIView):
             "target": target,
             "eligible_total": str(eligible_total),
             "points_rate": str(points_rate),
+            "tier_points_multiplier": str(calc["tier_points_multiplier"]),
             "estimated_points_earned": est_points,
             "points_redeemed": points_redeemed,
             "gift_card": gift_card_payload,

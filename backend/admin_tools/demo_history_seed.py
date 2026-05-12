@@ -20,6 +20,7 @@ from admin_tools.goldapple_catalog import json_default
 from admin_tools.goldapple_catalog_curated_v2 import CURATED_V2_CANONICAL_TYPES
 from catalog.models import Product
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
+from loyalty.points import DEFAULT_POINTS_RATE
 from offers.models import CampaignBudget, Offer, OfferAssignment, OfferEvent
 from recs_analytics.models import RecommendationEvent
 from roadmap_app.fragrance_slots import SLOTS as FRAGRANCE_SLOTS, slot_of_fragrance
@@ -398,11 +399,11 @@ def ensure_demo_offers() -> None:
 def base_tier() -> Tier:
     tier, _ = Tier.objects.get_or_create(
         name="Bronze",
-        defaults={"threshold_spend_90d": Decimal("0.00"), "points_rate": Decimal("0.10")},
+        defaults={"threshold_spend_90d": Decimal("0.00"), "points_rate": DEFAULT_POINTS_RATE},
     )
-    if tier.threshold_spend_90d != Decimal("0.00") or tier.points_rate != Decimal("0.10"):
+    if tier.threshold_spend_90d != Decimal("0.00") or tier.points_rate != DEFAULT_POINTS_RATE:
         tier.threshold_spend_90d = Decimal("0.00")
-        tier.points_rate = Decimal("0.10")
+        tier.points_rate = DEFAULT_POINTS_RATE
         tier.save(update_fields=["threshold_spend_90d", "points_rate"])
     return tier
 

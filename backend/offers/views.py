@@ -11,7 +11,7 @@ from catalog.models import Product
 from users_app.models import CustomerProfile
 from transactions.models import OwnedProduct, Transaction, TransactionItem
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
-from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate
+from loyalty.points import DEFAULT_POINTS_RATE, get_effective_points_rate, get_tier_points_multiplier
 from .models import Offer, OfferAssignment, CampaignBudget, OfferEvent
 from .serializers import RedeemOfferRequestSerializer, RedeemOfferResponseSerializer
 from offers.services import deactivate_stale_roadmap_assignment, expire_assignment_if_needed, get_or_assign_next_offer 
@@ -408,6 +408,7 @@ class RedeemOfferView(APIView):
             points_rate = get_effective_points_rate(
                 account.tier.points_rate if account.tier else DEFAULT_POINTS_RATE
             )
+            tier_points_multiplier = get_tier_points_multiplier(account.tier.name if account.tier else None)
 
             lines = [
                 Line(product=it.product, quantity=int(it.quantity), unit_price=Decimal(str(it.unit_price)))
@@ -420,6 +421,7 @@ class RedeemOfferView(APIView):
                 target=target,
                 lines=lines,
                 points_rate=points_rate,
+                tier_points_multiplier=tier_points_multiplier,
                 redeem_points=int((txn.pricing_meta or {}).get("points_redeemed") or 0),
             )
 
@@ -444,6 +446,8 @@ class RedeemOfferView(APIView):
                     "points_rate": str(points_rate),
                     "base_points": base_points,
                     "multiplier": str(multiplier),
+                    "tier_points_multiplier": str(calc["tier_points_multiplier"]),
+                    "tier_adjusted_points": int(calc.get("tier_adjusted_points") or 0),
                     "offer_type": assignment.offer.offer_type,
                     "discount_amount": str(discount_amount),
                     "target": target,
@@ -600,7 +604,7 @@ class OfferPreviewView(APIView):
                     "eligible_total": "12.99",
                     "discount_amount": "1.30",
                     "net_total": "24.68",
-                    "estimated_points_earned": 25,
+                    "estimated_points_earned": 0,
                 },
             ),
         ],
@@ -662,6 +666,7 @@ class OfferPreviewView(APIView):
         points_rate = get_effective_points_rate(
             account.tier.points_rate if account.tier else DEFAULT_POINTS_RATE
         )
+        tier_points_multiplier = get_tier_points_multiplier(account.tier.name if account.tier else None)
 
         calc = apply_offer_to_totals(
             offer_type=assignment.offer.offer_type,
@@ -669,6 +674,7 @@ class OfferPreviewView(APIView):
             target=target,
             lines=lines,
             points_rate=points_rate,
+            tier_points_multiplier=tier_points_multiplier,
         )
 
         if not calc["ok"]:
@@ -703,6 +709,7 @@ class OfferPreviewView(APIView):
                 **calc,
                 "tier": account.tier.name if account.tier else None,
                 "points_rate": str(points_rate),
+                "tier_points_multiplier": str(calc["tier_points_multiplier"]),
             }
         )
 
