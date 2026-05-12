@@ -15,6 +15,8 @@ class CampaignSerializer(serializers.ModelSerializer):
         if self.instance is not None:
             if start is None:
                 start = self.instance.start_date
+            if start is None:
+                start = self.instance.week_start_date
             if end is None:
                 end = self.instance.end_date
 

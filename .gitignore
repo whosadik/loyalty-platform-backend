@@ -50,3 +50,14 @@ tests/
 *.sql
 
 sprints.txt
+backend/reports/final_audit_demo_history_readiness.json
+backend/reports/final_audit_demo_seed_catalog_coverage.json
+backend/reports/final_audit_product_system_after_smoke.json
+backend/reports/final_audit_product_system.json
+backend/reports/final_audit_roadmap_decision_freeze.json
+backend/reports/final_audit_roadmap_demo_readiness.json
+backend/reports/final_audit_roadmap_final_cleanup.json
+backend/reports/final_audit_roadmap_ml_freeze_status_after_smoke.json
+backend/reports/final_audit_roadmap_ml_freeze_status.json
+backend/reports/final_audit_roadmap_runtime_integrity.json
+backend/reports/final_audit_product_system_after_offer_cleanup.json
