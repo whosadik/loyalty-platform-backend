@@ -48,6 +48,7 @@ class Product(models.Model):
     in_stock = models.BooleanField(default=True)
 
     # PDP/content fields from external catalog.
+    image = models.ImageField(upload_to="products/", blank=True, null=True)
     image_url = models.URLField(max_length=500, blank=True, default="")
     image_urls = models.JSONField(default=list, blank=True)
     description = models.TextField(blank=True, default="")

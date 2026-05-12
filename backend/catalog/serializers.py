@@ -20,6 +20,15 @@ class ProductSerializer(serializers.ModelSerializer):
     is_new = serializers.SerializerMethodField()
     rating = serializers.SerializerMethodField()
     reviews_count = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
+
+    def get_image_url(self, obj: Product) -> str:
+        if obj.image:
+            request = self.context.get("request")
+            if request:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
+        return obj.image_url or ""
 
     def get_brand_slug(self, obj: Product) -> str:
         return get_product_brand_slug(obj)

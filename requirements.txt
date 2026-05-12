@@ -1,4 +1,5 @@
 ﻿asgiref==3.11.0
+Pillow==12.2.0
 attrs==25.4.0
 Django==5.2.10
 django-redis==6.0.0
