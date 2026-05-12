@@ -213,6 +213,7 @@ class RoadmapQuerySerializer(serializers.Serializer):
 
 class RoadmapRefreshRequestSerializer(serializers.Serializer):
     category = serializers.ChoiceField(choices=ROADMAP_CATEGORY_CHOICES, required=False)
+    force_new = serializers.BooleanField(required=False, default=False)
 
 
 class RoadmapStepPatchRequestSerializer(serializers.Serializer):

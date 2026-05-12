@@ -181,6 +181,11 @@ class MeRoadmapRefreshView(APIView):
                 value={"category": "haircare"},
             ),
             OpenApiExample(
+                "Create new roadmap cycle",
+                request_only=True,
+                value={"category": "haircare", "force_new": True},
+            ),
+            OpenApiExample(
                 "Refresh response (sample)",
                 response_only=True,
                 value={
@@ -199,7 +204,12 @@ class MeRoadmapRefreshView(APIView):
         s = RoadmapRefreshRequestSerializer(data=request.data)
         s.is_valid(raise_exception=True)
         category = s.validated_data.get("category") or resolve_primary_roadmap_category(request.user)
-        plan = refresh_roadmap(request.user, category=category, post_ctx=None)
+        plan = refresh_roadmap(
+            request.user,
+            category=category,
+            post_ctx=None,
+            force_new=bool(s.validated_data.get("force_new", False)),
+        )
         language = get_request_language(request)
         return Response(
             RoadmapPlanReadSerializer(

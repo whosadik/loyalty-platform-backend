@@ -130,6 +130,7 @@ HAIRCARE_OPTIONAL_TAIL = {"hair_oil", "scalp_serum", "leave_in"}
 SKINCARE_OPTIONAL_TAIL = {"toner", "mask", "eye_cream", "essence"}
 SKINCARE_STRICT_CONTINUATION = {"serum", "moisturizer", "spf"} | SKINCARE_OPTIONAL_TAIL
 STOP_TOKEN = "__stop__"
+NEW_CYCLE_MODE = "new_after_completion"
 
 
 def _unique(values: list[str]) -> list[str]:
@@ -1428,6 +1429,7 @@ def _build_chain(
     context_product_ids: list[int],
     refresh_caller: str = "refresh_roadmap",
     prior_next_product_type: str = "",
+    ignore_owned_status: bool = False,
 ) -> tuple[list[str], dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     rules = CATEGORY_RULES[category]
     min_steps = int(rules["min_steps"])
@@ -1479,7 +1481,11 @@ def _build_chain(
             cp = CustomerProfile.objects.filter(user=user).first()
             profile_sig = profile_signature(cp)
             anchor_sig = _roadmap_anchor_signal_summary(category=category, context_product_ids=context_product_ids)
-            owned_types_norm = {str(x or "").strip().lower() for x in owned_types_ordered if str(x or "").strip()}
+            owned_types_norm = (
+                set()
+                if ignore_owned_status
+                else {str(x or "").strip().lower() for x in owned_types_ordered if str(x or "").strip()}
+            )
             status_owned = {str(x) for x in owned_types_norm}
             status_purchased = {str(x) for x in purchased_types_set}
             current_next_product_type = ""
@@ -1537,7 +1543,7 @@ def _build_chain(
             **default_rollout_meta,
         }
 
-    owned_types_set = {str(x) for x in owned_types_ordered if str(x).strip()}
+    owned_types_set = set() if ignore_owned_status else {str(x) for x in owned_types_ordered if str(x).strip()}
     purchased_types_set = {str(x) for x in purchased_types if str(x).strip()}
     planned_target_product_type = ""
     planned_target_step_index = 0
@@ -2018,6 +2024,7 @@ def _upsert_plan_with_steps(
     category: str,
     meta: dict[str, Any],
     step_payloads: list[dict[str, Any]],
+    force_new: bool = False,
 ) -> RoadmapPlan:
     with db_tx.atomic():
         active_plans = list(
@@ -2027,7 +2034,11 @@ def _upsert_plan_with_steps(
         )
 
         plan: RoadmapPlan
-        if active_plans:
+        if force_new:
+            if active_plans:
+                RoadmapPlan.objects.filter(id__in=[p.id for p in active_plans]).update(is_active=False)
+            plan = RoadmapPlan.objects.create(user=user, category=category, is_active=True, meta={})
+        elif active_plans:
             plan = active_plans[0]
             stale_ids = [p.id for p in active_plans[1:]]
             if stale_ids:
@@ -2056,27 +2067,65 @@ def _upsert_plan_with_steps(
     ) or plan
 
 
-def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None) -> RoadmapPlan:
+def refresh_roadmap(
+    user,
+    category: str,
+    post_ctx: dict[str, Any] | None = None,
+    *,
+    force_new: bool = False,
+) -> RoadmapPlan:
     category = str(category or "").strip()
     if category not in CATEGORY_RULES:
         raise ValueError(f"Unsupported roadmap category: {category}")
 
     now = timezone.now()
+    prior_active_plan = get_active_plan(user, category=category)
+    prior_next_step = get_next_missing_step(prior_active_plan)
+    prior_cycle_meta = (
+        dict((prior_active_plan.meta or {}).get("cycle") or {})
+        if prior_active_plan and isinstance(prior_active_plan.meta, dict)
+        else {}
+    )
+    cycle_ignore_owned_auto_close = bool(
+        force_new
+        or (
+            prior_cycle_meta.get("mode") == NEW_CYCLE_MODE
+            and prior_cycle_meta.get("ignore_owned_auto_close") is True
+        )
+    )
+    prior_cycle_completed_types: list[str] = []
+    if cycle_ignore_owned_auto_close and prior_active_plan and not force_new:
+        prior_cycle_completed_types = _unique(
+            [
+                str(item.product_type or "")
+                for item in prior_active_plan.steps.filter(status=RoadmapStep.Status.COMPLETED).order_by("step_index")
+            ]
+        )
+
     _, owned_product_ids, owned_types_ordered, owned_types_set = _category_owned(user, category)
     purchased_by_category = _post_ctx_types_by_category(post_ctx)
-    purchased_types = _unique(purchased_by_category.get(category, []))
+    post_ctx_purchased_types = _unique(purchased_by_category.get(category, []))
     if category == "fragrance":
         owned_types_ordered = _unique(_owned_fragrance_slots(user))
         owned_types_set = set(owned_types_ordered)
-        purchased_types = _unique(_purchased_fragrance_slots(post_ctx))
+        post_ctx_purchased_types = _unique(_purchased_fragrance_slots(post_ctx))
+    purchased_types = (
+        _unique(prior_cycle_completed_types + post_ctx_purchased_types)
+        if cycle_ignore_owned_auto_close
+        else post_ctx_purchased_types
+    )
     purchased_types_set = set(purchased_types)
+    status_owned_types_ordered = [] if cycle_ignore_owned_auto_close else owned_types_ordered
+    status_owned_types_set = set(status_owned_types_ordered)
     context_product_ids = _context_product_ids(user, post_ctx, limit=50)
-    prior_active_plan = get_active_plan(user, category=category)
-    prior_next_step = get_next_missing_step(prior_active_plan)
     refresh_caller = (
-        "update_roadmap_from_purchase"
-        if (post_ctx and ((post_ctx.get("product_ids") or []) or (post_ctx.get("categories") or [])))
-        else "refresh_roadmap"
+        "new_roadmap_cycle"
+        if force_new
+        else (
+            "update_roadmap_from_purchase"
+            if (post_ctx and ((post_ctx.get("product_ids") or []) or (post_ctx.get("categories") or [])))
+            else "refresh_roadmap"
+        )
     )
 
     planner_mode = planner_runtime_mode()
@@ -2161,6 +2210,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             context_product_ids=context_product_ids,
             refresh_caller=refresh_caller,
             prior_next_product_type=str(getattr(prior_next_step, "product_type", "") or ""),
+            ignore_owned_status=cycle_ignore_owned_auto_close,
         )
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
@@ -2190,7 +2240,7 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
         source_is_state_prefix = source_key == "state_prefix"
         score_val = source_meta.get("score")
 
-        status = _status_for_type(product_type, owned_types_set, purchased_types_set)
+        status = _status_for_type(product_type, status_owned_types_set, purchased_types_set)
         suggestions: list[int] = []
         recommended_product_id: int | None = None
         rec_top = None
@@ -2428,6 +2478,18 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             if bias_value > prev_value:
                 shadow_runtime_policy_max_abs_bias[policy_name] = float(round(bias_value, 6))
 
+    cycle_meta: dict[str, Any] = {}
+    if cycle_ignore_owned_auto_close:
+        cycle_meta = dict(prior_cycle_meta)
+        cycle_meta["mode"] = NEW_CYCLE_MODE
+        cycle_meta["ignore_owned_auto_close"] = True
+        if force_new:
+            cycle_meta["created_from_plan_id"] = int(prior_active_plan.id) if prior_active_plan else None
+            cycle_meta["created_at"] = now.isoformat()
+            cycle_meta["owned_baseline_product_ids"] = sorted(int(pid) for pid in owned_product_ids)
+            cycle_meta["owned_baseline_product_types"] = list(owned_types_ordered)
+        cycle_meta["completed_product_types"] = list(purchased_types)
+
     meta = {
         "generation_state": "ok",
         "source": "roadmap_planner_v1" if planner_served else "roadmap_v1",
@@ -2492,11 +2554,20 @@ def refresh_roadmap(user, category: str, post_ctx: dict[str, Any] | None = None)
             "context_product_ids_count": len(context_product_ids),
             "owned_product_types_count": len(owned_types_set),
             "purchased_types_count": len(purchased_types_set),
+            "force_new": bool(force_new),
+            "ignore_owned_auto_close": bool(cycle_ignore_owned_auto_close),
         },
+        "cycle": cycle_meta,
         "continuation": continuation_rule or {},
     }
 
-    plan = _upsert_plan_with_steps(user=user, category=category, meta=meta, step_payloads=step_payloads)
+    plan = _upsert_plan_with_steps(
+        user=user,
+        category=category,
+        meta=meta,
+        step_payloads=step_payloads,
+        force_new=force_new,
+    )
     _record_ml_invocation(
         user=user,
         plan=plan,

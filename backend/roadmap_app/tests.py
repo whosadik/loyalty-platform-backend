@@ -3596,6 +3596,60 @@ class RoadmapPurchaseContinuationTests(TestCase):
         self.assertIsNotNone(next_step)
         self.assertEqual(next_step.product_type, "essence")
 
+    @override_settings(
+        ROADMAP_NEXTSTEP_V3_ENABLED=False,
+        ROADMAP_NEXTSTEP_V4_ENABLED=False,
+        ROADMAP_PLANNER_V1_MODE="off",
+    )
+    def test_force_new_roadmap_archives_active_plan_and_ignores_owned_baseline(self):
+        from roadmap_app.services import refresh_roadmap
+
+        RoadmapStep.objects.filter(plan=self.plan).update(status=RoadmapStep.Status.COMPLETED)
+
+        new_plan = refresh_roadmap(self.user, category="skincare", force_new=True)
+
+        self.plan.refresh_from_db()
+        self.assertFalse(self.plan.is_active)
+        self.assertNotEqual(new_plan.id, self.plan.id)
+        self.assertTrue(new_plan.is_active)
+
+        cycle_meta = new_plan.meta.get("cycle") or {}
+        self.assertEqual(cycle_meta.get("mode"), "new_after_completion")
+        self.assertTrue(cycle_meta.get("ignore_owned_auto_close"))
+        self.assertEqual(cycle_meta.get("created_from_plan_id"), self.plan.id)
+
+        self.assertGreater(
+            new_plan.steps.filter(status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED]).count(),
+            0,
+        )
+        self.assertEqual(new_plan.steps.filter(status=RoadmapStep.Status.OWNED).count(), 0)
+
+    @override_settings(
+        ROADMAP_NEXTSTEP_V3_ENABLED=False,
+        ROADMAP_NEXTSTEP_V4_ENABLED=False,
+        ROADMAP_PLANNER_V1_MODE="off",
+    )
+    def test_new_roadmap_cycle_purchase_does_not_reclose_old_owned_steps(self):
+        from roadmap_app.services import refresh_roadmap, update_roadmap_from_purchase
+
+        new_plan = refresh_roadmap(self.user, category="skincare", force_new=True)
+
+        result = update_roadmap_from_purchase(
+            self.user,
+            {
+                "categories": ["skincare"],
+                "product_ids": [self.products["essence"].id],
+                "transaction_id": 987655,
+            },
+        )
+
+        refreshed = result["plan"]
+        self.assertEqual(refreshed.id, new_plan.id)
+        self.assertEqual(refreshed.steps.filter(status=RoadmapStep.Status.OWNED).count(), 0)
+        self.assertTrue(
+            refreshed.steps.filter(product_type="essence", status=RoadmapStep.Status.COMPLETED).exists()
+        )
+
 
 class RoadmapMLInvocationRecordTests(TestCase):
     @classmethod
