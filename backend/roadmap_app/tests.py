@@ -3502,6 +3502,101 @@ class RoadmapMLPredictTimingTests(SimpleTestCase):
         self.assertEqual(normalized["ml"]["shadow"]["predict_error"], "timeout")
 
 
+class RoadmapPurchaseContinuationTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        from catalog.models import Product
+        from transactions.models import OwnedProduct
+        from users_app.models import CustomerProfile
+
+        user_model = get_user_model()
+        cls.user = user_model.objects.create_user(username="roadmap_purchase_continuation", password="pass12345")
+        profile, _ = CustomerProfile.objects.get_or_create(user=cls.user)
+        profile.skin_type = CustomerProfile.SkinType.DRY
+        profile.goals = ["hydration", "barrier", "brightening"]
+        profile.save(update_fields=["skin_type", "goals"])
+
+        cls.products = {}
+        for product_type in [
+            "cleanser",
+            "serum",
+            "moisturizer",
+            "spf",
+            "toner",
+            "mask",
+            "eye_cream",
+            "essence",
+        ]:
+            cls.products[product_type] = Product.objects.create(
+                name=f"Roadmap {product_type}",
+                brand="Roadmap Lab",
+                price="1000.00",
+                currency="KZT",
+                category=Product.Category.SKINCARE,
+                product_type=product_type,
+                concerns=["hydration"],
+                actives=["niacinamide"],
+                supported_skin_types=[CustomerProfile.SkinType.DRY],
+                in_stock=True,
+            )
+
+        now = timezone.now()
+        for product_type in ["cleanser", "serum", "moisturizer", "spf", "toner", "mask", "eye_cream"]:
+            OwnedProduct.objects.create(
+                user=cls.user,
+                product=cls.products[product_type],
+                quantity_total=1,
+                is_active=True,
+                last_acquired_at=now,
+            )
+
+        cls.plan = RoadmapPlan.objects.create(
+            user=cls.user,
+            category=RoadmapPlan.Category.SKINCARE,
+            is_active=True,
+            meta={},
+        )
+        for idx, product_type in enumerate(
+            ["cleanser", "serum", "moisturizer", "spf", "toner", "mask", "eye_cream", "essence"],
+            start=1,
+        ):
+            is_planned_next = product_type in {"eye_cream", "essence"}
+            RoadmapStep.objects.create(
+                plan=cls.plan,
+                step_index=idx,
+                product_type=product_type,
+                status=RoadmapStep.Status.RECOMMENDED if is_planned_next else RoadmapStep.Status.OWNED,
+                recommended_product=cls.products[product_type] if is_planned_next else None,
+                suggestions=[cls.products[product_type].id] if is_planned_next else [],
+                why=["picked via rules"],
+            )
+
+    @override_settings(
+        ROADMAP_NEXTSTEP_V3_ENABLED=False,
+        ROADMAP_NEXTSTEP_V4_ENABLED=False,
+        ROADMAP_PLANNER_V1_MODE="off",
+    )
+    def test_skincare_purchase_keeps_already_planned_next_step(self):
+        from roadmap_app.services import get_next_missing_step, update_roadmap_from_purchase
+
+        result = update_roadmap_from_purchase(
+            self.user,
+            {
+                "categories": ["skincare"],
+                "product_ids": [self.products["eye_cream"].id],
+                "transaction_id": 987654,
+            },
+        )
+
+        plan = result["plan"]
+        step_types = list(plan.steps.order_by("step_index").values_list("product_type", flat=True))
+        self.assertIn("essence", step_types)
+
+        next_step = get_next_missing_step(plan)
+        self.assertIsNotNone(next_step)
+        self.assertEqual(next_step.product_type, "essence")
+
+
 class RoadmapMLInvocationRecordTests(TestCase):
     @classmethod
     def setUpTestData(cls):

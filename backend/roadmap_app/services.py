@@ -121,6 +121,11 @@ HAIRCARE_CONTINUATION_CORE_PREDECESSOR = {
     "conditioner": "shampoo",
     "hair_mask": "conditioner",
 }
+SKINCARE_CONTINUATION_CORE_PREDECESSOR = {
+    "serum": "cleanser",
+    "moisturizer": "serum",
+    "spf": "moisturizer",
+}
 HAIRCARE_OPTIONAL_TAIL = {"hair_oil", "scalp_serum", "leave_in"}
 SKINCARE_OPTIONAL_TAIL = {"toner", "mask", "eye_cream", "essence"}
 SKINCARE_STRICT_CONTINUATION = {"serum", "moisturizer", "spf"} | SKINCARE_OPTIONAL_TAIL
@@ -1275,7 +1280,17 @@ def _runtime_continuation_candidate_decision_from_signals(
 
         return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
 
-    if trigger != "post_skipped":
+    predecessor = SKINCARE_CONTINUATION_CORE_PREDECESSOR.get(candidate_type)
+    if predecessor:
+        if predecessor in purchased_or_owned and candidate_type not in owned_types:
+            return {
+                "continue": True,
+                "markers": ["continued_due_to_core_gap", "continued_due_to_owned_gap"],
+                "reason": "continued_due_to_core_gap",
+            }
+        return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
+
+    if trigger not in {"post_skipped", "post_completed"}:
         return {"continue": False, "markers": [default_stop_reason], "reason": default_stop_reason}
 
     if candidate_type == "toner":
