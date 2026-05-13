@@ -178,7 +178,7 @@ class TransactionItemSerializer(serializers.ModelSerializer):
     product_summary = serializers.SerializerMethodField()
 
     def get_product_summary(self, obj: TransactionItem):
-        return ProductSummarySerializer(obj.product).data
+        return ProductSummarySerializer(obj.product, context=self.context).data
 
     class Meta:
         model = TransactionItem
@@ -302,6 +302,7 @@ class OwnedProductSerializer(serializers.ModelSerializer):
 
 class ProductSummarySerializer(serializers.ModelSerializer):
     points_earned = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -318,6 +319,14 @@ class ProductSummarySerializer(serializers.ModelSerializer):
             "image_urls",
             "points_earned",
         ]
+
+    def get_image_url(self, obj: Product) -> str:
+        if obj.image:
+            request = self.context.get("request")
+            if request is not None:
+                return request.build_absolute_uri(obj.image.url)
+            return obj.image.url
+        return obj.image_url or ""
 
     def get_points_earned(self, obj: Product) -> int:
         try:

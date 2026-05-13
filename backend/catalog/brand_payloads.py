@@ -9,7 +9,7 @@ from django.utils.text import slugify
 from backend.request_language import AppLanguage, normalize_language
 from roadmap_app.step_presentation import get_roadmap_step_presentation
 
-from .models import Product
+from .models import Brand, Product
 from .sale_fields import product_has_discount
 
 
@@ -44,45 +44,56 @@ def _brand_logo_letter(value: str) -> str:
     return normalized[:1].upper() or "B"
 
 
-def build_brand_summary_payload(brand_name: str, product_count: int) -> dict[str, object]:
+def _brand_logo_url(brand: Brand | None) -> str:
+    if brand is None:
+        return ""
+    if brand.logo_image:
+        try:
+            return brand.logo_image.url
+        except ValueError:
+            return ""
+    return brand.logo_url or ""
+
+
+def build_brand_summary_payload(
+    brand_name: str,
+    product_count: int,
+    brand: Brand | None = None,
+) -> dict[str, object]:
     normalized_name = (brand_name or "").strip()
+    slug = brand.slug if brand is not None else brand_to_slug(normalized_name)
     return {
-        "slug": brand_to_slug(normalized_name),
+        "slug": slug,
         "name": normalized_name,
         "logo_letter": _brand_logo_letter(normalized_name),
+        "logo_url": _brand_logo_url(brand),
         "product_count": int(product_count),
     }
 
 
 def list_brand_summary_payloads() -> list[dict[str, object]]:
     rows = (
-        Product.objects.exclude(brand="")
-        .values("brand")
-        .annotate(product_count=Count("id"))
-        .order_by("-product_count", "brand")
+        Brand.objects.filter(is_active=True)
+        .annotate(product_count=Count("products"))
+        .filter(product_count__gt=0)
+        .order_by("-product_count", "name")
     )
-    return [build_brand_summary_payload(row["brand"], row["product_count"]) for row in rows]
+    return [
+        build_brand_summary_payload(brand.name, brand.product_count, brand=brand)
+        for brand in rows
+    ]
 
 
-def resolve_brand_name_from_slug(brand_slug: str) -> str | None:
+def resolve_brand_from_slug(brand_slug: str) -> Brand | None:
     normalized_slug = brand_to_slug(brand_slug)
     if not normalized_slug:
         return None
+    return Brand.objects.filter(slug=normalized_slug).first()
 
-    exact_match = (
-        Product.objects.exclude(brand="")
-        .filter(brand__iexact=brand_slug)
-        .values_list("brand", flat=True)
-        .first()
-    )
-    if exact_match:
-        return exact_match
 
-    for brand_name in Product.objects.exclude(brand="").order_by().values_list("brand", flat=True).distinct():
-        if brand_to_slug(brand_name) == normalized_slug:
-            return brand_name
-
-    return None
+def resolve_brand_name_from_slug(brand_slug: str) -> str | None:
+    brand = resolve_brand_from_slug(brand_slug)
+    return brand.name if brand is not None else None
 
 
 def _localize_category(category: str, language: AppLanguage) -> str:
@@ -144,11 +155,11 @@ def get_brand_detail_payload(
     language: AppLanguage = "ru",
 ) -> dict[str, object] | None:
     normalized_language = normalize_language(language)
-    brand_name = resolve_brand_name_from_slug(brand_slug)
-    if not brand_name:
+    brand = resolve_brand_from_slug(brand_slug)
+    if brand is None:
         return None
 
-    products = Product.objects.filter(brand__iexact=brand_name).order_by("-id")
+    products = Product.objects.filter(brand_ref=brand).order_by("-id")
     product_count = products.count()
     if product_count == 0:
         return None
@@ -176,16 +187,22 @@ def get_brand_detail_payload(
         if product_has_discount(product)
     )
 
-    payload = build_brand_summary_payload(brand_name, product_count)
+    custom_description = (getattr(brand, f"description_{normalized_language}", "") or "").strip()
+    if not custom_description:
+        custom_description = (brand.description_ru or "").strip()
+    if not custom_description:
+        custom_description = _build_brand_description(
+            brand.name,
+            product_count,
+            categories,
+            top_product_types,
+            normalized_language,
+        )
+
+    payload = build_brand_summary_payload(brand.name, product_count, brand=brand)
     payload.update(
         {
-            "description": _build_brand_description(
-                brand_name,
-                product_count,
-                categories,
-                top_product_types,
-                normalized_language,
-            ),
+            "description": custom_description,
             "categories": categories,
             "top_product_types": top_product_types,
             "new_products_count": new_products_count,

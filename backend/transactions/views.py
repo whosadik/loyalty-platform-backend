@@ -81,7 +81,7 @@ class MeWishlistView(APIView):
 
     def get(self, request):
         qs = WishlistItem.objects.filter(user=request.user).select_related("product").order_by("-created_at", "-id")
-        items = WishlistItemSerializer(qs, many=True).data
+        items = WishlistItemSerializer(qs, many=True, context={"request": request}).data
         return Response({"ok": True, "count": qs.count(), "items": items})
 
     def post(self, request):
@@ -98,7 +98,7 @@ class MeWishlistView(APIView):
                 "ok": True,
                 "created": created,
                 "count": count,
-                "item": WishlistItemSerializer(item).data,
+                "item": WishlistItemSerializer(item, context={"request": request}).data,
             },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
@@ -125,7 +125,7 @@ class MeCartView(APIView):
 
     def get(self, request):
         qs = CartItem.objects.filter(user=request.user).select_related("product").order_by("-updated_at", "-id")
-        items = CartItemSerializer(qs, many=True).data
+        items = CartItemSerializer(qs, many=True, context={"request": request}).data
         total_quantity = int(qs.aggregate(total=Sum("quantity"))["total"] or 0)
         return Response(
             {
@@ -161,7 +161,7 @@ class MeCartView(APIView):
                 "created": created,
                 "count": qs.count(),
                 "total_quantity": total_quantity,
-                "item": CartItemSerializer(item).data,
+                "item": CartItemSerializer(item, context={"request": request}).data,
             },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
@@ -201,7 +201,7 @@ class MeCartItemView(APIView):
                 "ok": True,
                 "count": qs.count(),
                 "total_quantity": total_quantity,
-                "item": CartItemSerializer(item).data,
+                "item": CartItemSerializer(item, context={"request": request}).data,
             }
         )
 

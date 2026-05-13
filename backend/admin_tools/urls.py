@@ -1,5 +1,8 @@
 from django.urls import path
+from rest_framework.routers import DefaultRouter
+
 from admin_tools.views import AdminHealthView, AdminOverviewView, AdminRecsExperimentsView
+from catalog.views_admin import AdminBrandViewSet, AdminProductViewSet
 from offers.views_admin_campaigns import (
     AdminCampaignBannerUploadView,
     AdminCampaignDetailView,
@@ -11,6 +14,12 @@ from offers.views_admin_offers import (
     AdminOfferDetailView,
     AdminOfferListCreateView,
 )
+
+
+router = DefaultRouter()
+router.register(r"admin/brands", AdminBrandViewSet, basename="admin-brands")
+router.register(r"admin/products", AdminProductViewSet, basename="admin-products")
+
 
 urlpatterns = [
     path("admin/health", AdminHealthView.as_view(), name="admin-health"),
@@ -27,4 +36,5 @@ urlpatterns = [
     ),
     path("admin/offers", AdminOfferListCreateView.as_view(), name="admin-offers"),
     path("admin/offers/<int:pk>", AdminOfferDetailView.as_view(), name="admin-offer-detail"),
+    *router.urls,
 ]

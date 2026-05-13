@@ -3,6 +3,25 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 
+class Brand(models.Model):
+    name = models.CharField(max_length=120, unique=True)
+    slug = models.SlugField(max_length=140, unique=True, allow_unicode=True)
+    description_ru = models.TextField(blank=True, default="")
+    description_kk = models.TextField(blank=True, default="")
+    description_en = models.TextField(blank=True, default="")
+    logo_image = models.ImageField(upload_to="brands/", blank=True, null=True)
+    logo_url = models.URLField(max_length=500, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class Product(models.Model):
     class Category(models.TextChoices):
         SKINCARE = "skincare", "Skincare"
@@ -26,6 +45,13 @@ class Product(models.Model):
 
     name = models.CharField(max_length=200)
     brand = models.CharField(max_length=120, blank=True, default="")
+    brand_ref = models.ForeignKey(
+        Brand,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="products",
+    )
     price = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
     source_product_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
     currency = models.CharField(max_length=8, blank=True, default="")
