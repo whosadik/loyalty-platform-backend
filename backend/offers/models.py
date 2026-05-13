@@ -47,18 +47,31 @@ class Offer(models.Model):
         choices=[
             ("cart", "Cart"),
             ("category", "Category"),
+            ("brand", "Brand"),
             ("product_type", "Product type"),
             ("product_id", "Product"),
         ],
         default="cart",
     )
+    allowed_brands = models.JSONField(default=list, blank=True)        # ["Clarins","Darling"]
+    allowed_product_ids = models.JSONField(default=list, blank=True)   # [123,456]
 
     def __str__(self) -> str:
         return f"{self.name} ({self.offer_type})"
 
 
 class CampaignBudget(models.Model):
+    class Type(models.TextChoices):
+        PERSONAL = "personal", "Personal"
+        PUBLIC = "public", "Public"
+
     name = models.CharField(max_length=64, unique=True)
+    campaign_type = models.CharField(
+        max_length=20,
+        choices=Type.choices,
+        default=Type.PERSONAL,
+        db_index=True,
+    )
 
     is_active = models.BooleanField(default=True)
     priority = models.IntegerField(default=100)  # smaller number = higher priority
@@ -73,7 +86,10 @@ class CampaignBudget(models.Model):
 
     allowed_categories = models.JSONField(default=list, blank=True)  # ["skincare","makeup",...]
     allowed_steps = models.JSONField(default=list, blank=True)       # ["spf","serum",...]
+    allowed_brands = models.JSONField(default=list, blank=True)      # ["Clarins","Darling",...]
+    allowed_product_ids = models.JSONField(default=list, blank=True) # [123,456,...]
     tiers = models.JSONField(default=list, blank=True)
+    recommendation_rules = models.JSONField(default=dict, blank=True)
     promo_text = models.TextField(blank=True, default="")
     banner_url = models.URLField(blank=True, default="")
 

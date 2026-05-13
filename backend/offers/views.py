@@ -47,7 +47,7 @@ HOME_PROMO_BANNERS_MAX_LIMIT = 8
 def _public_campaigns_qs(now):
     today = now.date()
     return (
-        CampaignBudget.objects.filter(is_active=True)
+        CampaignBudget.objects.filter(is_active=True, campaign_type=CampaignBudget.Type.PUBLIC)
         .exclude(banner_url="")
         .filter(Q(start_date__isnull=True) | Q(start_date__lte=today))
         .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
@@ -792,6 +792,8 @@ class PromotionBannerDetailView(APIView):
                 "value": str(o.value),
                 "target_scope": o.target_scope,
                 "allowed_categories": list(o.allowed_categories or []),
+                "allowed_brands": list(getattr(o, "allowed_brands", []) or []),
+                "allowed_product_ids": list(getattr(o, "allowed_product_ids", []) or []),
                 "allowed_product_types": list(o.allowed_product_types or []),
             }
             for o in offers
@@ -809,6 +811,8 @@ class PromotionBannerDetailView(APIView):
                     "end_date": campaign.end_date.isoformat() if campaign.end_date else None,
                     "allowed_categories": list(campaign.allowed_categories or []),
                     "allowed_steps": list(campaign.allowed_steps or []),
+                    "allowed_brands": list(getattr(campaign, "allowed_brands", []) or []),
+                    "allowed_product_ids": list(getattr(campaign, "allowed_product_ids", []) or []),
                 },
                 "offers": offer_payload,
             }
@@ -841,6 +845,8 @@ class PromotionBannersView(APIView):
                 "start_date": c.start_date.isoformat() if c.start_date else None,
                 "end_date": c.end_date.isoformat() if c.end_date else None,
                 "allowed_categories": list(c.allowed_categories or []),
+                "allowed_brands": list(getattr(c, "allowed_brands", []) or []),
+                "allowed_product_ids": list(getattr(c, "allowed_product_ids", []) or []),
             }
             for c in qs
         ]

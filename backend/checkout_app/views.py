@@ -130,8 +130,7 @@ def _load_redeemable_gift_card_or_raise(code: str, *, lock: bool = False, now=No
 def _active_public_campaigns_qs(now, *, lock: bool = False):
     today = now.date()
     qs = (
-        CampaignBudget.objects.filter(is_active=True)
-        .exclude(banner_url="")
+        CampaignBudget.objects.filter(is_active=True, campaign_type=CampaignBudget.Type.PUBLIC)
         .filter(Q(start_date__isnull=True) | Q(start_date__lte=today))
         .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
         .order_by("priority", "id")
@@ -155,17 +154,155 @@ def _public_campaign_weekly_spent(campaign: CampaignBudget, now, *, reset: bool 
     return Decimal(str(campaign.weekly_spent))
 
 
-def _public_offer_targets(offer: Offer, lines: list[Line]) -> list[dict]:
-    categories = [str(x).strip() for x in (offer.allowed_categories or []) if str(x).strip()]
-    product_types = [str(x).strip() for x in (offer.allowed_product_types or []) if str(x).strip()]
+def _clean_strings(values) -> list[str]:
+    out: list[str] = []
+    for value in values or []:
+        normalized = str(value).strip()
+        if normalized and normalized not in out:
+            out.append(normalized)
+    return out
+
+
+def _clean_ints(values) -> list[int]:
+    out: list[int] = []
+    for value in values or []:
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            continue
+        if normalized > 0 and normalized not in out:
+            out.append(normalized)
+    return out
+
+
+def _intersect_or_union(left: list, right: list) -> list:
+    if left and right:
+        right_set = set(right)
+        return [value for value in left if value in right_set]
+    return left or right
+
+
+def _intersect_brands_or_union(left: list[str], right: list[str]) -> list[str]:
+    if left and right:
+        right_lookup = {value.casefold() for value in right}
+        return [value for value in left if value.casefold() in right_lookup]
+    return left or right
+
+
+def _public_offer_constraints(offer: Offer, campaign: CampaignBudget) -> dict:
+    offer_categories = _clean_strings(offer.allowed_categories)
+    campaign_categories = _clean_strings(campaign.allowed_categories)
+    offer_product_types = _clean_strings(offer.allowed_product_types)
+    campaign_product_types = _clean_strings(campaign.allowed_steps)
+    offer_brands = _clean_strings(getattr(offer, "allowed_brands", []))
+    campaign_brands = _clean_strings(getattr(campaign, "allowed_brands", []))
+    offer_product_ids = _clean_ints(getattr(offer, "allowed_product_ids", []))
+    campaign_product_ids = _clean_ints(getattr(campaign, "allowed_product_ids", []))
+
+    categories = _intersect_or_union(offer_categories, campaign_categories)
+    product_types = _intersect_or_union(offer_product_types, campaign_product_types)
+    brands = _intersect_brands_or_union(offer_brands, campaign_brands)
+    product_ids = _intersect_or_union(offer_product_ids, campaign_product_ids)
+    impossible = (
+        (offer_categories and campaign_categories and not categories)
+        or (offer_product_types and campaign_product_types and not product_types)
+        or (offer_brands and campaign_brands and not brands)
+        or (offer_product_ids and campaign_product_ids and not product_ids)
+    )
+    return {
+        "impossible": impossible,
+        "categories": categories,
+        "product_types": product_types,
+        "brands": brands,
+        "product_ids": product_ids,
+    }
+
+
+def _line_matches_constraints(line: Line, constraints: dict) -> bool:
+    product = line.product
+    categories = constraints.get("categories") or []
+    product_types = constraints.get("product_types") or []
+    brands = constraints.get("brands") or []
+    product_ids = constraints.get("product_ids") or []
+
+    if constraints.get("impossible"):
+        return False
+
+    if categories and product.category not in categories:
+        return False
+    if product_types and product.product_type not in product_types:
+        return False
+    if product_ids and int(product.id) not in product_ids:
+        return False
+    if brands:
+        brand_lookup = {str(value).strip().casefold() for value in brands}
+        if str(product.brand or "").strip().casefold() not in brand_lookup:
+            return False
+    return True
+
+
+def _target_constraints_payload(constraints: dict) -> dict:
+    payload = {}
+    if constraints.get("brands"):
+        payload["brands"] = constraints["brands"]
+    if constraints.get("product_ids"):
+        payload["product_ids"] = constraints["product_ids"]
+    if constraints.get("product_types"):
+        payload["product_types"] = constraints["product_types"]
+    return payload
+
+
+def _public_offer_targets(offer: Offer, campaign: CampaignBudget, lines: list[Line]) -> list[dict]:
+    constraints = _public_offer_constraints(offer, campaign)
+    eligible_lines = [line for line in lines if _line_matches_constraints(line, constraints)]
+    if not eligible_lines:
+        return []
+
+    categories = constraints["categories"]
+    product_types = constraints["product_types"]
+    brands = constraints["brands"]
+    product_ids = constraints["product_ids"]
+
     line_categories = sorted({str(ln.product.category) for ln in lines if getattr(ln.product, "category", None)})
+    line_brands = sorted({str(ln.product.brand).strip() for ln in eligible_lines if str(ln.product.brand).strip()})
+    extra_constraints = _target_constraints_payload(constraints)
 
     if offer.target_scope == "cart":
+        if product_ids:
+            return [
+                {
+                    "scope": "product_id",
+                    "value": line.product.id,
+                    "category": line.product.category,
+                    "brand": line.product.brand,
+                    "product_type": line.product.product_type,
+                }
+                for line in eligible_lines
+            ]
+        if brands:
+            return [{"scope": "brand", "value": brand, **extra_constraints} for brand in brands]
+        if categories or product_types:
+            if product_types:
+                return [
+                    {
+                        "scope": "product_type",
+                        "value": product_type,
+                        **({"category": category} if category else {}),
+                        **extra_constraints,
+                    }
+                    for category in (categories or [None])
+                    for product_type in product_types
+                ]
+            return [{"scope": "category", "value": category, **extra_constraints} for category in categories]
         return [{"scope": "cart"}]
 
     if offer.target_scope == "category":
         target_categories = categories or line_categories
-        return [{"scope": "category", "value": category} for category in target_categories]
+        return [{"scope": "category", "value": category, **extra_constraints} for category in target_categories]
+
+    if offer.target_scope == "brand":
+        target_brands = brands or line_brands
+        return [{"scope": "brand", "value": brand, **extra_constraints} for brand in target_brands]
 
     if offer.target_scope == "product_type":
         if product_types:
@@ -175,28 +312,26 @@ def _public_offer_targets(offer: Offer, lines: list[Line]) -> list[dict]:
                     "scope": "product_type",
                     "value": product_type,
                     **({"category": category} if category else {}),
+                    **extra_constraints,
                 }
                 for category in category_options
                 for product_type in product_types
             ]
         return [
-            {"scope": "product_type", "category": category}
+            {"scope": "product_type", "category": category, **extra_constraints}
             for category in (categories or line_categories)
         ]
 
     if offer.target_scope == "product_id":
         targets = []
-        for line in lines:
+        for line in eligible_lines:
             product = line.product
-            if categories and product.category not in categories:
-                continue
-            if product_types and product.product_type not in product_types:
-                continue
             targets.append(
                 {
                     "scope": "product_id",
                     "value": product.id,
                     "category": product.category,
+                    "brand": product.brand,
                     "product_type": product.product_type,
                 }
             )
@@ -208,16 +343,44 @@ def _public_offer_targets(offer: Offer, lines: list[Line]) -> list[dict]:
 def _public_offer_payload(offer: Offer, campaign: CampaignBudget, target: dict) -> dict:
     return {
         "assignment_id": None,
+        "source": "public_campaign",
         "public_campaign": True,
         "campaign": {
             "id": campaign.id,
             "name": campaign.name,
+            "type": campaign.campaign_type,
         },
         "offer": {
             "id": offer.id,
             "name": offer.name,
             "type": offer.offer_type,
             "value": str(offer.value),
+        },
+        "target": target,
+    }
+
+
+def _personal_offer_payload(assignment: OfferAssignment, target: dict) -> dict:
+    campaign = getattr(assignment.offer, "campaign", None)
+    campaign_type = getattr(campaign, "campaign_type", None) if campaign else None
+    return {
+        "assignment_id": assignment.id,
+        "source": "public_campaign" if campaign_type == CampaignBudget.Type.PUBLIC else "personal_system",
+        "public_campaign": campaign_type == CampaignBudget.Type.PUBLIC,
+        "campaign": (
+            {
+                "id": campaign.id,
+                "name": campaign.name,
+                "type": campaign_type,
+            }
+            if campaign
+            else None
+        ),
+        "offer": {
+            "id": assignment.offer.id,
+            "name": assignment.offer.name,
+            "type": assignment.offer.offer_type,
+            "value": str(assignment.offer.value),
         },
         "target": target,
     }
@@ -251,7 +414,7 @@ def _find_public_campaign_offer(
             if offer.is_active and offer.offer_type == Offer.Type.DISCOUNT
         ]
         for offer in offers:
-            for target in _public_offer_targets(offer, lines):
+            for target in _public_offer_targets(offer, campaign, lines):
                 calc = apply_offer_to_totals(
                     offer_type=offer.offer_type,
                     offer_value=Decimal(str(offer.value)),
@@ -285,6 +448,237 @@ def _find_public_campaign_offer(
         return None, None, None, None
 
     _, _, _, offer, campaign, target, calc = best
+    return offer, campaign, target, calc
+
+
+def _list_active_personal_assignments(user, now) -> list[OfferAssignment]:
+    assignments = list(
+        OfferAssignment.objects.select_related("offer", "offer__campaign")
+        .filter(user=user, is_active=True, is_redeemed=False)
+    )
+
+    out: list[OfferAssignment] = []
+    for assignment in assignments:
+        expires_at = getattr(assignment, "expires_at", None)
+        if expires_at and expires_at <= now:
+            continue
+        if assignment.offer is None or not assignment.offer.is_active:
+            continue
+        campaign = getattr(assignment.offer, "campaign", None)
+        if campaign is not None and not campaign.is_active:
+            continue
+        out.append(assignment)
+    return out
+
+
+def _list_applicable_public_candidates(
+    *,
+    lines: list[Line],
+    points_rate: Decimal,
+    tier_points_multiplier: Decimal,
+    redeem_points: int,
+    gift_card_balance: Decimal,
+    now,
+) -> list[dict]:
+    """Return every applicable public-campaign offer with its calculated discount.
+
+    Unlike `_find_public_campaign_offer`, this does not pick a single winner — it
+    surfaces all viable options so the user can choose.
+    """
+    campaigns = list(_active_public_campaigns_qs(now, lock=False).prefetch_related("offers"))
+    candidates: list[dict] = []
+    seen_keys: set[tuple[int, int]] = set()
+
+    for campaign in campaigns:
+        weekly_limit = Decimal(str(campaign.weekly_limit or 0))
+        left = weekly_limit - _public_campaign_weekly_spent(campaign, now, reset=False) if weekly_limit > 0 else None
+
+        offers = [
+            offer
+            for offer in campaign.offers.all()
+            if offer.is_active and offer.offer_type == Offer.Type.DISCOUNT
+        ]
+        for offer in offers:
+            best_for_offer: tuple[Decimal, dict, dict] | None = None
+            for target in _public_offer_targets(offer, campaign, lines):
+                calc = apply_offer_to_totals(
+                    offer_type=offer.offer_type,
+                    offer_value=Decimal(str(offer.value)),
+                    target=target,
+                    lines=lines,
+                    points_rate=points_rate,
+                    tier_points_multiplier=tier_points_multiplier,
+                    redeem_points=redeem_points,
+                    gift_card_balance=gift_card_balance,
+                )
+                if not calc.get("ok"):
+                    continue
+                discount = Decimal(str(calc.get("discount_amount") or "0"))
+                if discount <= 0:
+                    continue
+                if left is not None and discount > left:
+                    continue
+                if best_for_offer is None or discount > best_for_offer[0]:
+                    best_for_offer = (discount, target, calc)
+
+            if best_for_offer is None:
+                continue
+
+            key = (int(campaign.id), int(offer.id))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+
+            discount_amount, target, _ = best_for_offer
+            candidates.append(
+                {
+                    "kind": "public",
+                    "assignment_id": None,
+                    "public_offer_id": int(offer.id),
+                    "public_campaign_id": int(campaign.id),
+                    "discount_amount": str(discount_amount),
+                    "offer_payload": _public_offer_payload(offer, campaign, target),
+                    "priority": int(campaign.priority or 0),
+                }
+            )
+    return candidates
+
+
+def _collect_available_offers(
+    *,
+    user,
+    lines: list[Line],
+    points_rate: Decimal,
+    tier_points_multiplier: Decimal,
+    redeem_points: int,
+    gift_card_balance: Decimal,
+    now,
+) -> list[dict]:
+    """Return every applicable offer (personal + public) ordered by discount desc.
+
+    Each entry is a flat dict ready for the API response; the actual
+    `applied_offer` payload sits under `offer_payload` (same shape produced by
+    `_personal_offer_payload` / `_public_offer_payload`) so the frontend can
+    reuse existing rendering logic.
+    """
+    candidates: list[dict] = []
+
+    for assignment in _list_active_personal_assignments(user, now):
+        target = assignment.target or {"scope": "cart"}
+        calc = apply_offer_to_totals(
+            offer_type=assignment.offer.offer_type,
+            offer_value=Decimal(str(assignment.offer.value)),
+            target=target,
+            lines=lines,
+            points_rate=points_rate,
+            tier_points_multiplier=tier_points_multiplier,
+            redeem_points=redeem_points,
+            gift_card_balance=gift_card_balance,
+        )
+        if not calc.get("ok"):
+            continue
+        discount = Decimal(str(calc.get("discount_amount") or "0"))
+        if discount <= 0:
+            # Personal offer doesn't match current cart — skip from available list.
+            continue
+        candidates.append(
+            {
+                "kind": "personal",
+                "assignment_id": int(assignment.id),
+                "public_offer_id": None,
+                "public_campaign_id": None,
+                "discount_amount": str(discount),
+                "offer_payload": _personal_offer_payload(assignment, target),
+                "priority": 0,
+            }
+        )
+
+    candidates.extend(
+        _list_applicable_public_candidates(
+            lines=lines,
+            points_rate=points_rate,
+            tier_points_multiplier=tier_points_multiplier,
+            redeem_points=redeem_points,
+            gift_card_balance=gift_card_balance,
+            now=now,
+        )
+    )
+
+    def _sort_key(item: dict):
+        try:
+            discount = Decimal(item.get("discount_amount") or "0")
+        except (InvalidOperation, TypeError, ValueError):
+            discount = Decimal("0")
+        # Higher discount first; personal wins ties; lower campaign priority wins next tie.
+        kind_rank = 0 if item.get("kind") == "personal" else 1
+        return (-discount, kind_rank, item.get("priority", 0))
+
+    candidates.sort(key=_sort_key)
+    return candidates
+
+
+def _resolve_public_offer_by_id(
+    *,
+    lines: list[Line],
+    points_rate: Decimal,
+    tier_points_multiplier: Decimal,
+    redeem_points: int,
+    gift_card_balance: Decimal,
+    now,
+    public_offer_id: int,
+    lock: bool = False,
+) -> tuple[Offer, CampaignBudget, dict, dict]:
+    """Resolve a specific public offer for the cart, picking its best target.
+
+    Raises ValidationError if the offer is not applicable to the current cart
+    or its campaign is inactive / over budget.
+    """
+    try:
+        offer = Offer.objects.select_related("campaign").get(id=public_offer_id)
+    except Offer.DoesNotExist:
+        _raise_validation("Public offer not found")
+
+    campaign = offer.campaign
+    if campaign is None or campaign.campaign_type != CampaignBudget.Type.PUBLIC:
+        _raise_validation("Offer is not part of a public campaign")
+    if not campaign.is_active or not offer.is_active:
+        _raise_validation("Public offer is not active")
+
+    today = now.date()
+    if campaign.start_date and today < campaign.start_date:
+        _raise_validation("Campaign has not started yet")
+    if campaign.end_date and today > campaign.end_date:
+        _raise_validation("Campaign has ended")
+
+    weekly_limit = Decimal(str(campaign.weekly_limit or 0))
+    left = weekly_limit - _public_campaign_weekly_spent(campaign, now, reset=lock) if weekly_limit > 0 else None
+
+    best: tuple[Decimal, dict, dict] | None = None
+    for target in _public_offer_targets(offer, campaign, lines):
+        calc = apply_offer_to_totals(
+            offer_type=offer.offer_type,
+            offer_value=Decimal(str(offer.value)),
+            target=target,
+            lines=lines,
+            points_rate=points_rate,
+            tier_points_multiplier=tier_points_multiplier,
+            redeem_points=redeem_points,
+            gift_card_balance=gift_card_balance,
+        )
+        if not calc.get("ok"):
+            continue
+        discount = Decimal(str(calc.get("discount_amount") or "0"))
+        if discount <= 0:
+            continue
+        if left is not None and discount > left:
+            continue
+        if best is None or discount > best[0]:
+            best = (discount, target, calc)
+
+    if best is None:
+        _raise_validation("Selected promotion does not apply to this cart")
+
+    _, target, calc = best
     return offer, campaign, target, calc
 
 
@@ -427,10 +821,11 @@ class CheckoutView(APIView):
             public_calc = None
 
             apply_assignment_id = data.get("apply_assignment_id")
+            apply_public_offer_id_req = data.get("apply_public_offer_id")
             if apply_assignment_id is not None:
                 assignment = (
                     OfferAssignment.objects.select_for_update()
-                    .select_related("offer")
+                    .select_related("offer", "offer__campaign")
                     .get(id=apply_assignment_id, user=request.user)
                 )
 
@@ -451,16 +846,25 @@ class CheckoutView(APIView):
                 offer_value = Decimal(str(assignment.offer.value))
                 target = assignment.target or {"scope": "cart"}
                 applied_target = target
-                applied_offer_payload = {
-                    "assignment_id": assignment.id,
-                    "offer": {
-                        "id": assignment.offer.id,
-                        "name": assignment.offer.name,
-                        "type": assignment.offer.offer_type,
-                        "value": str(assignment.offer.value),
-                    },
-                    "target": target,
-                }
+                applied_offer_payload = _personal_offer_payload(assignment, target)
+            elif apply_public_offer_id_req is not None:
+                public_offer, public_campaign, public_target, public_calc = _resolve_public_offer_by_id(
+                    lines=lines,
+                    points_rate=points_rate,
+                    tier_points_multiplier=tier_points_multiplier,
+                    redeem_points=requested_redeem_points,
+                    gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
+                    now=now,
+                    public_offer_id=int(apply_public_offer_id_req),
+                    lock=True,
+                )
+                offer_type = public_offer.offer_type
+                offer_value = Decimal(str(public_offer.value))
+                target = public_target
+                applied_target = target
+                applied_public_offer_id = public_offer.id
+                applied_public_campaign_id = public_campaign.id
+                applied_offer_payload = _public_offer_payload(public_offer, public_campaign, target)
             else:
                 public_offer, public_campaign, public_target, public_calc = _find_public_campaign_offer(
                     lines=lines,
@@ -705,19 +1109,12 @@ class CheckoutView(APIView):
             next_offer_payload = None
             if next_assignment:
                 expires_at_value = getattr(next_assignment, "expires_at", None)
-                next_offer_payload = {
-                    "assignment_id": next_assignment.id,
-                    "offer": {
-                        "id": next_assignment.offer.id,
-                        "name": next_assignment.offer.name,
-                        "type": next_assignment.offer.offer_type,
-                        "value": str(next_assignment.offer.value),
-                        "estimated_cost": str(getattr(next_assignment.offer, "estimated_cost", "")),
-                    },
-                    "target": next_assignment.target,
-                    "reason": next_assignment.reason,
-                    "expires_at": expires_at_value.isoformat() if expires_at_value else None,
-                }
+                next_offer_payload = _personal_offer_payload(next_assignment, next_assignment.target)
+                next_offer_payload["reason"] = next_assignment.reason
+                next_offer_payload["expires_at"] = expires_at_value.isoformat() if expires_at_value else None
+                next_offer_payload["offer"]["estimated_cost"] = str(
+                    getattr(next_assignment.offer, "estimated_cost", "")
+                )
 
                 # AUDIT: next offer assigned
                 t = next_assignment.target or {}
@@ -957,14 +1354,16 @@ class CheckoutPreviewView(APIView):
         public_calc = None
 
         apply_id = data.get("apply_assignment_id")
+        apply_public_offer_id = data.get("apply_public_offer_id")
+        now_value = timezone.now()
         if apply_id is not None:
-            a = OfferAssignment.objects.select_related("offer").get(id=apply_id, user=request.user)
+            a = OfferAssignment.objects.select_related("offer", "offer__campaign").get(id=apply_id, user=request.user)
             if a.is_redeemed:
                 return Response({"ok": False, "message": "Offer already redeemed"}, status=400)
             request_id = getattr(request, "request_id", None) or request.headers.get("X-Request-ID")
             if expire_assignment_if_needed(
                 a,
-                now=timezone.now(),
+                now=now_value,
                 source="checkout_preview_offer_validation",
                 request_id=request_id,
             ):
@@ -976,11 +1375,7 @@ class CheckoutPreviewView(APIView):
             offer_type = a.offer.offer_type
             offer_value = Decimal(str(a.offer.value))
             offer_applied = True
-            offer_payload = {
-                "assignment_id": a.id,
-                "offer": {"id": a.offer.id, "name": a.offer.name, "type": a.offer.offer_type, "value": str(a.offer.value)},
-                "target": target,
-            }
+            offer_payload = _personal_offer_payload(a, target)
 
         redeem_points = int(data.get("redeem_points") or 0)
         if redeem_points > account.points_balance:
@@ -988,7 +1383,7 @@ class CheckoutPreviewView(APIView):
         gift_card = None
         if data.get("gift_card_code"):
             try:
-                gift_card = _load_redeemable_gift_card_or_raise(data["gift_card_code"], now=timezone.now())
+                gift_card = _load_redeemable_gift_card_or_raise(data["gift_card_code"], now=now_value)
             except ValidationError as exc:
                 detail = exc.detail if isinstance(exc.detail, dict) else {}
                 return Response(
@@ -996,14 +1391,38 @@ class CheckoutPreviewView(APIView):
                     status=400,
                 )
 
-        if apply_id is None:
+        if apply_id is None and apply_public_offer_id is not None:
+            try:
+                public_offer, public_campaign, public_target, public_calc = _resolve_public_offer_by_id(
+                    lines=lines,
+                    points_rate=points_rate,
+                    tier_points_multiplier=tier_points_multiplier,
+                    redeem_points=redeem_points,
+                    gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
+                    now=now_value,
+                    public_offer_id=int(apply_public_offer_id),
+                    lock=False,
+                )
+            except ValidationError as exc:
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                return Response(
+                    {"ok": False, "message": detail.get("message", "Promotion not applicable")},
+                    status=400,
+                )
+            target = public_target
+            offer_type = public_offer.offer_type
+            offer_value = Decimal(str(public_offer.value))
+            offer_applied = True
+            offer_payload = _public_offer_payload(public_offer, public_campaign, target)
+
+        if apply_id is None and apply_public_offer_id is None:
             public_offer, public_campaign, public_target, public_calc = _find_public_campaign_offer(
                 lines=lines,
                 points_rate=points_rate,
                 tier_points_multiplier=tier_points_multiplier,
                 redeem_points=redeem_points,
                 gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
-                now=timezone.now(),
+                now=now_value,
                 lock=False,
             )
             if public_offer is not None and public_campaign is not None and public_target is not None:
@@ -1046,6 +1465,16 @@ class CheckoutPreviewView(APIView):
                 balance_after=balance_after,
             )
 
+        available_offers = _collect_available_offers(
+            user=request.user,
+            lines=lines,
+            points_rate=points_rate,
+            tier_points_multiplier=tier_points_multiplier,
+            redeem_points=redeem_points,
+            gift_card_balance=gift_card.remaining_amount if gift_card else Decimal("0"),
+            now=now_value,
+        )
+
         return Response({
             "ok": True,
             "gross_total": str(gross_total),
@@ -1053,6 +1482,7 @@ class CheckoutPreviewView(APIView):
             "net_total": str(net_total),
             "offer_applied": offer_applied,
             "applied_offer": offer_payload,
+            "available_offers": available_offers,
             "target": target,
             "eligible_total": str(eligible_total),
             "points_rate": str(points_rate),

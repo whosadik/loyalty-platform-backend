@@ -49,6 +49,25 @@ def is_eligible(product: Product, target: dict) -> bool:
     scope = target.get("scope", "cart")
     value = target.get("value")
     cat = target.get("category")
+    product_ids = target.get("product_ids") or []
+    brands = target.get("brands") or []
+    product_types = target.get("product_types") or []
+
+    if product_ids:
+        try:
+            normalized_ids = {int(x) for x in product_ids}
+        except Exception:
+            normalized_ids = set()
+        if int(product.id) not in normalized_ids:
+            return False
+
+    if brands:
+        normalized_brands = {str(x).strip().casefold() for x in brands if str(x).strip()}
+        if normalized_brands and str(product.brand or "").strip().casefold() not in normalized_brands:
+            return False
+
+    if product_types and str(product.product_type or "") not in {str(x) for x in product_types}:
+        return False
 
     if scope == "cart":
         return True
@@ -56,6 +75,8 @@ def is_eligible(product: Product, target: dict) -> bool:
         return int(product.id) == int(value)
     if scope == "category":
         return product.category == value
+    if scope == "brand":
+        return str(product.brand or "").strip().casefold() == str(value or "").strip().casefold()
     if scope == "product_type":
         if cat and product.category != cat:
             return False

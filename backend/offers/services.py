@@ -75,7 +75,7 @@ def _campaign_candidates(context_steps: list[str] | None, post_ctx: dict | None)
 
     today = timezone.now().date()
     qs = list(
-        CampaignBudget.objects.filter(is_active=True)
+        CampaignBudget.objects.filter(is_active=True, campaign_type=CampaignBudget.Type.PERSONAL)
         .filter(Q(start_date__isnull=True) | Q(start_date__lte=today))
         .filter(Q(end_date__isnull=True) | Q(end_date__gte=today))
         .order_by("priority", "id")
@@ -164,6 +164,42 @@ def _effective_allowed_steps(offer: Offer, camp: CampaignBudget | None) -> list[
     if o and c:
         return [x for x in o if x in c]
     return o or c
+
+
+def _effective_allowed_brands(offer: Offer, camp: CampaignBudget | None) -> list[str]:
+    o = [str(x).strip() for x in (getattr(offer, "allowed_brands", []) or []) if str(x).strip()]
+    c = [str(x).strip() for x in ((getattr(camp, "allowed_brands", []) or []) if camp else []) if str(x).strip()]
+    if o and c:
+        c_lookup = {x.casefold() for x in c}
+        return [x for x in o if x.casefold() in c_lookup]
+    return o or c
+
+
+def _effective_allowed_product_ids(offer: Offer, camp: CampaignBudget | None) -> list[int]:
+    def clean(values) -> list[int]:
+        out: list[int] = []
+        for value in values or []:
+            try:
+                product_id = int(value)
+            except (TypeError, ValueError):
+                continue
+            if product_id > 0 and product_id not in out:
+                out.append(product_id)
+        return out
+
+    o = clean(getattr(offer, "allowed_product_ids", []) or [])
+    c = clean((getattr(camp, "allowed_product_ids", []) or []) if camp else [])
+    if o and c:
+        c_set = set(c)
+        return [x for x in o if x in c_set]
+    return o or c
+
+
+def _brand_allowed(product_brand: str, allowed_brands: list[str]) -> bool:
+    if not allowed_brands:
+        return True
+    lookup = {x.casefold() for x in allowed_brands}
+    return str(product_brand or "").strip().casefold() in lookup
 
 
 
@@ -583,6 +619,46 @@ def _pick_target_for_offer(
     # 2) if cart
     if offer.target_scope == "cart":
         return {"scope": "cart"}
+
+    allowed_brands_for_target = _effective_allowed_brands(offer, campaign)
+    allowed_product_ids_for_target = _effective_allowed_product_ids(offer, campaign)
+
+    if offer.target_scope == "brand":
+        if allowed_brands_for_target:
+            return {
+                "scope": "brand",
+                "value": allowed_brands_for_target[0],
+                "picked_via": "brand_target",
+            }
+        return {"scope": "cart", "picked_via": "brand_target_fallback"}
+
+    if offer.target_scope == "product_id" and allowed_product_ids_for_target:
+        allowed_cats_for_target = _effective_allowed_categories(offer, campaign)
+        allowed_pts_for_target = offer.allowed_product_types or []
+        product_qs = Product.objects.filter(id__in=allowed_product_ids_for_target, in_stock=True).order_by("id")
+        if allowed_cats_for_target:
+            product_qs = product_qs.filter(category__in=allowed_cats_for_target)
+        if allowed_pts_for_target:
+            product_qs = product_qs.filter(product_type__in=allowed_pts_for_target)
+        products_by_id = {p.id: p for p in product_qs}
+        recent_vals = _recent_target_values(user, days=7, now=now)
+        owned_ids = set(OwnedProduct.objects.filter(user=user, is_active=True).values_list("product_id", flat=True))
+        for product_id in allowed_product_ids_for_target:
+            product = products_by_id.get(product_id)
+            if not product:
+                continue
+            if not _brand_allowed(product.brand, allowed_brands_for_target):
+                continue
+            if product.id in recent_vals or product.id in owned_ids:
+                continue
+            return {
+                "scope": "product_id",
+                "value": product.id,
+                "category": product.category,
+                "brand": product.brand,
+                "product_type": product.product_type,
+                "picked_via": "explicit_product_ids",
+            }
     
     # ---- Bundle-driven target (post-purchase) ----
     if settings.USE_BUNDLE_TARGETING and post_ctx and offer.target_scope == "product_id":
@@ -603,7 +679,7 @@ def _pick_target_for_offer(
         if allowed_cats and forced_category not in allowed_cats:
             return {"scope": "category", "value": forced_category, "picked_via": "favorite_category_fallback"}
         allowed_cats = [forced_category]
-    allowed_pts = offer.allowed_product_types or []
+    allowed_pts = _effective_allowed_steps(offer, campaign) or (offer.allowed_product_types or [])
 
     cp, _ = CustomerProfile.objects.get_or_create(user=user)
     prof = _build_rec_profile(cp)
@@ -922,6 +998,16 @@ def _select_offer(user, now: datetime, context_steps: list[str] | None, post_ctx
             # пересечение ограничений offer/campaign по категориям
             eff_cats = _effective_allowed_categories(o, camp)
             if (o.allowed_categories or []) and (camp.allowed_categories or []) and not eff_cats:
+                continue
+            eff_brands = _effective_allowed_brands(o, camp)
+            if (getattr(o, "allowed_brands", []) or []) and (getattr(camp, "allowed_brands", []) or []) and not eff_brands:
+                continue
+            eff_product_ids = _effective_allowed_product_ids(o, camp)
+            if (
+                (getattr(o, "allowed_product_ids", []) or [])
+                and (getattr(camp, "allowed_product_ids", []) or [])
+                and not eff_product_ids
+            ):
                 continue
             if _is_favorite_category_campaign(camp):
                 if o.target_scope == "cart":

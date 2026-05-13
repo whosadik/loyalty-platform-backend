@@ -15,6 +15,7 @@ class CheckoutRequestSerializer(serializers.Serializer):
     idempotency_key = serializers.CharField(required=False, allow_blank=False, max_length=64)
 
     apply_assignment_id = serializers.IntegerField(required=False)
+    apply_public_offer_id = serializers.IntegerField(required=False)
     redeem_points = serializers.IntegerField(required=False, min_value=1)
     gift_card_code = serializers.CharField(required=False, allow_blank=False, max_length=64)
 

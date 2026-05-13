@@ -23,13 +23,37 @@ class CampaignSerializer(serializers.ModelSerializer):
         if start and end and end < start:
             raise serializers.ValidationError({"end_date": "End date cannot be earlier than start date."})
 
+        for field in ("allowed_categories", "allowed_steps", "allowed_brands"):
+            if field in attrs and attrs[field] is None:
+                attrs[field] = []
+        if "allowed_product_ids" in attrs:
+            attrs["allowed_product_ids"] = self._normalize_product_ids(attrs.get("allowed_product_ids"))
+        if "recommendation_rules" in attrs and attrs["recommendation_rules"] is None:
+            attrs["recommendation_rules"] = {}
+
         return attrs
+
+    def _normalize_product_ids(self, value) -> list[int]:
+        if not value:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError({"allowed_product_ids": "Expected a list of product ids."})
+        out = []
+        for item in value:
+            try:
+                product_id = int(item)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError({"allowed_product_ids": "Product ids must be integers."})
+            if product_id > 0 and product_id not in out:
+                out.append(product_id)
+        return out
 
     class Meta:
         model = CampaignBudget
         fields = [
             "id",
             "name",
+            "campaign_type",
             "is_active",
             "priority",
             "weekly_limit",
@@ -38,7 +62,10 @@ class CampaignSerializer(serializers.ModelSerializer):
             "end_date",
             "allowed_categories",
             "allowed_steps",
+            "allowed_brands",
+            "allowed_product_ids",
             "tiers",
+            "recommendation_rules",
             "promo_text",
             "banner_url",
             "offers_count",
@@ -60,6 +87,8 @@ class OfferAdminSerializer(serializers.ModelSerializer):
             "cooldown_days",
             "expires_in_days",
             "allowed_categories",
+            "allowed_brands",
+            "allowed_product_ids",
             "allowed_product_types",
             "allowed_steps",
             "min_total_spend_90d",
@@ -92,5 +121,27 @@ class OfferAdminSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"allowed_product_types": "Required when target scope is 'product_type'."}
                 )
+        if target_scope == "brand":
+            brands = attrs.get("allowed_brands", getattr(self.instance, "allowed_brands", []) or [])
+            if not brands:
+                raise serializers.ValidationError({"allowed_brands": "Required when target scope is 'brand'."})
+
+        if "allowed_product_ids" in attrs:
+            attrs["allowed_product_ids"] = self._normalize_product_ids(attrs.get("allowed_product_ids"))
 
         return attrs
+
+    def _normalize_product_ids(self, value) -> list[int]:
+        if not value:
+            return []
+        if not isinstance(value, list):
+            raise serializers.ValidationError({"allowed_product_ids": "Expected a list of product ids."})
+        out = []
+        for item in value:
+            try:
+                product_id = int(item)
+            except (TypeError, ValueError):
+                raise serializers.ValidationError({"allowed_product_ids": "Product ids must be integers."})
+            if product_id > 0 and product_id not in out:
+                out.append(product_id)
+        return out

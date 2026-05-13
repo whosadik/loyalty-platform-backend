@@ -364,8 +364,21 @@ def build_offer_assignment_payload(
     include_estimated_cost: bool = False,
     product_cache: dict[int, Product] | None = None,
 ) -> dict:
+    campaign = getattr(assignment.offer, "campaign", None)
+    campaign_type = getattr(campaign, "campaign_type", None) if campaign else None
     payload = {
         "assignment_id": assignment.id,
+        "source": "public_campaign" if campaign_type == "public" else "personal_system",
+        "public_campaign": campaign_type == "public",
+        "campaign": (
+            {
+                "id": campaign.id,
+                "name": campaign.name,
+                "type": campaign_type,
+            }
+            if campaign
+            else None
+        ),
         "expires_at": assignment.expires_at,
         "target": assignment.target,
         "reason": assignment.reason,
