@@ -61,3 +61,6 @@ backend/reports/final_audit_roadmap_ml_freeze_status_after_smoke.json
 backend/reports/final_audit_roadmap_ml_freeze_status.json
 backend/reports/final_audit_roadmap_runtime_integrity.json
 backend/reports/final_audit_product_system_after_offer_cleanup.json
+loyalty_production.dump
+media.tar
+backend/catalog/templates/catalog/manual_images.html
