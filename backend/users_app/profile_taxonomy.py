@@ -126,15 +126,15 @@ PROFILE_TAXONOMY_PAYLOADS: dict[AppLanguage, dict[str, object]] = {
             {"value": "gluten", "label": "Глютен", "aliases": ["gluten"]},
         ],
         "budget_options": [
-            {"value": CustomerProfile.Budget.LOW, "label": "До 2 500 ₸", "min": 500, "max": 2500, "currency": "KZT"},
+            {"value": CustomerProfile.Budget.LOW, "label": "До 20 000 ₸", "min": 0, "max": 20000, "currency": "KZT"},
             {
                 "value": CustomerProfile.Budget.MEDIUM,
-                "label": "2 500 - 7 500 ₸",
-                "min": 2500,
-                "max": 7500,
+                "label": "20 000 – 50 000 ₸",
+                "min": 20000,
+                "max": 50000,
                 "currency": "KZT",
             },
-            {"value": CustomerProfile.Budget.HIGH, "label": "От 7 500 ₸", "min": 7500, "max": None, "currency": "KZT"},
+            {"value": CustomerProfile.Budget.HIGH, "label": "От 50 000 ₸", "min": 50000, "max": None, "currency": "KZT"},
         ],
         "hair_types": [
             {"value": "straight", "label": "Прямые", "aliases": ["straight", "тік"]},
@@ -293,15 +293,15 @@ PROFILE_TAXONOMY_PAYLOADS: dict[AppLanguage, dict[str, object]] = {
             {"value": "gluten", "label": "Глютен", "aliases": ["gluten"]},
         ],
         "budget_options": [
-            {"value": CustomerProfile.Budget.LOW, "label": "2 500 ₸ дейін", "min": 500, "max": 2500, "currency": "KZT"},
+            {"value": CustomerProfile.Budget.LOW, "label": "20 000 ₸ дейін", "min": 0, "max": 20000, "currency": "KZT"},
             {
                 "value": CustomerProfile.Budget.MEDIUM,
-                "label": "2 500 - 7 500 ₸",
-                "min": 2500,
-                "max": 7500,
+                "label": "20 000 – 50 000 ₸",
+                "min": 20000,
+                "max": 50000,
                 "currency": "KZT",
             },
-            {"value": CustomerProfile.Budget.HIGH, "label": "7 500 ₸ бастап", "min": 7500, "max": None, "currency": "KZT"},
+            {"value": CustomerProfile.Budget.HIGH, "label": "50 000 ₸ бастап", "min": 50000, "max": None, "currency": "KZT"},
         ],
         "hair_types": [
             {"value": "straight", "label": "Тік", "aliases": ["straight", "прямые"]},
@@ -428,15 +428,15 @@ PROFILE_TAXONOMY_PAYLOADS: dict[AppLanguage, dict[str, object]] = {
             {"value": "gluten", "label": "Gluten", "aliases": ["глютен"]},
         ],
         "budget_options": [
-            {"value": CustomerProfile.Budget.LOW, "label": "Up to 2,500 ₸", "min": 500, "max": 2500, "currency": "KZT"},
+            {"value": CustomerProfile.Budget.LOW, "label": "Up to 20,000 ₸", "min": 0, "max": 20000, "currency": "KZT"},
             {
                 "value": CustomerProfile.Budget.MEDIUM,
-                "label": "2,500 - 7,500 ₸",
-                "min": 2500,
-                "max": 7500,
+                "label": "20,000 – 50,000 ₸",
+                "min": 20000,
+                "max": 50000,
                 "currency": "KZT",
             },
-            {"value": CustomerProfile.Budget.HIGH, "label": "From 7,500 ₸", "min": 7500, "max": None, "currency": "KZT"},
+            {"value": CustomerProfile.Budget.HIGH, "label": "From 50,000 ₸", "min": 50000, "max": None, "currency": "KZT"},
         ],
         "hair_types": [
             {"value": "straight", "label": "Straight", "aliases": ["прямые", "тік"]},

@@ -17,11 +17,11 @@ class UserProfile:
 
 
 def _budget_price_cap(budget: str) -> float | None:
-    # MVP caps: можно менять
+    # Caps in KZT, aligned with profile_taxonomy.budget_options.
     if budget == "low":
-        return 15.0
+        return 20000.0
     if budget == "medium":
-        return 30.0
+        return 50000.0
     return None  # high = без капа
 
 
