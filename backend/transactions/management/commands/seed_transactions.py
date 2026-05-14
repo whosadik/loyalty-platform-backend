@@ -51,8 +51,8 @@ class Command(BaseCommand):
 
         # ensure tiers exist
         Tier.objects.get_or_create(name="Bronze", defaults={"threshold_spend_90d": 0, "points_rate": DEFAULT_POINTS_RATE})
-        Tier.objects.get_or_create(name="Silver", defaults={"threshold_spend_90d": 100, "points_rate": DEFAULT_POINTS_RATE})
-        Tier.objects.get_or_create(name="Gold", defaults={"threshold_spend_90d": 250, "points_rate": DEFAULT_POINTS_RATE})
+        Tier.objects.get_or_create(name="Silver", defaults={"threshold_spend_90d": 50000, "points_rate": DEFAULT_POINTS_RATE})
+        Tier.objects.get_or_create(name="Gold", defaults={"threshold_spend_90d": 300000, "points_rate": DEFAULT_POINTS_RATE})
 
         # users
         users = list(User.objects.all().order_by("id")[: opt["users"]])
