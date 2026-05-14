@@ -400,12 +400,13 @@ def _find_public_campaign_offer(
     best: tuple[Decimal, int, int, Offer, CampaignBudget, dict, dict] | None = None
 
     for campaign in campaigns:
-        left = Decimal(str(campaign.weekly_limit)) - _public_campaign_weekly_spent(
-            campaign,
-            now,
-            reset=lock,
+        weekly_limit = Decimal(str(campaign.weekly_limit or 0))
+        left = (
+            weekly_limit - _public_campaign_weekly_spent(campaign, now, reset=lock)
+            if weekly_limit > 0
+            else None
         )
-        if left <= 0:
+        if left is not None and left <= 0:
             continue
 
         offers = [
@@ -429,7 +430,9 @@ def _find_public_campaign_offer(
                     continue
 
                 discount_amount = Decimal(str(calc.get("discount_amount") or "0"))
-                if discount_amount <= 0 or discount_amount > left:
+                if discount_amount <= 0:
+                    continue
+                if left is not None and discount_amount > left:
                     continue
 
                 candidate = (
@@ -824,7 +827,7 @@ class CheckoutView(APIView):
             apply_public_offer_id_req = data.get("apply_public_offer_id")
             if apply_assignment_id is not None:
                 assignment = (
-                    OfferAssignment.objects.select_for_update()
+                    OfferAssignment.objects.select_for_update(of=("self",))
                     .select_related("offer", "offer__campaign")
                     .get(id=apply_assignment_id, user=request.user)
                 )

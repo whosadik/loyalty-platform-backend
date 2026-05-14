@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from rest_framework import serializers
 
 from backend.request_language import AppLanguage, get_context_language
 from catalog.models import Product
+from catalog.sale_fields import (
+    get_product_discount_percent,
+    get_product_effective_price,
+    get_product_original_price,
+    product_has_discount,
+)
 from catalog.serializers import ProductSerializer
-from loyalty.points import DEFAULT_POINTS_RATE
+from catalog.product_metrics import get_product_points_earned
 from roadmap_app.serializers import serialize_roadmap_step_snapshot
 from .models import CartItem, OwnedProduct, Transaction, TransactionItem, WishlistItem
 
@@ -301,6 +307,10 @@ class OwnedProductSerializer(serializers.ModelSerializer):
 
 
 class ProductSummarySerializer(serializers.ModelSerializer):
+    price = serializers.SerializerMethodField()
+    original_price = serializers.SerializerMethodField()
+    discount = serializers.SerializerMethodField()
+    has_discount = serializers.SerializerMethodField()
     points_earned = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
 
@@ -317,8 +327,25 @@ class ProductSummarySerializer(serializers.ModelSerializer):
             "in_stock",
             "image_url",
             "image_urls",
+            "original_price",
+            "discount",
+            "has_discount",
             "points_earned",
         ]
+
+    def get_price(self, obj: Product) -> str | None:
+        price = get_product_effective_price(obj)
+        return str(price) if price is not None else None
+
+    def get_original_price(self, obj: Product) -> str | None:
+        original_price = get_product_original_price(obj)
+        return str(original_price) if original_price is not None else None
+
+    def get_discount(self, obj: Product) -> int | None:
+        return get_product_discount_percent(obj)
+
+    def get_has_discount(self, obj: Product) -> bool:
+        return product_has_discount(obj)
 
     def get_image_url(self, obj: Product) -> str:
         if obj.image:
@@ -329,12 +356,9 @@ class ProductSummarySerializer(serializers.ModelSerializer):
         return obj.image_url or ""
 
     def get_points_earned(self, obj: Product) -> int:
-        try:
-            price = Decimal(str(obj.price or "0"))
-        except Exception:
-            price = Decimal("0")
-        points = (price * DEFAULT_POINTS_RATE).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-        return max(0, int(points))
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request is not None else None
+        return get_product_points_earned(obj, user=user)
 
 
 class WishlistItemSerializer(serializers.ModelSerializer):

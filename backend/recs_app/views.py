@@ -215,7 +215,7 @@ class MeRecommendationsView(APIView):
         )
         algo_routing = dict(algo_routing or {})
         algo_routing.update(context_meta)
-        results_enriched = _enrich_results_with_catalog_payload(results)
+        results_enriched = _enrich_results_with_catalog_payload(results, request=request)
         _write_recommendation_impressions(
             request=request,
             batches=[
@@ -328,7 +328,7 @@ class MeBundleView(APIView):
             owned_active_ids=owned_active_ids,
             co_source=co_source,
         )
-        results_enriched = _enrich_results_with_catalog_payload(results)
+        results_enriched = _enrich_results_with_catalog_payload(results, request=request)
         bundle_ctx = _recs_event_context(
             algo_requested=algo_requested,
             algo_used=algo_used,
@@ -400,7 +400,7 @@ def _product_obj_to_dict(p: Product) -> dict[str, Any]:
     }
 
 
-def _enrich_results_with_catalog_payload(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _enrich_results_with_catalog_payload(results: list[dict[str, Any]], request=None) -> list[dict[str, Any]]:
     product_ids: list[int] = []
     for row in results:
         product = row.get("product") or {}
@@ -415,7 +415,11 @@ def _enrich_results_with_catalog_payload(results: list[dict[str, Any]]) -> list[
     if not product_ids:
         return results
 
-    serialized = ProductSerializer(Product.objects.filter(id__in=product_ids), many=True).data
+    serialized = ProductSerializer(
+        Product.objects.filter(id__in=product_ids),
+        many=True,
+        context={"request": request} if request is not None else {},
+    ).data
     by_id = {int(item["id"]): item for item in serialized}
 
     enriched: list[dict[str, Any]] = []
@@ -808,9 +812,9 @@ class HomeRecommendationsView(APIView):
             ],
         )
 
-        for_you_enriched = _enrich_results_with_catalog_payload(for_you)
-        because_enriched = _enrich_results_with_catalog_payload(because)
-        trending_enriched = _enrich_results_with_catalog_payload(trending)
+        for_you_enriched = _enrich_results_with_catalog_payload(for_you, request=request)
+        because_enriched = _enrich_results_with_catalog_payload(because, request=request)
+        trending_enriched = _enrich_results_with_catalog_payload(trending, request=request)
 
         return Response({
             "ok": True,

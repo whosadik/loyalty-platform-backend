@@ -9,10 +9,16 @@ from .product_metrics import (
     get_product_rating,
     get_product_reviews_count,
 )
-from .sale_fields import get_product_discount_percent, get_product_original_price, product_has_discount
+from .sale_fields import (
+    get_product_discount_percent,
+    get_product_effective_price,
+    get_product_original_price,
+    product_has_discount,
+)
 
 
 class ProductSerializer(serializers.ModelSerializer):
+    price = serializers.SerializerMethodField()
     brand_slug = serializers.SerializerMethodField()
     original_price = serializers.SerializerMethodField()
     discount = serializers.SerializerMethodField()
@@ -34,6 +40,10 @@ class ProductSerializer(serializers.ModelSerializer):
     def get_brand_slug(self, obj: Product) -> str:
         return get_product_brand_slug(obj)
 
+    def get_price(self, obj: Product) -> str | None:
+        price = get_product_effective_price(obj)
+        return str(price) if price is not None else None
+
     def get_original_price(self, obj: Product) -> str | None:
         original_price = get_product_original_price(obj)
         return str(original_price) if original_price is not None else None
@@ -45,7 +55,9 @@ class ProductSerializer(serializers.ModelSerializer):
         return product_has_discount(obj)
 
     def get_points_earned(self, obj: Product) -> int:
-        return get_product_points_earned(obj)
+        request = self.context.get("request")
+        user = getattr(request, "user", None) if request is not None else None
+        return get_product_points_earned(obj, user=user)
 
     def get_is_new(self, obj: Product) -> bool:
         return created_at_is_new(obj.created_at)

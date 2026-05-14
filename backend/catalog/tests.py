@@ -12,6 +12,9 @@ from django.utils import timezone
 from rest_framework.test import APITestCase
 
 from catalog.models import Product, ProductReview
+from loyalty.models import LoyaltyAccount, Tier
+from offers.models import CampaignBudget, Offer
+from transactions.models import CartItem
 
 try:
     from openpyxl import Workbook
@@ -368,6 +371,104 @@ class ProductSaleApiTests(APITestCase):
 
         names = {item["name"] for item in resp.data}
         self.assertEqual(names, {"Sale Serum", "Discount Mask"})
+
+    def test_public_catalog_campaign_updates_product_sale_price(self):
+        public_product = Product.objects.create(
+            name="Public Promo Perfume",
+            brand="Boucheron",
+            price=Decimal("200.00"),
+            category=Product.Category.FRAGRANCE,
+            product_type="edp",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+        campaign = CampaignBudget.objects.create(
+            name="catalog_public_sale",
+            campaign_type=CampaignBudget.Type.PUBLIC,
+            is_active=True,
+            weekly_limit=Decimal("0.00"),
+            weekly_spent=Decimal("0.00"),
+            allowed_categories=[Product.Category.FRAGRANCE],
+        )
+        Offer.objects.create(
+            name="Fragrance 50",
+            offer_type=Offer.Type.DISCOUNT,
+            value=Decimal("50.00"),
+            is_active=True,
+            target_scope="category",
+            allowed_categories=[Product.Category.FRAGRANCE],
+            campaign=campaign,
+        )
+
+        resp = self.client.get(f"/api/products/{public_product.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["price"], "100.00")
+        self.assertEqual(resp.data["original_price"], "200.00")
+        self.assertEqual(resp.data["discount"], 50)
+        self.assertTrue(resp.data["has_discount"])
+
+        sale_resp = self.client.get("/api/products/?sale=true")
+        self.assertEqual(sale_resp.status_code, 200)
+        names = {item["name"] for item in sale_resp.data}
+        self.assertIn("Public Promo Perfume", names)
+
+    def test_points_earned_uses_sale_price_and_user_tier(self):
+        gold, _ = Tier.objects.get_or_create(
+            name="Gold",
+            defaults={"threshold_spend_90d": Decimal("1000.00"), "points_rate": Decimal("0.01")},
+        )
+        LoyaltyAccount.objects.update_or_create(
+            user=self.user,
+            defaults={"tier": gold, "points_balance": 0},
+        )
+        public_product = Product.objects.create(
+            name="Gold Promo Serum",
+            brand="L'Oreal Professionnel",
+            price=Decimal("30000.00"),
+            category=Product.Category.HAIRCARE,
+            product_type="serum",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=[],
+            strength=Product.Strength.LOW,
+            in_stock=True,
+        )
+        campaign = CampaignBudget.objects.create(
+            name="gold_points_catalog_sale",
+            campaign_type=CampaignBudget.Type.PUBLIC,
+            is_active=True,
+            weekly_limit=Decimal("0.00"),
+            weekly_spent=Decimal("0.00"),
+            allowed_categories=[Product.Category.HAIRCARE],
+        )
+        Offer.objects.create(
+            name="Haircare 20",
+            offer_type=Offer.Type.DISCOUNT,
+            value=Decimal("20.00"),
+            is_active=True,
+            target_scope="category",
+            allowed_categories=[Product.Category.HAIRCARE],
+            campaign=campaign,
+        )
+
+        resp = self.client.get(f"/api/products/{public_product.id}/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["price"], "24000.00")
+        self.assertEqual(resp.data["points_earned"], 480)
+
+        CartItem.objects.create(user=self.user, product=public_product, quantity=1)
+        cart_resp = self.client.get("/api/me/cart")
+        self.assertEqual(cart_resp.status_code, 200)
+        cart_product = cart_resp.data["items"][0]["product"]
+        self.assertEqual(cart_product["price"], "24000.00")
+        self.assertEqual(cart_product["points_earned"], 480)
 
 
 class ProductReviewApiTests(APITestCase):

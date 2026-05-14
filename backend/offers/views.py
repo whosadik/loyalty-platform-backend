@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from catalog.models import Product
+from catalog.serializers import ProductSerializer
 from users_app.models import CustomerProfile
 from transactions.models import OwnedProduct, Transaction, TransactionItem
 from loyalty.models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
@@ -17,6 +18,7 @@ from .serializers import RedeemOfferRequestSerializer, RedeemOfferResponseSerial
 from offers.services import deactivate_stale_roadmap_assignment, expire_assignment_if_needed, get_or_assign_next_offer 
 from offers.events import record_offer_event
 from offers.presentation import build_offer_assignment_payload, build_offer_product_cache
+from offers.public_catalog_pricing import product_queryset_for_public_offer
 from ml_logic.next_best_reward import compute_rfm, segment, pick_next_offer
 from ml_logic.routine_builder import Profile, build_routine
 from ml_logic.recommender import (
@@ -42,6 +44,7 @@ from roadmap_app.events import record_exposed_from_offer_assignment
 
 HOME_PROMO_BANNERS_DEFAULT_LIMIT = 6
 HOME_PROMO_BANNERS_MAX_LIMIT = 8
+PROMOTION_DETAIL_PRODUCTS_LIMIT = 24
 
 
 def _public_campaigns_qs(now):
@@ -783,7 +786,23 @@ class PromotionBannerDetailView(APIView):
         if campaign is None:
             return Response({"ok": False, "message": "Campaign not found"}, status=404)
 
-        offers = Offer.objects.filter(campaign=campaign, is_active=True).order_by("id")
+        offers = list(Offer.objects.filter(campaign=campaign, is_active=True).order_by("id"))
+        base_products = Product.objects.filter(in_stock=True)
+        offer_product_counts: dict[int, int] = {}
+        products_qs = Product.objects.none()
+        for offer in offers:
+            matching_products = product_queryset_for_public_offer(offer, campaign, base_products)
+            offer_product_counts[offer.id] = matching_products.count()
+            products_qs = products_qs | matching_products
+
+        products_qs = products_qs.distinct().order_by("id")
+        products_count = products_qs.count()
+        products_payload = ProductSerializer(
+            products_qs[:PROMOTION_DETAIL_PRODUCTS_LIMIT],
+            many=True,
+            context={"request": request},
+        ).data
+
         offer_payload = [
             {
                 "id": o.id,
@@ -795,6 +814,7 @@ class PromotionBannerDetailView(APIView):
                 "allowed_brands": list(getattr(o, "allowed_brands", []) or []),
                 "allowed_product_ids": list(getattr(o, "allowed_product_ids", []) or []),
                 "allowed_product_types": list(o.allowed_product_types or []),
+                "products_count": offer_product_counts.get(o.id, 0),
             }
             for o in offers
         ]
@@ -815,6 +835,9 @@ class PromotionBannerDetailView(APIView):
                     "allowed_product_ids": list(getattr(campaign, "allowed_product_ids", []) or []),
                 },
                 "offers": offer_payload,
+                "products_count": products_count,
+                "products_preview_limit": PROMOTION_DETAIL_PRODUCTS_LIMIT,
+                "products": products_payload,
             }
         )
 

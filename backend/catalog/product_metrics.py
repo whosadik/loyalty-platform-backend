@@ -6,7 +6,14 @@ from typing import Any, Mapping
 from django.db.models import Avg, Count
 from django.utils.text import slugify
 
-from loyalty.points import DEFAULT_POINTS_RATE
+from catalog.sale_fields import get_product_effective_price
+from loyalty.models import LoyaltyAccount
+from loyalty.points import (
+    DEFAULT_POINTS_RATE,
+    cap_earned_points,
+    get_effective_points_rate,
+    get_tier_points_multiplier,
+)
 
 
 RATING_KEYS = ("rating", "avg_rating")
@@ -103,10 +110,39 @@ def get_product_brand_slug(product: Any) -> str:
     return slugify(str(getattr(product, "brand", "") or "").strip(), allow_unicode=True)
 
 
-def get_product_points_earned(product: Any) -> int:
-    price = _to_decimal(getattr(product, "price", None)) or Decimal("0")
-    points = (price * DEFAULT_POINTS_RATE).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
-    return max(0, int(points))
+def _user_loyalty_context(user: Any) -> tuple[Decimal, Decimal]:
+    if not user or not getattr(user, "is_authenticated", False):
+        return DEFAULT_POINTS_RATE, Decimal("1.00")
+
+    cached = getattr(user, "_catalog_points_context", None)
+    if cached is not None:
+        return cached
+
+    try:
+        account = LoyaltyAccount.objects.select_related("tier").filter(user=user).first()
+    except Exception:
+        account = None
+
+    tier = getattr(account, "tier", None) if account is not None else None
+    if tier is None:
+        context = DEFAULT_POINTS_RATE, Decimal("1.00")
+        setattr(user, "_catalog_points_context", context)
+        return context
+
+    context = (
+        get_effective_points_rate(getattr(tier, "points_rate", DEFAULT_POINTS_RATE)),
+        get_tier_points_multiplier(getattr(tier, "name", None)),
+    )
+    setattr(user, "_catalog_points_context", context)
+    return context
+
+
+def get_product_points_earned(product: Any, user: Any = None) -> int:
+    price = get_product_effective_price(product) or _to_decimal(getattr(product, "price", None)) or Decimal("0")
+    points_rate, tier_multiplier = _user_loyalty_context(user)
+    base_points = (price * points_rate).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    tier_points = (base_points * tier_multiplier).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return cap_earned_points(max(0, int(tier_points)), price)
 
 
 def get_product_rating(product: Any) -> float | None:
