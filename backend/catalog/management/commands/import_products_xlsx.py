@@ -306,7 +306,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--path",
             type=str,
-            default="data/catalog/goldapple_300_products.xlsx",
+            default="data/catalog/goldapple_300_products_curated_v3.xlsx",
             help="Path to XLSX file with products.",
         )
         parser.add_argument(
@@ -398,7 +398,11 @@ class Command(BaseCommand):
                         skipped += 1
                         continue
 
-                    source_product_id = _str(row[col["id"]]) if "id" in col else ""
+                    source_product_id = (
+                        _str(row[col["source_product_id"]]) if "source_product_id" in col
+                        else _str(row[col["id"]]) if "id" in col
+                        else ""
+                    )
                     attrs = _norm_attrs(row[col["attrs"]]) if "attrs" in col else {}
                     image_urls = _parse_json(row[col["photo_urls"]], []) if "photo_urls" in col else []
                     if not isinstance(image_urls, list):
@@ -438,7 +442,11 @@ class Command(BaseCommand):
                         ),
                         "image_url": image_url,
                         "image_urls": image_urls,
-                        "description": _str(row[col["description_text"]]) if "description_text" in col else "",
+                        "description": (
+                            _str(row[col["description"]])
+                            if "description" in col
+                            else _str(row[col["description_text"]]) if "description_text" in col else ""
+                        ),
                         "application_text": _str(row[col["application_text"]]) if "application_text" in col else "",
                         "ingredients_inci": _str(row[col["ingredients_inci"]]) if "ingredients_inci" in col else "",
                         "volume_raw": _str(row[col["volume_raw"]]) if "volume_raw" in col else "",
