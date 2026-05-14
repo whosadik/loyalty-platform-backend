@@ -64,3 +64,6 @@ backend/reports/final_audit_product_system_after_offer_cleanup.json
 loyalty_production.dump
 media.tar
 backend/catalog/templates/catalog/manual_images.html
+backend/catalog/manual_images.py
+backend/catalog/management/commands/apply_v3_descriptions.py
+backend/catalog/management/commands/fetch_product_images.py
