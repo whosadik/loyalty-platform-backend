@@ -1,7 +1,7 @@
 {
-  "generated_at_utc": "2026-05-15T08:52:01.445742+00:00",
-  "window_start_utc": "2026-04-15T08:52:01.445742+00:00",
-  "window_end_utc": "2026-05-15T08:52:01.445742+00:00",
+  "generated_at_utc": "2026-05-15T09:16:37.214479+00:00",
+  "window_start_utc": "2026-04-15T09:16:37.214479+00:00",
+  "window_end_utc": "2026-05-15T09:16:37.214479+00:00",
   "model_path": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\backend\\tmp\\historical_replay_c_artifact\\model.pkl",
   "model_version": "model",
   "params": {

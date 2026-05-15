@@ -1082,6 +1082,7 @@ class CheckoutView(APIView):
 
             roadmap_ctx = None
             next_roadmap_step = None
+            roadmap_awarded_points = 0
             try:
                 roadmap_result = update_roadmap_from_purchase(request.user, post_ctx)
                 roadmap_ctx = (roadmap_result or {}).get("roadmap_ctx")
@@ -1091,6 +1092,9 @@ class CheckoutView(APIView):
                     plan_id=getattr((roadmap_result or {}).get("plan"), "id", None),
                     language=language,
                 )
+                roadmap_awarded_points = int((roadmap_result or {}).get("awarded_points") or 0)
+                if roadmap_awarded_points > 0:
+                    account.refresh_from_db(fields=["points_balance"])
             except Exception:
                 logger.exception(
                     "update_roadmap_from_purchase failed for user=%s txn=%s",
@@ -1099,6 +1103,7 @@ class CheckoutView(APIView):
                 )
                 roadmap_ctx = None
                 next_roadmap_step = None
+                roadmap_awarded_points = 0
 
             # Auto-assign next offer after successful checkout
             next_assignment = get_or_assign_next_offer(
@@ -1158,6 +1163,7 @@ class CheckoutView(APIView):
                 "tier_upgraded": bool(account.tier and account.tier.name != tier_before),
                 "next_offer": next_offer_payload,
                 "next_roadmap_step": next_roadmap_step,
+                "roadmap_awarded_points": roadmap_awarded_points,
             }
 
             # сохраняем снимок результата для replay

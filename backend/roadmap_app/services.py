@@ -2614,6 +2614,16 @@ def refresh_roadmap(
         meta=meta,
     )
     emit_plan_refresh_events(user=user, plan=plan, request_id=None)
+
+    # Credit step-completion bonuses for any newly-done steps (idempotent).
+    # Attach the result to the plan instance so callers that care (e.g.
+    # update_roadmap_from_purchase, which forwards it to checkout for the
+    # reward modal) can read how many points were credited this run.
+    from roadmap_app.step_bonus import award_completed_steps_for_plan
+
+    award_result = award_completed_steps_for_plan(user, plan)
+    setattr(plan, "_roadmap_step_award_result", award_result)
+
     return plan
 
 
@@ -2736,6 +2746,14 @@ def update_roadmap_from_purchase(user, post_ctx: dict[str, Any] | None) -> dict[
     selected_plan = plans_by_category[selected_category]
     next_step = get_next_visible_missing_step(selected_plan)
 
+    award_points_total = 0
+    for cat_plan in plans_by_category.values():
+        award_info = getattr(cat_plan, "_roadmap_step_award_result", None) or {}
+        try:
+            award_points_total += int(award_info.get("points_added") or 0)
+        except (TypeError, ValueError):
+            pass
+
     roadmap_ctx: dict[str, Any] = {
         "category": selected_category,
         "plan_id": selected_plan.id,
@@ -2758,6 +2776,7 @@ def update_roadmap_from_purchase(user, post_ctx: dict[str, Any] | None) -> dict[
         "plan": selected_plan,
         "next_missing_step": next_step,
         "roadmap_ctx": roadmap_ctx,
+        "awarded_points": int(award_points_total),
     }
 
 
@@ -2848,7 +2867,9 @@ def match_completed_steps_for_purchase(user, post_ctx: dict[str, Any] | None) ->
     return out
 
 
-def patch_step_status(*, user, step_id: int, status: str) -> RoadmapStep:
+def patch_step_status(*, user, step_id: int, status: str) -> tuple[RoadmapStep, int]:
+    from roadmap_app.step_bonus import maybe_award_step_completion_bonus
+
     allowed = {choice for choice, _ in RoadmapStep.Status.choices}
     if status not in allowed:
         raise ValueError("Unsupported status")
@@ -2859,6 +2880,9 @@ def patch_step_status(*, user, step_id: int, status: str) -> RoadmapStep:
     )
     step.status = status
     step.save(update_fields=["status", "updated_at"])
+
+    award_result = maybe_award_step_completion_bonus(user, step)
+    awarded_points = int(award_result.get("points_added") or 0) if award_result.get("awarded") else 0
 
     plan = step.plan
     category = str(getattr(plan, "category", "") or "").strip().lower()
@@ -2934,4 +2958,4 @@ def patch_step_status(*, user, step_id: int, status: str) -> RoadmapStep:
             },
         }
         plan.save(update_fields=["meta", "updated_at"])
-    return step
+    return step, awarded_points

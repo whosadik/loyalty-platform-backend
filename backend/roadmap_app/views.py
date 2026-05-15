@@ -248,7 +248,9 @@ class MeRoadmapStepPatchView(APIView):
         s.is_valid(raise_exception=True)
         next_status = s.validated_data["status"]
         try:
-            step = patch_step_status(user=request.user, step_id=int(step_id), status=next_status)
+            step, awarded_points = patch_step_status(
+                user=request.user, step_id=int(step_id), status=next_status
+            )
         except RoadmapStep.DoesNotExist:
             raise Http404
         except ValueError:
@@ -281,6 +283,7 @@ class MeRoadmapStepPatchView(APIView):
                         "plan_id": step.plan_id,
                     },
                 ).data,
+                "awarded_points": int(awarded_points),
             }
         )
 
