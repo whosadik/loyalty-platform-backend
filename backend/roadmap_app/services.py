@@ -1516,13 +1516,13 @@ def _build_chain(
                     anchor_concerns_count=int(anchor_sig.get("anchor_concerns_count") or 0),
                     anchor_has_scalp_focus=bool(anchor_sig.get("anchor_has_scalp_focus")),
                 )
-                selected = str(continuation_rule.get("action") or STOP_TOKEN)
-                if selected == STOP_TOKEN:
-                    cut_index = chain.index(current_next_product_type)
-                    chain = chain[:cut_index]
-                elif selected in chain and selected != current_next_product_type:
-                    cut_index = chain.index(selected)
-                    chain = chain[: cut_index + 1]
+                # The continuation rule used to truncate the chain after each
+                # purchase, which produced an unstable UX (roadmap suddenly
+                # ended even though optional steps were still queued). We keep
+                # the rule's verdict for explainability metadata but no longer
+                # let it shorten the user-facing chain. The chain stays the
+                # same length built above; users complete or skip steps
+                # themselves.
 
     source_by_type: dict[str, dict[str, Any]] = {pt: {"source": "rules", "score": None} for pt in chain}
     if continuation_rule and str(continuation_rule.get("action") or STOP_TOKEN) != STOP_TOKEN:
@@ -2115,7 +2115,27 @@ def refresh_roadmap(
             ]
         )
 
-    _, owned_product_ids, owned_types_ordered, owned_types_set = _category_owned(user, category)
+    owned_rows, owned_product_ids, owned_types_ordered, owned_types_set = _category_owned(user, category)
+    owned_type_to_pid: dict[str, int] = {}
+    if category == "fragrance":
+        for row in owned_rows:
+            product = getattr(row, "product", None)
+            if product is None:
+                continue
+            slot = slot_of_fragrance(
+                getattr(product, "attrs", None) or {},
+                raw_meta=getattr(product, "raw_meta", None) or {},
+            )
+            if slot and slot not in owned_type_to_pid:
+                owned_type_to_pid[slot] = int(row.product_id)
+    else:
+        for row in owned_rows:
+            product = getattr(row, "product", None)
+            if product is None:
+                continue
+            pt = str(getattr(product, "product_type", "") or "")
+            if pt and pt not in owned_type_to_pid:
+                owned_type_to_pid[pt] = int(row.product_id)
     purchased_by_category = _post_ctx_types_by_category(post_ctx)
     post_ctx_purchased_types = _unique(purchased_by_category.get(category, []))
     if category == "fragrance":
@@ -2257,6 +2277,11 @@ def refresh_roadmap(
         suggestions: list[int] = []
         recommended_product_id: int | None = None
         rec_top = None
+
+        if status in {RoadmapStep.Status.OWNED, RoadmapStep.Status.COMPLETED}:
+            owned_pid = owned_type_to_pid.get(product_type)
+            if owned_pid is not None:
+                recommended_product_id = int(owned_pid)
 
         if status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}:
             recs = _recommend_candidates_for_type(
@@ -2641,6 +2666,25 @@ def get_next_missing_step(plan: RoadmapPlan | None) -> RoadmapStep | None:
     )
 
 
+def get_next_visible_missing_step(plan: RoadmapPlan | None) -> RoadmapStep | None:
+    """Like get_next_missing_step but skips steps with no recommended product.
+
+    Used by user-facing surfaces (checkout, /api/me/roadmap) so they don't
+    point users at empty actionless steps. Internal planner logic still uses
+    get_next_missing_step when it needs the raw "next planned" step.
+    """
+    if not plan:
+        return None
+    return (
+        plan.steps.filter(
+            status__in=[RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED],
+            recommended_product_id__isnull=False,
+        )
+        .order_by("step_index")
+        .first()
+    )
+
+
 def build_plan_summary(plan: RoadmapPlan | None) -> dict[str, Any]:
     if not plan:
         return {
@@ -2690,7 +2734,7 @@ def update_roadmap_from_purchase(user, post_ctx: dict[str, Any] | None) -> dict[
 
     selected_category = categories[0]
     selected_plan = plans_by_category[selected_category]
-    next_step = get_next_missing_step(selected_plan)
+    next_step = get_next_visible_missing_step(selected_plan)
 
     roadmap_ctx: dict[str, Any] = {
         "category": selected_category,

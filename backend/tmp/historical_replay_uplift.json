@@ -1,0 +1,1892 @@
+{
+  "generated_at_utc": "2026-05-15T08:52:01.445742+00:00",
+  "window_start_utc": "2026-04-15T08:52:01.445742+00:00",
+  "window_end_utc": "2026-05-15T08:52:01.445742+00:00",
+  "model_path": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\backend\\tmp\\historical_replay_c_artifact\\model.pkl",
+  "model_version": "model",
+  "params": {
+    "days": 30,
+    "category": "all",
+    "include_ga": false,
+    "format": "json",
+    "cohort_mode": "fresh",
+    "control": "non_model",
+    "min_plans": 1,
+    "evidence_source": "historical_replay",
+    "model_path_filter": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\backend\\tmp\\historical_replay_c_artifact\\model.pkl",
+    "sync_runtime_artifact": false
+  },
+  "overall": {
+    "plans_total_in_scope": 2,
+    "plans_total_after_cohort_mode": 2,
+    "analysis_plans_total": 1,
+    "model_used_plans_total": 1,
+    "control_plans_total": 1
+  },
+  "cohorts": {
+    "model_used": {
+      "plans_total": 1,
+      "users_total": 1,
+      "categories": {
+        "haircare": 1
+      },
+      "steps_total": 1,
+      "steps_recommended": 1,
+      "steps_owned": 0,
+      "steps_completed": 0,
+      "steps_missing": 0,
+      "steps_skipped": 0,
+      "roadmap_step_exposed": 1,
+      "roadmap_step_clicked": 0,
+      "roadmap_step_completed": 1,
+      "roadmap_step_skipped": 0,
+      "updated_plans_with_exposed": 1,
+      "updated_steps_with_exposed": 1,
+      "exposed_plan_rate": 1.0,
+      "exposed_step_rate": 1.0,
+      "step_ctr": 0.0,
+      "step_completion_rate": 1.0,
+      "skip_rate": 0.0,
+      "offers_assigned_total": 0,
+      "offers_with_roadmap_shortcut": 0,
+      "offer_exposed": 0,
+      "offer_clicked": 0,
+      "offer_redeemed": 0,
+      "offer_ctr": null,
+      "offer_redeem_rate": null
+    },
+    "control": {
+      "plans_total": 1,
+      "users_total": 1,
+      "categories": {
+        "haircare": 1
+      },
+      "steps_total": 1,
+      "steps_recommended": 1,
+      "steps_owned": 0,
+      "steps_completed": 0,
+      "steps_missing": 0,
+      "steps_skipped": 0,
+      "roadmap_step_exposed": 1,
+      "roadmap_step_clicked": 0,
+      "roadmap_step_completed": 1,
+      "roadmap_step_skipped": 0,
+      "updated_plans_with_exposed": 1,
+      "updated_steps_with_exposed": 1,
+      "exposed_plan_rate": 1.0,
+      "exposed_step_rate": 1.0,
+      "step_ctr": 0.0,
+      "step_completion_rate": 1.0,
+      "skip_rate": 0.0,
+      "offers_assigned_total": 0,
+      "offers_with_roadmap_shortcut": 0,
+      "offer_exposed": 0,
+      "offer_clicked": 0,
+      "offer_redeemed": 0,
+      "offer_ctr": null,
+      "offer_redeem_rate": null
+    }
+  },
+  "uplift": {
+    "overall": {
+      "step_funnel": {
+        "step_ctr": {
+          "metric": "step_ctr",
+          "model": {
+            "success": 0,
+            "total": 1,
+            "rate": 0.0,
+            "wilson_ci95": {
+              "low": 0.0,
+              "high": 0.793451
+            }
+          },
+          "control": {
+            "success": 0,
+            "total": 1,
+            "rate": 0.0,
+            "wilson_ci95": {
+              "low": 0.0,
+              "high": 0.793451
+            }
+          },
+          "abs_lift": 0.0,
+          "rel_lift": null,
+          "diff_ci95": {
+            "low": 0.0,
+            "high": 0.0
+          },
+          "z_stat": null,
+          "p_value": null,
+          "low_sample": false
+        },
+        "step_completion_rate": {
+          "metric": "step_completion_rate",
+          "model": {
+            "success": 1,
+            "total": 1,
+            "rate": 1.0,
+            "wilson_ci95": {
+              "low": 0.206549,
+              "high": 1.0
+            }
+          },
+          "control": {
+            "success": 1,
+            "total": 1,
+            "rate": 1.0,
+            "wilson_ci95": {
+              "low": 0.206549,
+              "high": 1.0
+            }
+          },
+          "abs_lift": 0.0,
+          "rel_lift": 0.0,
+          "diff_ci95": {
+            "low": 0.0,
+            "high": 0.0
+          },
+          "z_stat": null,
+          "p_value": null,
+          "low_sample": false
+        },
+        "skip_rate": {
+          "metric": "skip_rate",
+          "model": {
+            "success": 0,
+            "total": 1,
+            "rate": 0.0,
+            "wilson_ci95": {
+              "low": 0.0,
+              "high": 0.793451
+            }
+          },
+          "control": {
+            "success": 0,
+            "total": 1,
+            "rate": 0.0,
+            "wilson_ci95": {
+              "low": 0.0,
+              "high": 0.793451
+            }
+          },
+          "abs_lift": 0.0,
+          "rel_lift": null,
+          "diff_ci95": {
+            "low": 0.0,
+            "high": 0.0
+          },
+          "z_stat": null,
+          "p_value": null,
+          "low_sample": false
+        }
+      },
+      "offer_funnel": {
+        "offer_ctr": {
+          "metric": "offer_ctr",
+          "model": {
+            "success": 0,
+            "total": 0,
+            "rate": null,
+            "wilson_ci95": {
+              "low": null,
+              "high": null
+            }
+          },
+          "control": {
+            "success": 0,
+            "total": 0,
+            "rate": null,
+            "wilson_ci95": {
+              "low": null,
+              "high": null
+            }
+          },
+          "abs_lift": null,
+          "rel_lift": null,
+          "diff_ci95": {
+            "low": null,
+            "high": null
+          },
+          "z_stat": null,
+          "p_value": null,
+          "low_sample": true
+        },
+        "offer_redeem_rate": {
+          "metric": "offer_redeem_rate",
+          "model": {
+            "success": 0,
+            "total": 0,
+            "rate": null,
+            "wilson_ci95": {
+              "low": null,
+              "high": null
+            }
+          },
+          "control": {
+            "success": 0,
+            "total": 0,
+            "rate": null,
+            "wilson_ci95": {
+              "low": null,
+              "high": null
+            }
+          },
+          "abs_lift": null,
+          "rel_lift": null,
+          "diff_ci95": {
+            "low": null,
+            "high": null
+          },
+          "z_stat": null,
+          "p_value": null,
+          "low_sample": true
+        }
+      }
+    },
+    "by_category": {
+      "haircare": {
+        "step_funnel": {
+          "step_ctr": {
+            "metric": "step_ctr",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "step_completion_rate": {
+            "metric": "step_completion_rate",
+            "model": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "control": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": 0.0,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "skip_rate": {
+            "metric": "skip_rate",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          }
+        },
+        "offer_funnel": {
+          "offer_ctr": {
+            "metric": "offer_ctr",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "offer_redeem_rate": {
+            "metric": "offer_redeem_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          }
+        }
+      }
+    },
+    "by_freshness": {
+      "1d": {
+        "step_funnel": {
+          "step_ctr": {
+            "metric": "step_ctr",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "step_completion_rate": {
+            "metric": "step_completion_rate",
+            "model": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "control": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": 0.0,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "skip_rate": {
+            "metric": "skip_rate",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          }
+        },
+        "offer_funnel": {
+          "offer_ctr": {
+            "metric": "offer_ctr",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "offer_redeem_rate": {
+            "metric": "offer_redeem_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          }
+        }
+      },
+      "3d": {
+        "step_funnel": {
+          "step_ctr": {
+            "metric": "step_ctr",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "step_completion_rate": {
+            "metric": "step_completion_rate",
+            "model": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "control": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": 0.0,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "skip_rate": {
+            "metric": "skip_rate",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          }
+        },
+        "offer_funnel": {
+          "offer_ctr": {
+            "metric": "offer_ctr",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "offer_redeem_rate": {
+            "metric": "offer_redeem_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          }
+        }
+      },
+      "window": {
+        "step_funnel": {
+          "step_ctr": {
+            "metric": "step_ctr",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "step_completion_rate": {
+            "metric": "step_completion_rate",
+            "model": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "control": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": 0.0,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "skip_rate": {
+            "metric": "skip_rate",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          }
+        },
+        "offer_funnel": {
+          "offer_ctr": {
+            "metric": "offer_ctr",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "offer_redeem_rate": {
+            "metric": "offer_redeem_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          }
+        }
+      }
+    },
+    "by_expose_source": {
+      "offers": {
+        "step_funnel": {
+          "step_ctr": {
+            "metric": "step_ctr",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "step_completion_rate": {
+            "metric": "step_completion_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "skip_rate": {
+            "metric": "skip_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          }
+        },
+        "offer_funnel": {
+          "offer_ctr": {
+            "metric": "offer_ctr",
+            "note": "historical_replay does not reconstruct offer cohorts"
+          },
+          "offer_redeem_rate": {
+            "metric": "offer_redeem_rate",
+            "note": "historical_replay does not reconstruct offer cohorts"
+          }
+        }
+      },
+      "roadmap_api": {
+        "step_funnel": {
+          "step_ctr": {
+            "metric": "step_ctr",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "step_completion_rate": {
+            "metric": "step_completion_rate",
+            "model": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "control": {
+              "success": 1,
+              "total": 1,
+              "rate": 1.0,
+              "wilson_ci95": {
+                "low": 0.206549,
+                "high": 1.0
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": 0.0,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          },
+          "skip_rate": {
+            "metric": "skip_rate",
+            "model": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 1,
+              "rate": 0.0,
+              "wilson_ci95": {
+                "low": 0.0,
+                "high": 0.793451
+              }
+            },
+            "abs_lift": 0.0,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": 0.0,
+              "high": 0.0
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": false
+          }
+        },
+        "offer_funnel": {
+          "offer_ctr": {
+            "metric": "offer_ctr",
+            "note": "historical_replay does not reconstruct offer cohorts"
+          },
+          "offer_redeem_rate": {
+            "metric": "offer_redeem_rate",
+            "note": "historical_replay does not reconstruct offer cohorts"
+          }
+        }
+      }
+    }
+  },
+  "partial_makeup_uplift": {
+    "definition": {
+      "canary": "not_applicable_for_historical_replay",
+      "control": "not_applicable_for_historical_replay"
+    },
+    "overall": {
+      "canary": {
+        "plans_total": 0,
+        "users_total": 0,
+        "categories": {},
+        "steps_total": 0,
+        "steps_recommended": 0,
+        "steps_owned": 0,
+        "steps_completed": 0,
+        "steps_missing": 0,
+        "steps_skipped": 0,
+        "roadmap_step_exposed": 0,
+        "roadmap_step_clicked": 0,
+        "roadmap_step_completed": 0,
+        "roadmap_step_skipped": 0,
+        "updated_plans_with_exposed": 0,
+        "updated_steps_with_exposed": 0,
+        "exposed_plan_rate": null,
+        "exposed_step_rate": null,
+        "step_ctr": null,
+        "step_completion_rate": null,
+        "skip_rate": null,
+        "offers_assigned_total": 0,
+        "offers_with_roadmap_shortcut": 0,
+        "offer_exposed": 0,
+        "offer_clicked": 0,
+        "offer_redeemed": 0,
+        "offer_ctr": null,
+        "offer_redeem_rate": null
+      },
+      "control": {
+        "plans_total": 0,
+        "users_total": 0,
+        "categories": {},
+        "steps_total": 0,
+        "steps_recommended": 0,
+        "steps_owned": 0,
+        "steps_completed": 0,
+        "steps_missing": 0,
+        "steps_skipped": 0,
+        "roadmap_step_exposed": 0,
+        "roadmap_step_clicked": 0,
+        "roadmap_step_completed": 0,
+        "roadmap_step_skipped": 0,
+        "updated_plans_with_exposed": 0,
+        "updated_steps_with_exposed": 0,
+        "exposed_plan_rate": null,
+        "exposed_step_rate": null,
+        "step_ctr": null,
+        "step_completion_rate": null,
+        "skip_rate": null,
+        "offers_assigned_total": 0,
+        "offers_with_roadmap_shortcut": 0,
+        "offer_exposed": 0,
+        "offer_clicked": 0,
+        "offer_redeemed": 0,
+        "offer_ctr": null,
+        "offer_redeem_rate": null
+      },
+      "uplift": {
+        "step_funnel": {
+          "step_ctr": {
+            "metric": "step_ctr",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "step_completion_rate": {
+            "metric": "step_completion_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "skip_rate": {
+            "metric": "skip_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          }
+        },
+        "offer_funnel": {
+          "offer_ctr": {
+            "metric": "offer_ctr",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          },
+          "offer_redeem_rate": {
+            "metric": "offer_redeem_rate",
+            "model": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "control": {
+              "success": 0,
+              "total": 0,
+              "rate": null,
+              "wilson_ci95": {
+                "low": null,
+                "high": null
+              }
+            },
+            "abs_lift": null,
+            "rel_lift": null,
+            "diff_ci95": {
+              "low": null,
+              "high": null
+            },
+            "z_stat": null,
+            "p_value": null,
+            "low_sample": true
+          }
+        }
+      }
+    },
+    "by_product_type": {},
+    "by_step_index": {}
+  },
+  "breakdowns": {
+    "by_category": {
+      "haircare": {
+        "model_used": {
+          "plans_total": 1,
+          "users_total": 1,
+          "categories": {
+            "haircare": 1
+          },
+          "steps_total": 1,
+          "steps_recommended": 1,
+          "steps_owned": 0,
+          "steps_completed": 0,
+          "steps_missing": 0,
+          "steps_skipped": 0,
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "updated_plans_with_exposed": 1,
+          "updated_steps_with_exposed": 1,
+          "exposed_plan_rate": 1.0,
+          "exposed_step_rate": 1.0,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0,
+          "offers_assigned_total": 0,
+          "offers_with_roadmap_shortcut": 0,
+          "offer_exposed": 0,
+          "offer_clicked": 0,
+          "offer_redeemed": 0,
+          "offer_ctr": null,
+          "offer_redeem_rate": null
+        },
+        "control": {
+          "plans_total": 1,
+          "users_total": 1,
+          "categories": {
+            "haircare": 1
+          },
+          "steps_total": 1,
+          "steps_recommended": 1,
+          "steps_owned": 0,
+          "steps_completed": 0,
+          "steps_missing": 0,
+          "steps_skipped": 0,
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "updated_plans_with_exposed": 1,
+          "updated_steps_with_exposed": 1,
+          "exposed_plan_rate": 1.0,
+          "exposed_step_rate": 1.0,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0,
+          "offers_assigned_total": 0,
+          "offers_with_roadmap_shortcut": 0,
+          "offer_exposed": 0,
+          "offer_clicked": 0,
+          "offer_redeemed": 0,
+          "offer_ctr": null,
+          "offer_redeem_rate": null
+        }
+      }
+    },
+    "by_freshness": {
+      "1d": {
+        "model_used": {
+          "plans_total": 1,
+          "users_total": 1,
+          "categories": {
+            "haircare": 1
+          },
+          "steps_total": 1,
+          "steps_recommended": 1,
+          "steps_owned": 0,
+          "steps_completed": 0,
+          "steps_missing": 0,
+          "steps_skipped": 0,
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "updated_plans_with_exposed": 1,
+          "updated_steps_with_exposed": 1,
+          "exposed_plan_rate": 1.0,
+          "exposed_step_rate": 1.0,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0,
+          "offers_assigned_total": 0,
+          "offers_with_roadmap_shortcut": 0,
+          "offer_exposed": 0,
+          "offer_clicked": 0,
+          "offer_redeemed": 0,
+          "offer_ctr": null,
+          "offer_redeem_rate": null
+        },
+        "control": {
+          "plans_total": 1,
+          "users_total": 1,
+          "categories": {
+            "haircare": 1
+          },
+          "steps_total": 1,
+          "steps_recommended": 1,
+          "steps_owned": 0,
+          "steps_completed": 0,
+          "steps_missing": 0,
+          "steps_skipped": 0,
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "updated_plans_with_exposed": 1,
+          "updated_steps_with_exposed": 1,
+          "exposed_plan_rate": 1.0,
+          "exposed_step_rate": 1.0,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0,
+          "offers_assigned_total": 0,
+          "offers_with_roadmap_shortcut": 0,
+          "offer_exposed": 0,
+          "offer_clicked": 0,
+          "offer_redeemed": 0,
+          "offer_ctr": null,
+          "offer_redeem_rate": null
+        }
+      },
+      "3d": {
+        "model_used": {
+          "plans_total": 1,
+          "users_total": 1,
+          "categories": {
+            "haircare": 1
+          },
+          "steps_total": 1,
+          "steps_recommended": 1,
+          "steps_owned": 0,
+          "steps_completed": 0,
+          "steps_missing": 0,
+          "steps_skipped": 0,
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "updated_plans_with_exposed": 1,
+          "updated_steps_with_exposed": 1,
+          "exposed_plan_rate": 1.0,
+          "exposed_step_rate": 1.0,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0,
+          "offers_assigned_total": 0,
+          "offers_with_roadmap_shortcut": 0,
+          "offer_exposed": 0,
+          "offer_clicked": 0,
+          "offer_redeemed": 0,
+          "offer_ctr": null,
+          "offer_redeem_rate": null
+        },
+        "control": {
+          "plans_total": 1,
+          "users_total": 1,
+          "categories": {
+            "haircare": 1
+          },
+          "steps_total": 1,
+          "steps_recommended": 1,
+          "steps_owned": 0,
+          "steps_completed": 0,
+          "steps_missing": 0,
+          "steps_skipped": 0,
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "updated_plans_with_exposed": 1,
+          "updated_steps_with_exposed": 1,
+          "exposed_plan_rate": 1.0,
+          "exposed_step_rate": 1.0,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0,
+          "offers_assigned_total": 0,
+          "offers_with_roadmap_shortcut": 0,
+          "offer_exposed": 0,
+          "offer_clicked": 0,
+          "offer_redeemed": 0,
+          "offer_ctr": null,
+          "offer_redeem_rate": null
+        }
+      },
+      "window": {
+        "model_used": {
+          "plans_total": 1,
+          "users_total": 1,
+          "categories": {
+            "haircare": 1
+          },
+          "steps_total": 1,
+          "steps_recommended": 1,
+          "steps_owned": 0,
+          "steps_completed": 0,
+          "steps_missing": 0,
+          "steps_skipped": 0,
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "updated_plans_with_exposed": 1,
+          "updated_steps_with_exposed": 1,
+          "exposed_plan_rate": 1.0,
+          "exposed_step_rate": 1.0,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0,
+          "offers_assigned_total": 0,
+          "offers_with_roadmap_shortcut": 0,
+          "offer_exposed": 0,
+          "offer_clicked": 0,
+          "offer_redeemed": 0,
+          "offer_ctr": null,
+          "offer_redeem_rate": null
+        },
+        "control": {
+          "plans_total": 1,
+          "users_total": 1,
+          "categories": {
+            "haircare": 1
+          },
+          "steps_total": 1,
+          "steps_recommended": 1,
+          "steps_owned": 0,
+          "steps_completed": 0,
+          "steps_missing": 0,
+          "steps_skipped": 0,
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "updated_plans_with_exposed": 1,
+          "updated_steps_with_exposed": 1,
+          "exposed_plan_rate": 1.0,
+          "exposed_step_rate": 1.0,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0,
+          "offers_assigned_total": 0,
+          "offers_with_roadmap_shortcut": 0,
+          "offer_exposed": 0,
+          "offer_clicked": 0,
+          "offer_redeemed": 0,
+          "offer_ctr": null,
+          "offer_redeem_rate": null
+        }
+      }
+    },
+    "by_expose_source": {
+      "offers": {
+        "model_used": {
+          "roadmap_step_exposed": 0,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 0,
+          "roadmap_step_skipped": 0,
+          "plans_with_exposed": 0,
+          "steps_with_exposed": 0,
+          "step_ctr": null,
+          "step_completion_rate": null,
+          "skip_rate": null
+        },
+        "control": {
+          "roadmap_step_exposed": 0,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 0,
+          "roadmap_step_skipped": 0,
+          "plans_with_exposed": 0,
+          "steps_with_exposed": 0,
+          "step_ctr": null,
+          "step_completion_rate": null,
+          "skip_rate": null
+        }
+      },
+      "roadmap_api": {
+        "model_used": {
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "plans_with_exposed": 1,
+          "steps_with_exposed": 1,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0
+        },
+        "control": {
+          "roadmap_step_exposed": 1,
+          "roadmap_step_clicked": 0,
+          "roadmap_step_completed": 1,
+          "roadmap_step_skipped": 0,
+          "plans_with_exposed": 1,
+          "steps_with_exposed": 1,
+          "step_ctr": 0.0,
+          "step_completion_rate": 1.0,
+          "skip_rate": 0.0
+        }
+      }
+    }
+  },
+  "runtime_observability": {
+    "decision_counts": {
+      "model_used": 1,
+      "fallback": 1,
+      "disabled": 0,
+      "missing_ml_meta": 0
+    },
+    "comparability": {
+      "comparable_anchor_plans_total": 1,
+      "model_cohort_plans_total": 1,
+      "control_cohort_plans_total": 1,
+      "baseline_control_reasons": {
+        "selected_historical_next_step": 2
+      },
+      "excluded_reasons": {
+        "low_confidence": 1
+      }
+    },
+    "historical_reconstruction": {
+      "anchors_total_in_scope": 2,
+      "anchors_total_after_cohort_mode": 2,
+      "anchors_recovered_historically": 1,
+      "current_snapshot_excluded_reasons": {
+        "missing_shadow_model_evidence": 2
+      },
+      "historical_reconstruction_excluded_reasons": {
+        "low_confidence": 1
+      }
+    },
+    "rollout_mode_distribution": {
+      "shadow": 2
+    },
+    "rollout_selected_distribution": {
+      "not_selected": 1,
+      "selected": 1
+    },
+    "fallback_reasons": {
+      "low_confidence": 1
+    },
+    "disabled_reasons": {},
+    "mode_distribution": {
+      "historical_replay": 2
+    },
+    "top_model_paths": [
+      {
+        "model_path": "C:\\Users\\Adik\\Uilesim\\loyalty-platform-backend\\backend\\tmp\\historical_replay_c_artifact\\model.pkl",
+        "count": 2
+      }
+    ]
+  },
+  "rollout_recommendation_by_category": {
+    "fragrance": {
+      "recommendation": "DISABLE",
+      "rollout": {
+        "category": "fragrance",
+        "global_enabled": true,
+        "enabled_categories": [
+          "haircare",
+          "makeup",
+          "skincare"
+        ],
+        "disabled_categories": [
+          "fragrance"
+        ],
+        "passed": false,
+        "reason": "category_disabled"
+      },
+      "guard": {
+        "passed": false,
+        "primary_passed": false,
+        "secondary_passed": false,
+        "reason": "insufficient_sample",
+        "source_report_path": "inline://report_roadmap_ml_uplift?days=30&category=all&evidence_source=historical_replay",
+        "cohort_mode": "fresh",
+        "control": "non_model",
+        "category": "fragrance",
+        "sample_size_model": 0,
+        "sample_size_control": 0,
+        "step_completion_abs_lift": null,
+        "offer_redeem_abs_lift": null,
+        "step_ctr_abs_lift": null,
+        "offer_ctr_abs_lift": null,
+        "thresholds": {
+          "min_plans": 100,
+          "min_step_completion_lift": 0.01,
+          "min_offer_redeem_lift": 0.005,
+          "max_negative_step_ctr_lift_soft": -0.02,
+          "max_negative_offer_ctr_lift_soft": -0.03,
+          "max_negative_step_ctr_lift_strict": -0.01,
+          "max_negative_offer_ctr_lift_strict": -0.01,
+          "allow_primary_win_despite_soft_ctr_drop": true,
+          "secondary_step_threshold": -0.02,
+          "secondary_offer_threshold": -0.03
+        },
+        "min_plans": 100,
+        "min_step_completion_lift": 0.01,
+        "min_offer_redeem_lift": 0.005,
+        "max_negative_step_ctr_lift_soft": -0.02,
+        "max_negative_offer_ctr_lift_soft": -0.03,
+        "allow_primary_win_despite_soft_ctr_drop": true
+      }
+    },
+    "haircare": {
+      "recommendation": "HOLD",
+      "rollout": {
+        "category": "haircare",
+        "global_enabled": true,
+        "enabled_categories": [
+          "haircare",
+          "makeup",
+          "skincare"
+        ],
+        "disabled_categories": [
+          "fragrance"
+        ],
+        "passed": true,
+        "reason": "passed"
+      },
+      "guard": {
+        "passed": false,
+        "primary_passed": false,
+        "secondary_passed": false,
+        "reason": "sample_too_small_but_nonzero_control",
+        "source_report_path": "inline://report_roadmap_ml_uplift?days=30&category=all&evidence_source=historical_replay",
+        "cohort_mode": "fresh",
+        "control": "non_model",
+        "category": "haircare",
+        "sample_size_model": 1,
+        "sample_size_control": 1,
+        "step_completion_abs_lift": 0.0,
+        "offer_redeem_abs_lift": null,
+        "step_ctr_abs_lift": 0.0,
+        "offer_ctr_abs_lift": null,
+        "thresholds": {
+          "min_plans": 100,
+          "min_step_completion_lift": 0.01,
+          "min_offer_redeem_lift": 0.005,
+          "max_negative_step_ctr_lift_soft": -0.02,
+          "max_negative_offer_ctr_lift_soft": -0.03,
+          "max_negative_step_ctr_lift_strict": -0.01,
+          "max_negative_offer_ctr_lift_strict": -0.01,
+          "allow_primary_win_despite_soft_ctr_drop": true,
+          "secondary_step_threshold": -0.02,
+          "secondary_offer_threshold": -0.03
+        },
+        "min_plans": 100,
+        "min_step_completion_lift": 0.01,
+        "min_offer_redeem_lift": 0.005,
+        "max_negative_step_ctr_lift_soft": -0.02,
+        "max_negative_offer_ctr_lift_soft": -0.03,
+        "allow_primary_win_despite_soft_ctr_drop": true
+      }
+    },
+    "makeup": {
+      "recommendation": "HOLD",
+      "rollout": {
+        "category": "makeup",
+        "global_enabled": true,
+        "enabled_categories": [
+          "haircare",
+          "makeup",
+          "skincare"
+        ],
+        "disabled_categories": [
+          "fragrance"
+        ],
+        "passed": true,
+        "reason": "passed"
+      },
+      "guard": {
+        "passed": false,
+        "primary_passed": false,
+        "secondary_passed": false,
+        "reason": "insufficient_sample",
+        "source_report_path": "inline://report_roadmap_ml_uplift?days=30&category=all&evidence_source=historical_replay",
+        "cohort_mode": "fresh",
+        "control": "non_model",
+        "category": "makeup",
+        "sample_size_model": 0,
+        "sample_size_control": 0,
+        "step_completion_abs_lift": null,
+        "offer_redeem_abs_lift": null,
+        "step_ctr_abs_lift": null,
+        "offer_ctr_abs_lift": null,
+        "thresholds": {
+          "min_plans": 100,
+          "min_step_completion_lift": 0.01,
+          "min_offer_redeem_lift": 0.005,
+          "max_negative_step_ctr_lift_soft": -0.02,
+          "max_negative_offer_ctr_lift_soft": -0.03,
+          "max_negative_step_ctr_lift_strict": -0.01,
+          "max_negative_offer_ctr_lift_strict": -0.01,
+          "allow_primary_win_despite_soft_ctr_drop": true,
+          "secondary_step_threshold": -0.02,
+          "secondary_offer_threshold": -0.03
+        },
+        "min_plans": 100,
+        "min_step_completion_lift": 0.01,
+        "min_offer_redeem_lift": 0.005,
+        "max_negative_step_ctr_lift_soft": -0.02,
+        "max_negative_offer_ctr_lift_soft": -0.03,
+        "allow_primary_win_despite_soft_ctr_drop": true
+      }
+    },
+    "skincare": {
+      "recommendation": "HOLD",
+      "rollout": {
+        "category": "skincare",
+        "global_enabled": true,
+        "enabled_categories": [
+          "haircare",
+          "makeup",
+          "skincare"
+        ],
+        "disabled_categories": [
+          "fragrance"
+        ],
+        "passed": true,
+        "reason": "passed"
+      },
+      "guard": {
+        "passed": false,
+        "primary_passed": false,
+        "secondary_passed": false,
+        "reason": "insufficient_sample",
+        "source_report_path": "inline://report_roadmap_ml_uplift?days=30&category=all&evidence_source=historical_replay",
+        "cohort_mode": "fresh",
+        "control": "non_model",
+        "category": "skincare",
+        "sample_size_model": 0,
+        "sample_size_control": 0,
+        "step_completion_abs_lift": null,
+        "offer_redeem_abs_lift": null,
+        "step_ctr_abs_lift": null,
+        "offer_ctr_abs_lift": null,
+        "thresholds": {
+          "min_plans": 100,
+          "min_step_completion_lift": 0.01,
+          "min_offer_redeem_lift": 0.005,
+          "max_negative_step_ctr_lift_soft": -0.02,
+          "max_negative_offer_ctr_lift_soft": -0.03,
+          "max_negative_step_ctr_lift_strict": -0.01,
+          "max_negative_offer_ctr_lift_strict": -0.01,
+          "allow_primary_win_despite_soft_ctr_drop": true,
+          "secondary_step_threshold": -0.02,
+          "secondary_offer_threshold": -0.03
+        },
+        "min_plans": 100,
+        "min_step_completion_lift": 0.01,
+        "min_offer_redeem_lift": 0.005,
+        "max_negative_step_ctr_lift_soft": -0.02,
+        "max_negative_offer_ctr_lift_soft": -0.03,
+        "allow_primary_win_despite_soft_ctr_drop": true
+      }
+    }
+  },
+  "unattributed_excluded": {
+    "fresh_mode_excluded_missing_ml_meta_plans": 0,
+    "cohort_scope_excluded_non_selected_plans": 1,
+    "historical_anchors_total": 2,
+    "historical_anchors_with_plan_meta": 2,
+    "historical_current_snapshot_exclusions": 2
+  },
+  "notes": [
+    "Read-only wrt DB: no DB writes; file outputs happen only via --out or --sync-runtime-artifact.",
+    "historical_replay reconstructs continuation anchors from PLAN_REFRESHED + STEP_GENERATED immutable event windows.",
+    "Current-snapshot exclusions are reported separately from historical reconstruction exclusions.",
+    "Comparable model/control anchors can overlap because both decisions are reconstructed for the same immutable anchor under freeze.",
+    "Offer uplift is not reconstructed for historical_replay; offer metrics remain informational zeros."
+  ]
+}

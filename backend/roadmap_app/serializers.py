@@ -6,6 +6,7 @@ from rest_framework import serializers
 
 from backend.request_language import AppLanguage, get_context_language
 from loyalty.points import DEFAULT_POINTS_RATE
+from roadmap_app.match_score import compute_match_percent
 from roadmap_app.models import RoadmapPlan, RoadmapStep
 from roadmap_app.runtime_status import roadmap_step_explainability
 from roadmap_app.services import build_plan_summary, get_next_missing_step, is_base_roadmap_step
@@ -13,6 +14,7 @@ from roadmap_app.step_presentation import (
     build_roadmap_step_presentation,
     get_roadmap_step_presentation,
 )
+from users_app.models import CustomerProfile
 
 ROADMAP_CATEGORY_CHOICES = [
     RoadmapPlan.Category.SKINCARE,
@@ -290,6 +292,7 @@ class RoadmapStepReadSerializer(RoadmapStepSnapshotSerializer):
     suggestions = serializers.ListField(child=serializers.IntegerField(), required=False)
     score = serializers.FloatField(required=False, allow_null=True)
     confidence = serializers.FloatField(required=False, allow_null=True)
+    match_percent = serializers.IntegerField(required=False, allow_null=True)
 
     def to_representation(self, obj: RoadmapStep):
         data = serialize_roadmap_step_snapshot(
@@ -302,7 +305,32 @@ class RoadmapStepReadSerializer(RoadmapStepSnapshotSerializer):
         data["suggestions"] = list(obj.suggestions or [])
         data["score"] = obj.score
         data["confidence"] = obj.confidence
+        data["match_percent"] = _resolve_step_match_percent(obj, self.context)
         return data
+
+
+def _resolve_step_match_percent(step: RoadmapStep, context: dict) -> int | None:
+    product = getattr(step, "recommended_product", None)
+    if product is None:
+        return None
+
+    profile = context.get("customer_profile")
+    if profile is None:
+        request = context.get("request")
+        user = getattr(request, "user", None)
+        if user is None or not getattr(user, "is_authenticated", False):
+            return None
+        profile = CustomerProfile.objects.filter(user=user).first()
+        # cache on the context dict so we don't refetch per step
+        context["customer_profile"] = profile
+    if profile is None:
+        return None
+
+    category = context.get("category")
+    if category is None:
+        plan = getattr(step, "plan", None)
+        category = getattr(plan, "category", None)
+    return compute_match_percent(profile, product, category=category)
 
 
 class RoadmapPlanReadSerializer(serializers.ModelSerializer):
@@ -324,10 +352,10 @@ class RoadmapPlanReadSerializer(serializers.ModelSerializer):
         ]
 
     def get_steps(self, obj: RoadmapPlan):
-        rows = obj.steps.select_related("recommended_product").order_by("step_index")
+        visible = _visible_steps(obj)
         language = get_context_language(self.context)
         return RoadmapStepReadSerializer(
-            rows,
+            visible,
             many=True,
             context={
                 "request": self.context.get("request"),
@@ -339,13 +367,42 @@ class RoadmapPlanReadSerializer(serializers.ModelSerializer):
         ).data
 
     def get_summary(self, obj: RoadmapPlan):
-        summary = build_plan_summary(obj)
-        next_step = get_next_missing_step(obj)
-        summary["next_step"] = serialize_roadmap_step_snapshot(
+        visible = _visible_steps(obj)
+        next_step = next(
+            (
+                step
+                for step in visible
+                if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+            ),
+            None,
+        )
+        next_step_payload = serialize_roadmap_step_snapshot(
             next_step,
             category=obj.category,
             plan_id=obj.id,
             plan_meta=obj.meta,
             language=get_context_language(self.context),
         )
-        return summary
+
+        missing_count = sum(
+            1
+            for step in visible
+            if step.status in {RoadmapStep.Status.MISSING, RoadmapStep.Status.RECOMMENDED}
+        )
+        return {
+            "next_step": next_step_payload,
+            "missing_steps_count": missing_count,
+            "total_steps": len(visible),
+        }
+
+
+def _visible_steps(plan: RoadmapPlan) -> list[RoadmapStep]:
+    """Steps that should be rendered to the user.
+
+    Hides persisted-but-empty roadmap slots (status=MISSING with no SKU) so the
+    user doesn't see action-less cards. Completed/owned steps stay visible
+    because refresh_roadmap now backfills their recommended_product_id with
+    whatever the user actually owns of that product_type.
+    """
+    rows = list(plan.steps.select_related("recommended_product").order_by("step_index"))
+    return [step for step in rows if step.recommended_product_id is not None]
