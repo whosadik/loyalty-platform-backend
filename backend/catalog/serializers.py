@@ -248,6 +248,12 @@ class AdminProductSerializer(serializers.ModelSerializer):
     )
     brand_name = serializers.CharField(write_only=True, required=False, allow_blank=True)
     image = serializers.ImageField(required=False, allow_null=True)
+    image_url = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=500,
+        trim_whitespace=True,
+    )
     image_url_display = serializers.SerializerMethodField()
     brand_slug = serializers.SerializerMethodField()
 
@@ -273,6 +279,7 @@ class AdminProductSerializer(serializers.ModelSerializer):
             "step",
             "strength",
             "in_stock",
+            "stock_quantity",
             "image",
             "image_url",
             "image_url_display",
@@ -285,7 +292,7 @@ class AdminProductSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "brand_slug", "image_url_display", "created_at", "updated_at"]
+        read_only_fields = ["id", "brand_slug", "image_url_display", "in_stock", "created_at", "updated_at"]
 
     def get_image_url_display(self, obj: Product) -> str:
         if obj.image:
@@ -316,11 +323,20 @@ class AdminProductSerializer(serializers.ModelSerializer):
                 )
         return brand
 
+    @staticmethod
+    def _sync_in_stock(validated_data: dict) -> None:
+        if "stock_quantity" in validated_data:
+            validated_data["in_stock"] = validated_data["stock_quantity"] > 0
+
+    def validate_image_url(self, value):
+        return (value or "").strip()
+
     def create(self, validated_data):
         brand = self._resolve_brand(validated_data)
         if brand is not None:
             validated_data["brand_ref"] = brand
             validated_data["brand"] = brand.name
+        self._sync_in_stock(validated_data)
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
@@ -335,4 +351,5 @@ class AdminProductSerializer(serializers.ModelSerializer):
             validated_data["brand_ref"] = None
             validated_data["brand"] = ""
 
+        self._sync_in_stock(validated_data)
         return super().update(instance, validated_data)

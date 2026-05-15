@@ -72,6 +72,7 @@ class Product(models.Model):
     strength = models.CharField(max_length=20, choices=Strength.choices, default=Strength.LOW)
 
     in_stock = models.BooleanField(default=True)
+    stock_quantity = models.PositiveIntegerField(default=0)
 
     # PDP/content fields from external catalog.
     image = models.ImageField(upload_to="products/", blank=True, null=True)
