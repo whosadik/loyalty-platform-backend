@@ -1497,6 +1497,24 @@ def _refund_campaign_budget_for_superseded(existing: OfferAssignment, now: datet
     )
 
 
+def _close_assignment_as_redeemed_by_purchase(
+    assignment: OfferAssignment,
+    *,
+    reason: str,
+) -> None:
+    if not assignment or getattr(assignment, "is_redeemed", False):
+        return
+    assignment.is_active = False
+    assignment.is_redeemed = True
+    assignment.save(update_fields=["is_active", "is_redeemed"])
+    record_offer_event(
+        assignment,
+        OfferEvent.Type.REDEEMED,
+        request_id=None,
+        context={"source": "get_or_assign_next_offer", "reason": reason},
+    )
+
+
 def get_or_assign_next_offer(
     user,
     now: datetime,
@@ -1523,11 +1541,17 @@ def get_or_assign_next_offer(
             ):
                 existing.refresh_from_db(fields=["is_active"])
             if _is_onboarding_first_order_campaign(existing_campaign) and _user_has_any_transactions(user):
-                existing.is_active = False
-                existing.save(update_fields=["is_active"])
+                _close_assignment_as_redeemed_by_purchase(
+                    existing,
+                    reason="onboarding_first_order_purchase",
+                )
+                existing.refresh_from_db(fields=["is_active", "is_redeemed"])
             if _is_winback_30d_campaign(existing_campaign) and not _is_winback_eligible(user, now):
-                existing.is_active = False
-                existing.save(update_fields=["is_active"])
+                _close_assignment_as_redeemed_by_purchase(
+                    existing,
+                    reason="winback_user_reactivated",
+                )
+                existing.refresh_from_db(fields=["is_active", "is_redeemed"])
             if _is_favorite_category_campaign(existing_campaign) and not _favorite_category(user, now):
                 existing.is_active = False
                 existing.save(update_fields=["is_active"])

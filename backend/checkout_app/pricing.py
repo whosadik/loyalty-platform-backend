@@ -44,6 +44,10 @@ def calc_gross(lines: Iterable[Line]) -> Decimal:
     return d2(total)
 
 
+def _norm(value) -> str:
+    return str(value or "").strip().casefold()
+
+
 def is_eligible(product: Product, target: dict) -> bool:
     target = target or {"scope": "cart"}
     scope = target.get("scope", "cart")
@@ -52,6 +56,9 @@ def is_eligible(product: Product, target: dict) -> bool:
     product_ids = target.get("product_ids") or []
     brands = target.get("brands") or []
     product_types = target.get("product_types") or []
+
+    product_category = _norm(product.category)
+    product_type = _norm(product.product_type)
 
     if product_ids:
         try:
@@ -62,26 +69,28 @@ def is_eligible(product: Product, target: dict) -> bool:
             return False
 
     if brands:
-        normalized_brands = {str(x).strip().casefold() for x in brands if str(x).strip()}
-        if normalized_brands and str(product.brand or "").strip().casefold() not in normalized_brands:
+        normalized_brands = {_norm(x) for x in brands if str(x).strip()}
+        if normalized_brands and _norm(product.brand) not in normalized_brands:
             return False
 
-    if product_types and str(product.product_type or "") not in {str(x) for x in product_types}:
-        return False
+    if product_types:
+        allowed_types = {_norm(x) for x in product_types if str(x).strip()}
+        if allowed_types and product_type not in allowed_types:
+            return False
 
     if scope == "cart":
         return True
     if scope == "product_id":
         return int(product.id) == int(value)
     if scope == "category":
-        return product.category == value
+        return product_category == _norm(value)
     if scope == "brand":
-        return str(product.brand or "").strip().casefold() == str(value or "").strip().casefold()
+        return _norm(product.brand) == _norm(value)
     if scope == "product_type":
-        if cat and product.category != cat:
+        if cat and product_category != _norm(cat):
             return False
         if value:
-            return product.product_type == value
+            return product_type == _norm(value)
         return True
     return True
 
