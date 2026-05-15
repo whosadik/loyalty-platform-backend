@@ -1,10 +1,16 @@
+from datetime import timedelta
+from decimal import Decimal
+
 from django.db import transaction as db_tx
+from django.db.models import Sum
+from django.utils import timezone
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from backend.api_serializers import ApiErrorSerializer
+from transactions.models import Transaction
 from .models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from .points import DEFAULT_POINTS_RATE
 from .serializers import (
@@ -35,10 +41,39 @@ class MeLoyaltyStatusView(APIView):
     )
     def get(self, request):
         account = _ensure_account(request.user)
+
+        since = timezone.now() - timedelta(days=90)
+        spend_90d = (
+            Transaction.objects.filter(user=request.user, created_at__gte=since)
+            .aggregate(s=Sum("total_amount"))["s"]
+            or Decimal("0")
+        )
+
+        tiers = list(
+            Tier.objects.all()
+            .values("name", "threshold_spend_90d")
+            .order_by("threshold_spend_90d")
+        )
+
+        current_threshold = (
+            Decimal(str(account.tier.threshold_spend_90d)) if account.tier else Decimal("0")
+        )
+        next_tier_name = None
+        next_tier_threshold = None
+        for t in tiers:
+            thr = Decimal(str(t["threshold_spend_90d"]))
+            if thr > current_threshold:
+                next_tier_name = t["name"]
+                next_tier_threshold = float(thr)
+                break
+
         return Response(
             {
                 "tier": account.tier.name if account.tier else None,
                 "points_balance": account.points_balance,
+                "spend_90d": float(spend_90d),
+                "next_tier": next_tier_name,
+                "next_tier_threshold": next_tier_threshold,
             }
         )
 
