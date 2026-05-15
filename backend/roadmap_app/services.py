@@ -1936,14 +1936,23 @@ def _recommend_candidates_for_type(
         if len(filtered) >= max_suggestions:
             break
 
+    min_score = float(getattr(settings, "ROADMAP_MIN_RECOMMEND_SCORE", 0.3))
+
+    def _keep_high_quality(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [r for r in rows if float((r or {}).get("score") or 0.0) >= min_score]
+
     if filtered:
-        return rerank_roadmap_candidate_rows(
+        reranked = rerank_roadmap_candidate_rows(
             category=category,
             product_type=product_type,
             profile=prof,
             context_products=context_products,
             rows=filtered,
         )
+        high_quality = _keep_high_quality(reranked)
+        if high_quality:
+            return high_quality
+        return []
 
     db_qs = Product.objects.filter(
         category=category,
@@ -1987,13 +1996,17 @@ def _recommend_candidates_for_type(
             break
 
     if out:
-        return rerank_roadmap_candidate_rows(
+        reranked_fallback = rerank_roadmap_candidate_rows(
             category=category,
             product_type=product_type,
             profile=prof,
             context_products=context_products,
             rows=out,
         )
+        high_quality_fallback = _keep_high_quality(reranked_fallback)
+        if high_quality_fallback:
+            return high_quality_fallback
+        return []
 
     if _is_fragrance_slot_step(category, product_type):
         return []
