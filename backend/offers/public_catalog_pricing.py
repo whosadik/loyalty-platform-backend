@@ -84,11 +84,15 @@ def _intersect_or_union(left: list, right: list) -> list:
     return left or right
 
 
-def _intersect_brands_or_union(left: list[str], right: list[str]) -> list[str]:
+def _intersect_strings_case_insensitive(left: list[str], right: list[str]) -> list[str]:
     if left and right:
-        right_lookup = {value.casefold() for value in right}
-        return [value for value in left if value.casefold() in right_lookup]
+        right_lookup = {str(value).strip().casefold() for value in right}
+        return [value for value in left if str(value).strip().casefold() in right_lookup]
     return left or right
+
+
+def _intersect_brands_or_union(left: list[str], right: list[str]) -> list[str]:
+    return _intersect_strings_case_insensitive(left, right)
 
 
 def _constraints(offer: Offer, campaign: CampaignBudget) -> dict:
@@ -101,8 +105,8 @@ def _constraints(offer: Offer, campaign: CampaignBudget) -> dict:
     offer_product_ids = _clean_ints(getattr(offer, "allowed_product_ids", []))
     campaign_product_ids = _clean_ints(getattr(campaign, "allowed_product_ids", []))
 
-    categories = _intersect_or_union(offer_categories, campaign_categories)
-    product_types = _intersect_or_union(offer_product_types, campaign_product_types)
+    categories = _intersect_strings_case_insensitive(offer_categories, campaign_categories)
+    product_types = _intersect_strings_case_insensitive(offer_product_types, campaign_product_types)
     brands = _intersect_brands_or_union(offer_brands, campaign_brands)
     product_ids = _intersect_or_union(offer_product_ids, campaign_product_ids)
     impossible = (
@@ -129,10 +133,14 @@ def _product_matches(product, constraints: dict) -> bool:
     brands = constraints.get("brands") or []
     product_ids = constraints.get("product_ids") or []
 
-    if categories and product.category not in categories:
-        return False
-    if product_types and product.product_type not in product_types:
-        return False
+    if categories:
+        category_lookup = {str(value).strip().casefold() for value in categories if str(value).strip()}
+        if category_lookup and str(product.category or "").strip().casefold() not in category_lookup:
+            return False
+    if product_types:
+        type_lookup = {str(value).strip().casefold() for value in product_types if str(value).strip()}
+        if type_lookup and str(product.product_type or "").strip().casefold() not in type_lookup:
+            return False
     if product_ids and int(product.id) not in product_ids:
         return False
     if brands:

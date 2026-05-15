@@ -68,6 +68,103 @@ class CheckoutOfferFlowTests(APITestCase):
         a = OfferAssignment.objects.get(id=aid)
         self.assertTrue(a.is_redeemed)
 
+    def test_checkout_preview_auto_applies_matching_personal_assignment(self):
+        mascara = Product.objects.create(
+            name="Soft Mascara",
+            brand="VT",
+            price=Decimal("100.00"),
+            category="makeup",
+            product_type="mascara",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="low",
+            in_stock=True,
+        )
+        offer = Offer.objects.create(
+            name="Mascara Boost",
+            offer_type=Offer.Type.DISCOUNT,
+            value=Decimal("10.00"),
+            estimated_cost=Decimal("5.00"),
+            is_active=True,
+            target_scope="product_type",
+            cooldown_days=0,
+            expires_in_days=7,
+            allowed_categories=["makeup"],
+            allowed_product_types=["mascara"],
+            campaign=self.camp,
+        )
+        assignment = OfferAssignment.objects.create(
+            user=self.user,
+            offer=offer,
+            target={"scope": "product_type", "value": "mascara", "category": "makeup"},
+        )
+
+        preview = self.client.post(
+            "/api/checkout/preview",
+            {"channel": "online", "items": [{"product": mascara.id, "quantity": 1}]},
+            format="json",
+        )
+
+        self.assertEqual(preview.status_code, 200)
+        self.assertTrue(preview.data["offer_applied"])
+        self.assertEqual(preview.data["discount_amount"], "10.00")
+        self.assertEqual(preview.data["net_total"], "90.00")
+        self.assertEqual(preview.data["applied_offer"]["assignment_id"], assignment.id)
+        self.assertFalse(preview.data["applied_offer"]["public_campaign"])
+        self.assertEqual(preview.data["target"], {"scope": "product_type", "value": "mascara", "category": "makeup"})
+
+    def test_checkout_auto_redeems_matching_personal_assignment(self):
+        mascara = Product.objects.create(
+            name="Checkout Mascara",
+            brand="VT",
+            price=Decimal("100.00"),
+            category="makeup",
+            product_type="mascara",
+            concerns=[],
+            attrs={},
+            actives=[],
+            flags=[],
+            supported_skin_types=["normal"],
+            strength="low",
+            in_stock=True,
+        )
+        offer = Offer.objects.create(
+            name="Mascara Checkout Boost",
+            offer_type=Offer.Type.DISCOUNT,
+            value=Decimal("10.00"),
+            estimated_cost=Decimal("5.00"),
+            is_active=True,
+            target_scope="product_type",
+            cooldown_days=0,
+            expires_in_days=7,
+            allowed_categories=["makeup"],
+            allowed_product_types=["mascara"],
+            campaign=self.camp,
+        )
+        assignment = OfferAssignment.objects.create(
+            user=self.user,
+            offer=offer,
+            target={"scope": "product_type", "value": "mascara", "category": "makeup"},
+        )
+
+        checkout = self.client.post(
+            "/api/checkout",
+            {"channel": "online", "items": [{"product": mascara.id, "quantity": 1}]},
+            format="json",
+        )
+
+        self.assertEqual(checkout.status_code, 201)
+        self.assertTrue(checkout.data["offer_applied"])
+        self.assertEqual(checkout.data["offer_assignment_id"], assignment.id)
+        self.assertEqual(checkout.data["discount_amount"], "10.00")
+        self.assertEqual(checkout.data["net_total"], "90.00")
+        assignment.refresh_from_db()
+        self.assertTrue(assignment.is_redeemed)
+        self.assertFalse(assignment.is_active)
+
     def test_next_offer_reuse_active(self):
         r1 = self.client.get("/api/me/next-offer")
         r2 = self.client.get("/api/me/next-offer")
