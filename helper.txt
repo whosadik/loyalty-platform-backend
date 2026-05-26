@@ -1,12 +1,16 @@
+# Run these commands from the project root:
+# C:\Users\Legion\UYLESIM\loyalty_platform
+
 # ----VENV ACTIVATION----- #
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
+cd .\backend
 
 # ----RUN SERVER----- #
 python manage.py runserver
 
 # ----STOP SERVER----- #
-Get-Process | Where-Object { $_.Path -like "*loyalty-platform-backend\.venv\Scripts\python.exe" } | Stop-Process -Force
+Get-Process | Where-Object { $_.Path -like "*loyalty_platform\.venv\Scripts\python.exe" } | Stop-Process -Force
 
 # ----MIGRATIONS----- #
 python manage.py makemigrations 
@@ -15,3 +19,10 @@ python manage.py migrate
 # ----CHECK FOR NEW MIGRATIONS----- #
 python manage.py check
 python manage.py makemigrations --check --dry-run
+
+# ----RESTORE LOCAL DUMP AND MEDIA----- #
+# Run from project root, not from backend/
+cd C:\Users\Legion\UYLESIM\loyalty_platform
+docker cp .\loyalty_production.dump loyalty_db:/tmp/loyalty.dump
+docker exec loyalty_db pg_restore -U loyalty -d loyalty --clean --if-exists --no-owner --no-privileges /tmp/loyalty.dump
+tar -xf .\media.tar -C .\backend
