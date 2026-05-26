@@ -10,10 +10,12 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
 from backend.api_serializers import ApiErrorSerializer
+from rest_framework.pagination import PageNumberPagination
 from transactions.models import Transaction
 from .models import LoyaltyAccount, LoyaltyLedgerEntry, Tier
 from .points import DEFAULT_POINTS_RATE
 from .serializers import (
+    LoyaltyLedgerEntrySerializer,
     MeLoyaltyResponseSerializer,
     RedeemPointsRequestSerializer,
     RedeemPointsResponseSerializer,
@@ -117,3 +119,62 @@ class RedeemPointsView(APIView):
             account.save(update_fields=["points_balance"])
 
         return Response({"ok": True, "new_balance": account.points_balance})
+
+
+class LoyaltyHistoryPagination(PageNumberPagination):
+    page_size = 25
+    page_size_query_param = "page_size"
+    max_page_size = 100
+
+
+class MeLoyaltyHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = LoyaltyHistoryPagination
+
+    @extend_schema(
+        tags=["Loyalty"],
+        responses={200: LoyaltyLedgerEntrySerializer(many=True)},
+    )
+    def get(self, request):
+        qs = (
+            LoyaltyLedgerEntry.objects
+            .filter(account__user=request.user)
+            .order_by("-created_at", "-id")
+        )
+
+        entry_type = (request.query_params.get("entry_type") or "").strip().lower()
+        valid_types = {
+            LoyaltyLedgerEntry.Type.EARN,
+            LoyaltyLedgerEntry.Type.REDEEM,
+            LoyaltyLedgerEntry.Type.ADJUST,
+        }
+        if entry_type in valid_types:
+            qs = qs.filter(entry_type=entry_type)
+
+        account_balance = (
+            LoyaltyAccount.objects.filter(user=request.user)
+            .values_list("points_balance", flat=True)
+            .first()
+        )
+
+        paginator = self.pagination_class()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        serializer = LoyaltyLedgerEntrySerializer(
+            page if page is not None else qs,
+            many=True,
+            context={"request": request},
+        )
+
+        if page is not None:
+            paginated = paginator.get_paginated_response(serializer.data)
+            paginated.data["ok"] = True
+            paginated.data["points_balance"] = int(account_balance or 0)
+            return paginated
+
+        return Response(
+            {
+                "ok": True,
+                "points_balance": int(account_balance or 0),
+                "results": serializer.data,
+            }
+        )
